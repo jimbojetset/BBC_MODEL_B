@@ -11,6 +11,7 @@
 // ============================================================================
 
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace BBC
 {
@@ -26,6 +27,7 @@ namespace BBC
         private const uint Black = 0xFF000000;
 
         private readonly uint[] frameBuffer;
+        private readonly Queue<byte> pendingInput = new Queue<byte>();
         private readonly int pitchBytes;
 
         private IntPtr window;
@@ -89,6 +91,7 @@ namespace BBC
             texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
             ThrowIfNull(texture, "SDL_CreateTexture");
 
+            SDL_StartTextInput();
             Present();
         }
 
@@ -98,10 +101,35 @@ namespace BBC
             while (SDL_PollEvent(out SdlEvent ev) != 0)
             {
                 if (ev.Type == SDL_QUIT)
+                {
                     QuitRequested = true;
+                    continue;
+                }
+
+                if (ev.Type == SDL_TEXTINPUT)
+                {
+                    EnqueueTextInput(ev.Text);
+                    continue;
+                }
+
+                if (ev.Type == SDL_KEYDOWN && ev.KeyRepeat == 0)
+                    EnqueueSpecialKey(ev.KeySym);
             }
 
             return !QuitRequested;
+        }
+
+        /// <summary>Copies pending host keyboard input into a caller-provided buffer.</summary>
+        /// <param name="destination">The destination buffer.</param>
+        /// <returns>The number of bytes copied.</returns>
+        public int DrainInput(Span<byte> destination)
+        {
+            int count = 0;
+
+            while (count < destination.Length && pendingInput.Count > 0)
+                destination[count++] = pendingInput.Dequeue();
+
+            return count;
         }
 
         /// <summary>Fills the framebuffer with an ARGB8888 colour.</summary>
@@ -185,8 +213,42 @@ namespace BBC
                 window = IntPtr.Zero;
             }
 
+            SDL_StopTextInput();
             SDL_QuitSubSystem(SDL_INIT_VIDEO);
             disposed = true;
+        }
+
+        private void EnqueueTextInput(byte[] utf8Text)
+        {
+            int length = Array.IndexOf(utf8Text, (byte)0);
+            if (length <= 0)
+                return;
+
+            foreach (Rune rune in Encoding.UTF8.GetString(utf8Text, 0, length).EnumerateRunes())
+            {
+                if (rune.Value >= 32 && rune.Value <= 126)
+                    pendingInput.Enqueue((byte)rune.Value);
+            }
+        }
+
+        private void EnqueueSpecialKey(int keySym)
+        {
+            byte? character = keySym switch
+            {
+                SDLK_RETURN => 13,
+                SDLK_KP_ENTER => 13,
+                SDLK_BACKSPACE => 127,
+                SDLK_DELETE => 127,
+                SDLK_ESCAPE => 27,
+                SDLK_LEFT => 8,
+                SDLK_RIGHT => 9,
+                SDLK_DOWN => 10,
+                SDLK_UP => 11,
+                _ => null
+            };
+
+            if (character.HasValue)
+                pendingInput.Enqueue(character.Value);
         }
 
         private static void ThrowIfNull(IntPtr value, string operation)
@@ -249,11 +311,64 @@ namespace BBC
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const int SDL_TRUE = 1;
         private const uint SDL_QUIT = 0x100;
+        private const uint SDL_KEYDOWN = 0x300;
+        private const uint SDL_TEXTINPUT = 0x303;
+        private const int SDLK_BACKSPACE = 8;
+        private const int SDLK_RETURN = 13;
+        private const int SDLK_ESCAPE = 27;
+        private const int SDLK_DELETE = 127;
+        private const int SDLK_RIGHT = 1073741903;
+        private const int SDLK_LEFT = 1073741904;
+        private const int SDLK_DOWN = 1073741905;
+        private const int SDLK_UP = 1073741906;
+        private const int SDLK_KP_ENTER = 1073741912;
 
         [StructLayout(LayoutKind.Explicit, Size = 56)]
         private struct SdlEvent
         {
             [FieldOffset(0)] public uint Type;
+            [FieldOffset(13)] public byte KeyRepeat;
+            [FieldOffset(20)] public int KeySym;
+            [FieldOffset(12)] public byte Text0;
+            [FieldOffset(13)] public byte Text1;
+            [FieldOffset(14)] public byte Text2;
+            [FieldOffset(15)] public byte Text3;
+            [FieldOffset(16)] public byte Text4;
+            [FieldOffset(17)] public byte Text5;
+            [FieldOffset(18)] public byte Text6;
+            [FieldOffset(19)] public byte Text7;
+            [FieldOffset(20)] public byte Text8;
+            [FieldOffset(21)] public byte Text9;
+            [FieldOffset(22)] public byte Text10;
+            [FieldOffset(23)] public byte Text11;
+            [FieldOffset(24)] public byte Text12;
+            [FieldOffset(25)] public byte Text13;
+            [FieldOffset(26)] public byte Text14;
+            [FieldOffset(27)] public byte Text15;
+            [FieldOffset(28)] public byte Text16;
+            [FieldOffset(29)] public byte Text17;
+            [FieldOffset(30)] public byte Text18;
+            [FieldOffset(31)] public byte Text19;
+            [FieldOffset(32)] public byte Text20;
+            [FieldOffset(33)] public byte Text21;
+            [FieldOffset(34)] public byte Text22;
+            [FieldOffset(35)] public byte Text23;
+            [FieldOffset(36)] public byte Text24;
+            [FieldOffset(37)] public byte Text25;
+            [FieldOffset(38)] public byte Text26;
+            [FieldOffset(39)] public byte Text27;
+            [FieldOffset(40)] public byte Text28;
+            [FieldOffset(41)] public byte Text29;
+            [FieldOffset(42)] public byte Text30;
+            [FieldOffset(43)] public byte Text31;
+
+            public byte[] Text =>
+            [
+                Text0, Text1, Text2, Text3, Text4, Text5, Text6, Text7,
+                Text8, Text9, Text10, Text11, Text12, Text13, Text14, Text15,
+                Text16, Text17, Text18, Text19, Text20, Text21, Text22, Text23,
+                Text24, Text25, Text26, Text27, Text28, Text29, Text30, Text31
+            ];
         }
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
@@ -300,6 +415,12 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_PollEvent(out SdlEvent ev);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SDL_StartTextInput();
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SDL_StopTextInput();
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_GetError();
