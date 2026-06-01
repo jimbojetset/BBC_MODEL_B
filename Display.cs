@@ -227,7 +227,7 @@ namespace BBC
             foreach (Rune rune in Encoding.UTF8.GetString(utf8Text, 0, length).EnumerateRunes())
             {
                 if (rune.Value >= 32 && rune.Value <= 126)
-                    pendingInput.Enqueue((byte)rune.Value);
+                    pendingInput.Enqueue((byte)char.ToUpperInvariant((char)rune.Value));
             }
         }
 
