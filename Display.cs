@@ -28,6 +28,7 @@ namespace BBC
 
         private readonly uint[] frameBuffer;
         private readonly Queue<byte> pendingInput = new Queue<byte>();
+        private readonly Queue<BreakKeyPress> pendingBreaks = new Queue<BreakKeyPress>();
         private readonly int pitchBytes;
 
         private IntPtr window;
@@ -128,6 +129,19 @@ namespace BBC
 
             while (count < destination.Length && pendingInput.Count > 0)
                 destination[count++] = pendingInput.Dequeue();
+
+            return count;
+        }
+
+        /// <summary>Copies pending BREAK key requests into a caller-provided buffer.</summary>
+        /// <param name="destination">The destination buffer.</param>
+        /// <returns>The number of break requests copied.</returns>
+        public int DrainBreaks(Span<BreakKeyPress> destination)
+        {
+            int count = 0;
+
+            while (count < destination.Length && pendingBreaks.Count > 0)
+                destination[count++] = pendingBreaks.Dequeue();
 
             return count;
         }
@@ -233,6 +247,15 @@ namespace BBC
 
         private void EnqueueSpecialKey(int keySym)
         {
+            if (keySym == SDLK_F12)
+            {
+                int modifiers = SDL_GetModState();
+                pendingBreaks.Enqueue(new BreakKeyPress(
+                    (modifiers & KMOD_SHIFT) != 0,
+                    (modifiers & KMOD_CTRL) != 0));
+                return;
+            }
+
             byte? character = keySym switch
             {
                 SDLK_RETURN => 13,
@@ -322,6 +345,9 @@ namespace BBC
         private const int SDLK_DOWN = 1073741905;
         private const int SDLK_UP = 1073741906;
         private const int SDLK_KP_ENTER = 1073741912;
+        private const int SDLK_F12 = 1073741893;
+        private const int KMOD_SHIFT = 0x0003;
+        private const int KMOD_CTRL = 0x00C0;
 
         [StructLayout(LayoutKind.Explicit, Size = 56)]
         private struct SdlEvent
@@ -417,6 +443,9 @@ namespace BBC
         private static extern int SDL_PollEvent(out SdlEvent ev);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_GetModState();
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_StartTextInput();
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
@@ -425,4 +454,9 @@ namespace BBC
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_GetError();
     }
+
+    /// <summary>Describes a host BREAK key request.</summary>
+    /// <param name="Shift">Whether Shift was held.</param>
+    /// <param name="Control">Whether Control was held.</param>
+    public readonly record struct BreakKeyPress(bool Shift, bool Control);
 }

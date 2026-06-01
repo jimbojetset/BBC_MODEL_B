@@ -94,10 +94,12 @@ namespace BBC
         private Thread? cpuThread;
         private Exception? cpuException;
         private readonly byte[] inputScratch = new byte[64];
+        private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
         private readonly byte[] crtcRegisters = new byte[32];
         private int selectedSidewaysRom = BasicRomBank;
         private byte selectedCrtcRegister;
+        private BreakKeyPress pendingBreak;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -118,6 +120,7 @@ namespace BBC
         public Emulator()
         {
             Cpu = new CPU_6502(Memory, CpuClockHz);
+            Cpu.OnReset = ResetDeviceState;
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
@@ -133,6 +136,7 @@ namespace BBC
             if (createDisplay)
                 Display = new Display();
 
+            pendingBreak = default;
             Cpu.ResetNow();
             initialised = true;
         }
@@ -153,6 +157,7 @@ namespace BBC
                 if (cpuException is not null)
                     throw new InvalidOperationException("CPU execution failed.", cpuException);
 
+                DrainHostBreakInput(Display);
                 DrainHostKeyboardInput(Display);
                 RenderMode7TextScreen(Display);
                 Display.Present();
@@ -226,6 +231,14 @@ namespace BBC
                 cpuThread.Join(TimeSpan.FromSeconds(2));
 
             cpuThread = null;
+        }
+
+        private void ResetDeviceState()
+        {
+            Array.Clear(crtcRegisters);
+            selectedCrtcRegister = 0;
+            selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
+            Memory.Memory[EscapeFlag] = 0;
         }
 
         private void RenderMode7TextScreen(Display display)
@@ -345,6 +358,16 @@ namespace BBC
                 else
                     InsertKeyboardBufferCharacter(inputScratch[i]);
             }
+        }
+
+        private void DrainHostBreakInput(Display display)
+        {
+            int count = display.DrainBreaks(breakScratch);
+            if (count == 0)
+                return;
+
+            pendingBreak = breakScratch[count - 1];
+            Cpu.RequestReset();
         }
 
         private void TriggerEscapeCondition()
