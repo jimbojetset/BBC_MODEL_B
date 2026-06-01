@@ -77,6 +77,8 @@ namespace BBC
         public const int Mode7ScreenBytes = 1024;
 
         private const string RomDirectory = "ROMS";
+        private const string OsRomFileName = "OS12.rom";
+        private const string BasicRomFileName = "BASIC2.rom";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
         private const string OsRomMarker = "BBC Computer";
         private const int TargetFramesPerSecond = 50;
@@ -419,17 +421,11 @@ namespace BBC
             if (!Directory.Exists(romRoot))
                 throw new DirectoryNotFoundException($"ROM directory not found: {romRoot}");
 
-            IReadOnlyList<string> romPaths = Directory
-                .EnumerateFiles(romRoot)
-                .Where(path => new FileInfo(path).Length == RomSize)
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            OsRomPath = Path.Combine(romRoot, OsRomFileName);
+            BasicRomPath = Path.Combine(romRoot, BasicRomFileName);
 
-            if (romPaths.Count == 0)
-                throw new InvalidOperationException($"No {RomSize} byte ROM images were found in {romRoot}.");
-
-            OsRomPath = FindRomByMarker(romPaths, OsRomMarker);
-            BasicRomPath = FindRomByMarker(romPaths, BasicRomMarker);
+            ValidateRom(OsRomPath, OsRomMarker);
+            ValidateRom(BasicRomPath, BasicRomMarker);
 
             Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
 
@@ -437,16 +433,18 @@ namespace BBC
             File.ReadAllBytes(BasicRomPath).CopyTo(sidewaysRoms, BasicRomBank * RomSize);
         }
 
-        private static string FindRomByMarker(IReadOnlyList<string> romPaths, string marker)
+        private static void ValidateRom(string path, string marker)
         {
-            foreach (string path in romPaths)
-            {
-                byte[] rom = File.ReadAllBytes(path);
-                if (ContainsAscii(rom, marker))
-                    return path;
-            }
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"Required ROM not found: {path}");
 
-            throw new FileNotFoundException($"Could not find a {RomSize} byte ROM containing marker '{marker}'.");
+            byte[] rom = File.ReadAllBytes(path);
+
+            if (rom.Length != RomSize)
+                throw new InvalidOperationException($"ROM '{path}' must be exactly {RomSize} bytes.");
+
+            if (!ContainsAscii(rom, marker))
+                throw new InvalidOperationException($"ROM '{path}' does not contain expected marker '{marker}'.");
         }
 
         private static bool ContainsAscii(ReadOnlySpan<byte> data, string marker)
