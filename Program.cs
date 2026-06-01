@@ -336,7 +336,7 @@ namespace BBC
             if (nextEnd == start)
                 return;
 
-            Memory.Memory[0x0300 + nextEnd] = character;
+            Memory.Memory[0x0300 + end] = character;
             Memory.Memory[KeyboardBufferEndIndex] = nextEnd;
             Memory.Memory[KeyboardBufferBusyFlag] &= unchecked((byte)~KeyboardBufferEmptyFlag);
         }
