@@ -85,7 +85,9 @@ namespace BBC
         private const ushort KeyboardBufferEndIndex = 0x02E1;
         private const ushort TextCursorAddressLow = 0x034A;
         private const ushort TextCursorAddressHigh = 0x034B;
+        private const ushort EscapeFlag = 0x00FF;
         private const byte KeyboardBufferEmptyFlag = 0x80;
+        private const byte EscapePendingFlag = 0x80;
 
         private bool initialised;
         private Thread? cpuThread;
@@ -324,7 +326,17 @@ namespace BBC
         {
             int count = display.DrainInput(inputScratch);
             for (int i = 0; i < count; i++)
-                InsertKeyboardBufferCharacter(inputScratch[i]);
+            {
+                if (inputScratch[i] == 27)
+                    TriggerEscapeCondition();
+                else
+                    InsertKeyboardBufferCharacter(inputScratch[i]);
+            }
+        }
+
+        private void TriggerEscapeCondition()
+        {
+            Memory.Memory[EscapeFlag] |= EscapePendingFlag;
         }
 
         private void InsertKeyboardBufferCharacter(byte character)
