@@ -228,10 +228,10 @@ namespace BBC
                 {
                     byte character = Memory.Memory[Mode7ScreenStart + (row * Mode7Columns) + column];
 
-                    if (character < 32)
+                    if (character < 32 || character > 127)
                         character = 32;
 
-                    int glyphAddress = OsRomStart + ((character & 0x7F) * glyphHeight);
+                    int glyphAddress = OsRomStart + ((character - 32) * glyphHeight);
                     int cellX = column * cellWidth;
 
                     for (int glyphY = 0; glyphY < glyphHeight; glyphY++)
