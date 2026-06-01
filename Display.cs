@@ -33,6 +33,11 @@ namespace BBC
         private IntPtr texture;
         private bool disposed;
 
+        static Display()
+        {
+            NativeLibrary.SetDllImportResolver(typeof(Display).Assembly, ResolveNativeLibrary);
+        }
+
         /// <summary>Gets the display texture width in pixels.</summary>
         public int Width { get; }
 
@@ -200,6 +205,34 @@ namespace BBC
         {
             IntPtr error = SDL_GetError();
             return error == IntPtr.Zero ? "unknown SDL error" : Marshal.PtrToStringAnsi(error) ?? "unknown SDL error";
+        }
+
+        private static IntPtr ResolveNativeLibrary(string libraryName, System.Reflection.Assembly assembly, DllImportSearchPath? searchPath)
+        {
+            if (libraryName != SdlLibrary)
+                return IntPtr.Zero;
+
+            string[] candidates =
+            [
+                "SDL2",
+                "libSDL2.dylib",
+                "libSDL2-2.0.0.dylib",
+                "/opt/homebrew/lib/libSDL2.dylib",
+                "/opt/homebrew/lib/libSDL2-2.0.0.dylib",
+                "/usr/local/lib/libSDL2.dylib",
+                "/usr/local/lib/libSDL2-2.0.0.dylib",
+                "SDL2.dll",
+                "libSDL2-2.0.so.0",
+                "libSDL2.so"
+            ];
+
+            foreach (string candidate in candidates)
+            {
+                if (NativeLibrary.TryLoad(candidate, assembly, searchPath, out IntPtr handle))
+                    return handle;
+            }
+
+            return IntPtr.Zero;
         }
 
         private const string SdlLibrary = "SDL2";

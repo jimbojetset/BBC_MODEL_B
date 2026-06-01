@@ -11,21 +11,44 @@
 // ============================================================================
 
 using BBC.CPU;
+using System.Diagnostics;
 using System.Text;
 
 namespace BBC
 {
     internal static class Program
     {
-        private static void Main()
+        private static void Main(string[] args)
         {
             using Emulator emulator = new Emulator();
-            emulator.Initialise();
+            int headlessMilliseconds = ParseHeadlessMilliseconds(args);
+            emulator.Initialise(createDisplay: headlessMilliseconds == 0);
 
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     {emulator.OsRomPath} -> ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  {emulator.BasicRomPath} -> ${Emulator.SidewaysRomStart:X4}-${Emulator.SidewaysRomEnd:X4}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
+
+            if (headlessMilliseconds > 0)
+                emulator.RunHeadless(TimeSpan.FromMilliseconds(headlessMilliseconds));
+            else
+                emulator.Run();
+        }
+
+        private static int ParseHeadlessMilliseconds(string[] args)
+        {
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (!string.Equals(args[i], "--headless-ms", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out int milliseconds) || milliseconds <= 0)
+                    throw new ArgumentException("--headless-ms requires a positive millisecond value.");
+
+                return milliseconds;
+            }
+
+            return 0;
         }
     }
 
@@ -42,12 +65,19 @@ namespace BBC
         public const ushort OsRomEnd = 0xFFFF;
         public const int RomSize = 16 * 1024;
         public const int CpuClockHz = 2_000_000;
+        public const ushort Mode7ScreenStart = 0x7C00;
+        public const int Mode7Columns = 40;
+        public const int Mode7Rows = 25;
 
         private const string RomDirectory = "ROMS";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
         private const string OsRomMarker = "BBC Computer";
+        private const int TargetFramesPerSecond = 50;
+        private const int FrameMilliseconds = 1000 / TargetFramesPerSecond;
 
         private bool initialised;
+        private Thread? cpuThread;
+        private Exception? cpuException;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -87,10 +117,153 @@ namespace BBC
             initialised = true;
         }
 
+        /// <summary>Runs the CPU and SDL display loop until the window is closed or the CPU faults.</summary>
+        public void Run()
+        {
+            if (!initialised)
+                Initialise(createDisplay: true);
+
+            Display ??= new Display();
+
+            StartCpu();
+
+            Stopwatch frameTimer = Stopwatch.StartNew();
+            while (Display.PumpEvents())
+            {
+                if (cpuException is not null)
+                    throw new InvalidOperationException("CPU execution failed.", cpuException);
+
+                RenderMode7TextScreen(Display);
+                Display.Present();
+
+                int remaining = FrameMilliseconds - (int)frameTimer.ElapsedMilliseconds;
+                if (remaining > 0)
+                    Thread.Sleep(remaining);
+
+                frameTimer.Restart();
+            }
+
+            StopCpu();
+        }
+
+        /// <summary>Runs the CPU without creating a display, primarily for smoke tests.</summary>
+        /// <param name="duration">The amount of wall-clock time to run.</param>
+        public void RunHeadless(TimeSpan duration)
+        {
+            if (!initialised)
+                Initialise();
+
+            StartCpu();
+            Thread.Sleep(duration);
+            StopCpu();
+
+            if (cpuException is not null)
+                throw new InvalidOperationException("CPU execution failed.", cpuException);
+        }
+
         /// <summary>Releases emulator-owned resources.</summary>
         public void Dispose()
         {
+            StopCpu();
             Display?.Dispose();
+        }
+
+        private void RunCpu()
+        {
+            try
+            {
+                Cpu.Run();
+            }
+            catch (Exception ex)
+            {
+                cpuException = ex;
+            }
+        }
+
+        private void StartCpu()
+        {
+            if (cpuThread is not null && cpuThread.IsAlive)
+                return;
+
+            cpuException = null;
+            cpuThread = new Thread(RunCpu)
+            {
+                IsBackground = true,
+                Name = "BBC 6502"
+            };
+            cpuThread.Start();
+        }
+
+        private void StopCpu()
+        {
+            Cpu.Stop();
+
+            if (cpuThread is not null && cpuThread.IsAlive)
+                cpuThread.Join(TimeSpan.FromSeconds(2));
+
+            cpuThread = null;
+        }
+
+        private void RenderMode7TextScreen(Display display)
+        {
+            const uint background = 0xFF000000;
+            const uint foreground = 0xFFFFFFFF;
+            const int glyphWidth = 8;
+            const int glyphHeight = 8;
+            const int cellWidth = Display.DefaultWidth / Mode7Columns;
+            const int cellHeight = Display.DefaultHeight / Mode7Rows;
+            const int xScale = 2;
+            const int yScale = 2;
+            const int glyphXOffset = 0;
+            const int glyphYOffset = 2;
+
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, background);
+
+            for (int row = 0; row < Mode7Rows; row++)
+            {
+                int cellY = row * cellHeight;
+
+                for (int column = 0; column < Mode7Columns; column++)
+                {
+                    byte character = Memory.Memory[Mode7ScreenStart + (row * Mode7Columns) + column];
+
+                    if (character < 32)
+                        character = 32;
+
+                    int glyphAddress = OsRomStart + ((character & 0x7F) * glyphHeight);
+                    int cellX = column * cellWidth;
+
+                    for (int glyphY = 0; glyphY < glyphHeight; glyphY++)
+                    {
+                        byte bits = Memory.Memory[glyphAddress + glyphY];
+
+                        for (int glyphX = 0; glyphX < glyphWidth; glyphX++)
+                        {
+                            if ((bits & (0x80 >> glyphX)) == 0)
+                                continue;
+
+                            int pixelX = cellX + glyphXOffset + (glyphX * xScale);
+                            int pixelY = cellY + glyphYOffset + (glyphY * yScale);
+
+                            for (int yy = 0; yy < yScale; yy++)
+                            {
+                                int y = pixelY + yy;
+                                if ((uint)y >= (uint)display.Height)
+                                    continue;
+
+                                int offset = y * display.Width;
+                                for (int xx = 0; xx < xScale; xx++)
+                                {
+                                    int x = pixelX + xx;
+                                    if ((uint)x < (uint)display.Width)
+                                        pixels[offset + x] = foreground;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         private void LoadSystemRoms()

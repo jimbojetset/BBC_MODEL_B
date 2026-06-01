@@ -136,6 +136,9 @@ namespace BBC.CPU
         /// <summary>Requests a CPU reset at the next safe point.</summary>
         public void RequestReset() => Interlocked.Exchange(ref resetPending, 1);
 
+        /// <summary>Requests the CPU run loop to stop at the next safe point.</summary>
+        public void Stop() => Volatile.Write(ref running, false);
+
         /// <summary>Immediately resets CPU registers and loads the reset vector on the current thread.</summary>
         public void ResetNow()
         {
@@ -181,7 +184,7 @@ namespace BBC.CPU
             bool timerRaised = TryBeginHighResolutionTimer();
             try
             {
-                while (running)
+                while (Volatile.Read(ref running))
                 {
                     if (Volatile.Read(ref paused))
                     {
