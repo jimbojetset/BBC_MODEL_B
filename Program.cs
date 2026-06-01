@@ -74,6 +74,7 @@ namespace BBC
         public const int Mode7Rows = 25;
         public const ushort KeyboardBufferStart = 0x03E0;
         public const ushort KeyboardBufferEnd = 0x03FF;
+        public const int Mode7ScreenBytes = 1024;
 
         private const string RomDirectory = "ROMS";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
@@ -249,7 +250,7 @@ namespace BBC
 
                 for (int column = 0; column < Mode7Columns; column++)
                 {
-                    byte character = Memory.Memory[Mode7ScreenStart + (row * Mode7Columns) + column];
+                    byte character = ReadMode7DisplayCharacter(row, column);
 
                     if (character < 32 || character > 127)
                         character = 32;
@@ -297,7 +298,7 @@ namespace BBC
                 return;
 
             ushort cursorAddress = (ushort)(Memory.Memory[TextCursorAddressLow] | (Memory.Memory[TextCursorAddressHigh] << 8));
-            int cursorOffset = cursorAddress - Mode7ScreenStart;
+            int cursorOffset = ((cursorAddress - Mode7ScreenStart) - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
 
             if ((uint)cursorOffset >= (uint)(Mode7Columns * Mode7Rows))
                 return;
@@ -320,6 +321,18 @@ namespace BBC
                 for (int x = startX; x < endX; x++)
                     pixels[offset + x] ^= cursorColour;
             }
+        }
+
+        private byte ReadMode7DisplayCharacter(int row, int column)
+        {
+            int offset = (GetMode7DisplayStartOffset() + (row * Mode7Columns) + column) & (Mode7ScreenBytes - 1);
+            return Memory.Memory[Mode7ScreenStart + offset];
+        }
+
+        private int GetMode7DisplayStartOffset()
+        {
+            int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
+            return crtcStart & (Mode7ScreenBytes - 1);
         }
 
         private void DrainHostKeyboardInput(Display display)
