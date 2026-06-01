@@ -62,8 +62,12 @@ namespace BBC
         public const ushort SidewaysRomStart = 0x8000;
         public const ushort SidewaysRomEnd = 0xBFFF;
         public const ushort OsRomStart = 0xC000;
+        public const ushort IoStart = 0xFC00;
+        public const ushort IoEnd = 0xFEFF;
         public const ushort OsRomEnd = 0xFFFF;
         public const int RomSize = 16 * 1024;
+        public const int SidewaysRomBanks = 16;
+        public const int BasicRomBank = 15;
         public const int CpuClockHz = 2_000_000;
         public const ushort Mode7ScreenStart = 0x7C00;
         public const int Mode7Columns = 40;
@@ -78,6 +82,10 @@ namespace BBC
         private bool initialised;
         private Thread? cpuThread;
         private Exception? cpuException;
+        private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
+        private readonly byte[] crtcRegisters = new byte[32];
+        private int selectedSidewaysRom = BasicRomBank;
+        private byte selectedCrtcRegister;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -159,6 +167,9 @@ namespace BBC
 
             if (cpuException is not null)
                 throw new InvalidOperationException("CPU execution failed.", cpuException);
+
+            Console.WriteLine($"Headless PC: ${Cpu.registers.PC:X4}");
+            Console.WriteLine($"Mode 7 non-blank cells: {CountMode7NonBlankCells()}");
         }
 
         /// <summary>Releases emulator-owned resources.</summary>
@@ -266,6 +277,20 @@ namespace BBC
             }
         }
 
+        private int CountMode7NonBlankCells()
+        {
+            int count = 0;
+
+            for (int i = 0; i < Mode7Columns * Mode7Rows; i++)
+            {
+                byte character = Memory.Memory[Mode7ScreenStart + i];
+                if (character != 0 && character != 32)
+                    count++;
+            }
+
+            return count;
+        }
+
         private void LoadSystemRoms()
         {
             string romRoot = Path.Combine(AppContext.BaseDirectory, RomDirectory);
@@ -288,7 +313,9 @@ namespace BBC
             BasicRomPath = FindRomByMarker(romPaths, BasicRomMarker);
 
             Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
-            Memory.Load(SidewaysRomStart, File.ReadAllBytes(BasicRomPath));
+
+            Array.Fill(sidewaysRoms, (byte)0xFF);
+            File.ReadAllBytes(BasicRomPath).CopyTo(sidewaysRoms, BasicRomBank * RomSize);
         }
 
         private static string FindRomByMarker(IReadOnlyList<string> romPaths, string marker)
@@ -311,15 +338,79 @@ namespace BBC
 
         private void InstallMemoryMapHooks()
         {
+            Memory.OnRead = (address, value) =>
+            {
+                ushort addr = (ushort)(address & 0xFFFF);
+
+                if (addr >= SidewaysRomStart && addr <= SidewaysRomEnd)
+                    return ReadSidewaysRom(addr);
+
+                if (addr >= IoStart && addr <= IoEnd)
+                    return ReadSheila(addr);
+
+                return value;
+            };
+
             Memory.OnWrite = (address, _) =>
             {
                 ushort addr = (ushort)(address & 0xFFFF);
+
+                if (addr >= IoStart && addr <= IoEnd)
+                {
+                    WriteSheila(addr, _);
+                    return true;
+                }
 
                 if (addr >= SidewaysRomStart)
                     return true;
 
                 return false;
             };
+        }
+
+        private byte ReadSidewaysRom(ushort address)
+        {
+            int bankOffset = selectedSidewaysRom * RomSize;
+            int romOffset = address - SidewaysRomStart;
+            return sidewaysRoms[bankOffset + romOffset];
+        }
+
+        private byte ReadSheila(ushort address)
+        {
+            return address switch
+            {
+                0xFE00 => selectedCrtcRegister,
+                0xFE01 => crtcRegisters[selectedCrtcRegister & 0x1F],
+                0xFE08 => 0x02, // ACIA transmit data register empty.
+                0xFE30 => (byte)selectedSidewaysRom,
+                0xFE40 => 0xFF, // System VIA port B inputs idle high.
+                0xFE41 => 0xFF, // System VIA port A inputs idle high.
+                0xFE4D => 0x00, // System VIA IFR: no pending interrupts yet.
+                0xFE4E => 0x00, // System VIA IER.
+                0xFE60 => 0xFF, // User VIA port B inputs idle high.
+                0xFE61 => 0xFF, // User VIA port A inputs idle high.
+                0xFE6D => 0x00, // User VIA IFR.
+                0xFE6E => 0x00, // User VIA IER.
+                _ => 0x00
+            };
+        }
+
+        private void WriteSheila(ushort address, byte value)
+        {
+            switch (address)
+            {
+                case 0xFE00:
+                    selectedCrtcRegister = (byte)(value & 0x1F);
+                    break;
+
+                case 0xFE01:
+                    crtcRegisters[selectedCrtcRegister & 0x1F] = value;
+                    break;
+
+                case 0xFE30:
+                    selectedSidewaysRom = value & 0x0F;
+                    break;
+            }
         }
     }
 }
