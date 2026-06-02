@@ -21,7 +21,9 @@ namespace BBC
         private const byte KeyboardWriteEnableLatchBit = 3;
         private const byte InterruptFlagTimer1 = 0x40;
         private const byte InterruptFlagTimer2 = 0x20;
+        private const byte InterruptFlagVsync = 0x02;
         private const byte InterruptFlagKeyboard = 0x01;
+        private const int VsyncPeripheralCycles = 20_000;
         private const byte InterruptSummary = 0x80;
         private readonly Sound sound;
         private readonly byte[] registers = new byte[16];
@@ -41,6 +43,7 @@ namespace BBC
         private bool timer2Running;
         private bool timer2HasInterrupted;
         private int peripheralCycleRemainder;
+        private int vsyncCycleCounter;
 
         /// <summary>Initializes a new system VIA shim.</summary>
         /// <param name="sound">The sound generator connected to the VIA slow bus.</param>
@@ -77,6 +80,7 @@ namespace BBC
             timer2Running = false;
             timer2HasInterrupted = false;
             peripheralCycleRemainder = 0;
+            vsyncCycleCounter = 0;
         }
 
         /// <summary>Updates one BBC keyboard matrix key state.</summary>
@@ -94,6 +98,14 @@ namespace BBC
 
             if (dataDirectionA == 0x7F && !IsKeyboardAutoScanEnabled())
                 UpdateKeyboardColumnInterrupt();
+        }
+
+        /// <summary>Returns whether one BBC keyboard matrix key is currently held.</summary>
+        /// <param name="internalKey">The BBC internal key number.</param>
+        /// <returns>True when the key is pressed.</returns>
+        public bool IsKeyPressed(byte internalKey)
+        {
+            return internalKey < pressedKeys.Length && pressedKeys[internalKey];
         }
 
         /// <summary>Gets whether the VIA IRQ output is currently asserted.</summary>
@@ -117,6 +129,8 @@ namespace BBC
 
             if (timer2Running)
                 TickTimer2(peripheralCycles);
+
+            TickVsync(peripheralCycles);
         }
 
         /// <summary>Reads a system VIA register.</summary>
@@ -262,6 +276,17 @@ namespace BBC
             timer2Running = false;
             timer2HasInterrupted = true;
             SetInterrupt(InterruptFlagTimer2);
+        }
+
+        private void TickVsync(int peripheralCycles)
+        {
+            vsyncCycleCounter += peripheralCycles;
+
+            while (vsyncCycleCounter >= VsyncPeripheralCycles)
+            {
+                vsyncCycleCounter -= VsyncPeripheralCycles;
+                SetInterrupt(InterruptFlagVsync);
+            }
         }
 
         private void WritePortB(byte value)

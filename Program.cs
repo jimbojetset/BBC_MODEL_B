@@ -382,7 +382,101 @@ namespace BBC
         private bool HandleHostFirmwareHooks()
         {
             return hostFilingSystem.TryHandleOsfile(Cpu)
-                || hostFilingSystem.TryHandleOscli(Cpu);
+                || hostFilingSystem.TryHandleOscli(Cpu)
+                || TryHandleOsbyte();
+        }
+
+        private bool TryHandleOsbyte()
+        {
+            if ((Cpu.registers.PC & 0xFFFF) != 0xFFF4 || Cpu.registers.A != 0x81 || Cpu.registers.Y != 0xFF)
+                return false;
+
+            if (!TryMapNegativeInkeyCode(Cpu.registers.X, out byte internalKey))
+                return false;
+
+            Cpu.registers.X = systemVia.IsKeyPressed(internalKey) ? (byte)0xFF : (byte)0x00;
+            ReturnFromFirmwareSubroutine();
+            return true;
+        }
+
+        private static bool TryMapNegativeInkeyCode(byte code, out byte internalKey)
+        {
+            internalKey = code switch
+            {
+                0xFF => 0x00, // SHIFT
+                0xFE => 0x01, // CTRL
+                0xEF => 0x10, // Q
+                0xDE => 0x21, // W
+                0xDD => 0x22, // E
+                0xDC => 0x23, // T
+                0xDB => 0x24, // 7
+                0xDA => 0x25, // I
+                0xD9 => 0x26, // 9
+                0xD8 => 0x27, // 0
+                0xE7 => 0x28, // #
+                0xCF => 0x30, // 1
+                0xCE => 0x31, // 2
+                0xCD => 0x32, // D
+                0xCC => 0x33, // R
+                0xCB => 0x34, // 6
+                0xCA => 0x35, // U
+                0xC9 => 0x36, // O
+                0xC8 => 0x37, // P
+                0xC7 => 0x38, // [
+                0xBF => 0x40, // CAPS LOCK
+                0xBE => 0x41, // A
+                0xBD => 0x42, // X
+                0xBC => 0x43, // F
+                0xBB => 0x44, // Y
+                0xBA => 0x45, // J
+                0xB9 => 0x46, // K
+                0xB8 => 0x47, // @
+                0xB7 => 0x48, // :
+                0xB6 => 0x49, // RETURN
+                0xAE => 0x51, // S
+                0xAD => 0x52, // C
+                0xAC => 0x53, // G
+                0xAB => 0x54, // H
+                0xAA => 0x55, // N
+                0xA9 => 0x56, // L
+                0xA8 => 0x57, // ;
+                0xA7 => 0x58, // ]
+                0xA6 => 0x59, // DELETE
+                0x9F => 0x60, // TAB
+                0x9E => 0x61, // Z
+                0x9D => 0x62, // SPACE
+                0x9C => 0x63, // V
+                0x9B => 0x64, // B
+                0x9A => 0x65, // M
+                0x99 => 0x66, // ,
+                0x98 => 0x67, // .
+                0x97 => 0x68, // /
+                0x8F => 0x70, // ESCAPE
+                0xDF => 0x20, // f0
+                0x8E => 0x71, // f1
+                0x8D => 0x72, // f2
+                0x8C => 0x73, // f3
+                0xEB => 0x14, // f4
+                0x8B => 0x74, // f5
+                0x8A => 0x75, // f6
+                0xE9 => 0x16, // f7
+                0x89 => 0x76, // f8
+                0x88 => 0x77, // f9
+                0xE8 => 0x17, // -
+                0xE6 => 0x18, // ^
+                0x87 => 0x78, // backslash
+                _ => 0xFF
+            };
+
+            return internalKey != 0xFF;
+        }
+
+        private void ReturnFromFirmwareSubroutine()
+        {
+            byte lo = Memory.Memory[0x0100 + ((Cpu.registers.S + 1) & 0xFF)];
+            byte hi = Memory.Memory[0x0100 + ((Cpu.registers.S + 2) & 0xFF)];
+            Cpu.registers.S += 2;
+            Cpu.registers.PC = (ushort)(((hi << 8) | lo) + 1);
         }
 
         private void DrainHostDiscLoads(Display display)

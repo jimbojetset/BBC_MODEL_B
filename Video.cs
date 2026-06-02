@@ -205,6 +205,7 @@ namespace BBC
 
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
+            bool flashVisible = (Environment.TickCount64 / 500 & 1) == 0;
 
             for (int row = 0; row < Mode7Rows; row++)
             {
@@ -217,6 +218,9 @@ namespace BBC
                     int cellX = column * cellWidth;
 
                     if (TryApplyTeletextControl(character, state))
+                        continue;
+
+                    if (state.Flashing && !flashVisible)
                         continue;
 
                     if (state.GraphicsMode && IsTeletextMosaicCharacter(character))
@@ -254,6 +258,14 @@ namespace BBC
 
                 case 0x0D:
                     state.DoubleHeight = true;
+                    break;
+
+                case 0x08:
+                    state.Flashing = true;
+                    break;
+
+                case 0x09:
+                    state.Flashing = false;
                     break;
 
                 case >= 0x10 and <= 0x17:
@@ -752,6 +764,7 @@ namespace BBC
             public bool SeparatedGraphics { get; set; }
             public bool HoldGraphics { get; set; }
             public bool DoubleHeight { get; set; }
+            public bool Flashing { get; set; }
             public byte? HeldMosaic { get; set; }
             public uint ForegroundColour { get; set; } = Foreground;
             public uint BackgroundColour { get; set; } = Background;
