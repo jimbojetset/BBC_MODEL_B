@@ -69,12 +69,8 @@ namespace BBC
         public const int SidewaysRomBanks = 16;
         public const int BasicRomBank = 15;
         public const int CpuClockHz = 2_000_000;
-        public const ushort Mode7ScreenStart = 0x7C00;
-        public const int Mode7Columns = 40;
-        public const int Mode7Rows = 25;
         public const ushort KeyboardBufferStart = 0x03E0;
         public const ushort KeyboardBufferEnd = 0x03FF;
-        public const int Mode7ScreenBytes = 1024;
 
         private const string RomDirectory = "ROMS";
         private const string OsRomFileName = "OS12.rom";
@@ -86,8 +82,6 @@ namespace BBC
         private const ushort KeyboardBufferBusyFlag = 0x02CF;
         private const ushort KeyboardBufferStartIndex = 0x02D8;
         private const ushort KeyboardBufferEndIndex = 0x02E1;
-        private const ushort TextCursorAddressLow = 0x034A;
-        private const ushort TextCursorAddressHigh = 0x034B;
         private const ushort EscapeFlag = 0x00FF;
         private const byte KeyboardBufferEmptyFlag = 0x80;
         private const byte EscapePendingFlag = 0x80;
@@ -98,9 +92,7 @@ namespace BBC
         private readonly byte[] inputScratch = new byte[64];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
-        private readonly byte[] crtcRegisters = new byte[32];
         private int selectedSidewaysRom = BasicRomBank;
-        private byte selectedCrtcRegister;
         private BreakKeyPress pendingBreak;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
@@ -108,6 +100,9 @@ namespace BBC
 
         /// <summary>Gets the 6502 CPU.</summary>
         public CPU_6502 Cpu { get; }
+
+        /// <summary>Gets the video display controller.</summary>
+        public Video Video { get; }
 
         /// <summary>Gets the SDL display surface.</summary>
         public Display? Display { get; private set; }
@@ -121,6 +116,7 @@ namespace BBC
         /// <summary>Initializes a new emulator coordinator.</summary>
         public Emulator()
         {
+            Video = new Video(Memory.Memory, OsRomStart);
             Cpu = new CPU_6502(Memory, CpuClockHz);
             Cpu.OnReset = ResetDeviceState;
         }
@@ -161,7 +157,7 @@ namespace BBC
 
                 DrainHostBreakInput(Display);
                 DrainHostKeyboardInput(Display);
-                RenderMode7TextScreen(Display);
+                Video.Render(Display);
                 Display.Present();
 
                 int remaining = FrameMilliseconds - (int)frameTimer.ElapsedMilliseconds;
@@ -189,7 +185,7 @@ namespace BBC
                 throw new InvalidOperationException("CPU execution failed.", cpuException);
 
             Console.WriteLine($"Headless PC: ${Cpu.registers.PC:X4}");
-            Console.WriteLine($"Mode 7 non-blank cells: {CountMode7NonBlankCells()}");
+            Console.WriteLine($"Mode 7 non-blank cells: {Video.CountMode7NonBlankCells()}");
         }
 
         /// <summary>Releases emulator-owned resources.</summary>
@@ -237,117 +233,9 @@ namespace BBC
 
         private void ResetDeviceState()
         {
-            Array.Clear(crtcRegisters);
-            selectedCrtcRegister = 0;
+            Video.Reset();
             selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
             Memory.Memory[EscapeFlag] = 0;
-        }
-
-        private void RenderMode7TextScreen(Display display)
-        {
-            const uint background = 0xFF000000;
-            const uint foreground = 0xFFFFFFFF;
-            const int glyphWidth = 8;
-            const int glyphHeight = 8;
-            const int cellWidth = Display.DefaultWidth / Mode7Columns;
-            const int cellHeight = Display.DefaultHeight / Mode7Rows;
-            const int xScale = 2;
-            const int yScale = 2;
-            const int glyphXOffset = 0;
-            const int glyphYOffset = 2;
-
-            uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, background);
-
-            for (int row = 0; row < Mode7Rows; row++)
-            {
-                int cellY = row * cellHeight;
-
-                for (int column = 0; column < Mode7Columns; column++)
-                {
-                    byte character = ReadMode7DisplayCharacter(row, column);
-
-                    if (character < 32 || character > 127)
-                        character = 32;
-
-                    int glyphAddress = OsRomStart + ((character - 32) * glyphHeight);
-                    int cellX = column * cellWidth;
-
-                    for (int glyphY = 0; glyphY < glyphHeight; glyphY++)
-                    {
-                        byte bits = Memory.Memory[glyphAddress + glyphY];
-
-                        for (int glyphX = 0; glyphX < glyphWidth; glyphX++)
-                        {
-                            if ((bits & (0x80 >> glyphX)) == 0)
-                                continue;
-
-                            int pixelX = cellX + glyphXOffset + (glyphX * xScale);
-                            int pixelY = cellY + glyphYOffset + (glyphY * yScale);
-
-                            for (int yy = 0; yy < yScale; yy++)
-                            {
-                                int y = pixelY + yy;
-                                if ((uint)y >= (uint)display.Height)
-                                    continue;
-
-                                int offset = y * display.Width;
-                                for (int xx = 0; xx < xScale; xx++)
-                                {
-                                    int x = pixelX + xx;
-                                    if ((uint)x < (uint)display.Width)
-                                        pixels[offset + x] = foreground;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            RenderMode7Cursor(display);
-        }
-
-        private void RenderMode7Cursor(Display display)
-        {
-            if ((Environment.TickCount64 / 320 & 1) == 0)
-                return;
-
-            ushort cursorAddress = (ushort)(Memory.Memory[TextCursorAddressLow] | (Memory.Memory[TextCursorAddressHigh] << 8));
-            int cursorOffset = ((cursorAddress - Mode7ScreenStart) - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
-
-            if ((uint)cursorOffset >= (uint)(Mode7Columns * Mode7Rows))
-                return;
-
-            const uint cursorColour = 0xFFFFFFFF;
-            const int cellWidth = Display.DefaultWidth / Mode7Columns;
-            const int cellHeight = Display.DefaultHeight / Mode7Rows;
-
-            int column = cursorOffset % Mode7Columns;
-            int row = cursorOffset / Mode7Columns;
-            int startX = column * cellWidth;
-            int startY = row * cellHeight;
-            int endX = Math.Min(startX + cellWidth, display.Width);
-            int endY = Math.Min(startY + cellHeight, display.Height);
-
-            uint[] pixels = display.FrameBuffer;
-            for (int y = startY; y < endY; y++)
-            {
-                int offset = y * display.Width;
-                for (int x = startX; x < endX; x++)
-                    pixels[offset + x] ^= cursorColour;
-            }
-        }
-
-        private byte ReadMode7DisplayCharacter(int row, int column)
-        {
-            int offset = (GetMode7DisplayStartOffset() + (row * Mode7Columns) + column) & (Mode7ScreenBytes - 1);
-            return Memory.Memory[Mode7ScreenStart + offset];
-        }
-
-        private int GetMode7DisplayStartOffset()
-        {
-            int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
-            return crtcStart & (Mode7ScreenBytes - 1);
         }
 
         private void DrainHostKeyboardInput(Display display)
@@ -396,20 +284,6 @@ namespace BBC
             return offset >= (KeyboardBufferEnd & 0xFF)
                 ? (byte)(KeyboardBufferStart & 0xFF)
                 : (byte)(offset + 1);
-        }
-
-        private int CountMode7NonBlankCells()
-        {
-            int count = 0;
-
-            for (int i = 0; i < Mode7Columns * Mode7Rows; i++)
-            {
-                byte character = Memory.Memory[Mode7ScreenStart + i];
-                if (character != 0 && character != 32)
-                    count++;
-            }
-
-            return count;
         }
 
         private void LoadSystemRoms()
@@ -496,8 +370,8 @@ namespace BBC
         {
             return address switch
             {
-                0xFE00 => selectedCrtcRegister,
-                0xFE01 => crtcRegisters[selectedCrtcRegister & 0x1F],
+                >= 0xFE00 and <= 0xFE01 => Video.ReadSheila(address),
+                >= 0xFE20 and <= 0xFE23 => Video.ReadSheila(address),
                 0xFE08 => 0x02, // ACIA transmit data register empty.
                 0xFE30 => (byte)selectedSidewaysRom,
                 0xFE40 => 0xFF, // System VIA port B inputs idle high.
@@ -516,12 +390,9 @@ namespace BBC
         {
             switch (address)
             {
-                case 0xFE00:
-                    selectedCrtcRegister = (byte)(value & 0x1F);
-                    break;
-
-                case 0xFE01:
-                    crtcRegisters[selectedCrtcRegister & 0x1F] = value;
+                case >= 0xFE00 and <= 0xFE01:
+                case >= 0xFE20 and <= 0xFE23:
+                    Video.WriteSheila(address, value);
                     break;
 
                 case 0xFE30:
