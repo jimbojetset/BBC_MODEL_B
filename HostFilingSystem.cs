@@ -24,6 +24,8 @@ namespace BBC
         private const ushort OscliEntry = 0xFFF7;
         private const ushort DefaultBasicLoadAddress = 0x1900;
         private readonly FlatMemoryBus memory;
+        private readonly bool traceOscli = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
+        private readonly string oscliTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-oscli-trace.log");
         private HostFile[] files = [];
         private string? mountedPath;
 
@@ -119,25 +121,48 @@ namespace BBC
             if (command.StartsWith('*'))
                 command = command[1..].TrimStart();
 
+            if (command.Length == 0)
+            {
+                TraceOscli(command, "handled empty command");
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
             if (IsBareExecCommand(command))
             {
+                TraceOscli(command, "handled bare EXEC");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             if (!TryParseRunCommand(command, out string requestedName))
+            {
+                TraceOscli(command, "passed through");
                 return false;
+            }
 
             HostFile? matchedFile = FindFile(requestedName);
             if (!matchedFile.HasValue)
+            {
+                TraceOscli(command, $"RUN target not found: {requestedName}");
                 return false;
+            }
 
             HostFile file = matchedFile.Value;
             for (int i = 0; i < file.Data.Length; i++)
                 memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
 
+            TraceOscli(command, $"handled RUN {file.Name} load=${file.LoadAddress:X4} exec=${file.ExecutionAddress:X4} length=${file.Data.Length:X4}");
             cpu.registers.PC = file.ExecutionAddress;
             return true;
+        }
+
+        private void TraceOscli(string command, string outcome)
+        {
+            if (!traceOscli)
+                return;
+
+            File.AppendAllText(oscliTracePath, $"{DateTimeOffset.Now:O} OSCLI \"{command}\" -> {outcome}{Environment.NewLine}");
         }
 
         private static bool IsBareExecCommand(string command)
