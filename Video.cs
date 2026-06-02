@@ -27,7 +27,8 @@ namespace BBC
         private const uint Background = 0xFF000000;
         private const uint Foreground = 0xFFFFFFFF;
         private const int BitmapHeight = 256;
-        private const int BitmapBytesPerRow = 40;
+        private const int BitmapBytesPerRow10K = 40;
+        private const int BitmapBytesPerRow20K = 80;
         private const int CrtcRegisterCount = 32;
         private const int PaletteRegisterCount = 16;
         private const byte UlaTeletext = 0x02;
@@ -145,6 +146,18 @@ namespace BBC
                     RenderMode7TextScreen(display);
                     break;
 
+                case BbcScreenMode.Mode0:
+                    RenderBitmapMode0(display);
+                    break;
+
+                case BbcScreenMode.Mode1:
+                    RenderBitmapMode1(display);
+                    break;
+
+                case BbcScreenMode.Mode2:
+                    RenderBitmapMode2(display);
+                    break;
+
                 case BbcScreenMode.Mode4:
                     RenderBitmapMode4(display);
                     break;
@@ -237,6 +250,81 @@ namespace BBC
             RenderMode7Cursor(display);
         }
 
+        private void RenderBitmapMode0(Display display)
+        {
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, Background);
+
+            for (int y = 0; y < BitmapHeight; y++)
+            {
+                int targetY = y * 2;
+
+                for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
+                {
+                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+
+                    for (int bit = 0; bit < 8; bit++)
+                    {
+                        int logicalColour = (value >> (7 - bit)) & 0x01;
+                        uint colour = GetPaletteColour(logicalColour);
+                        int targetX = (byteX * 8) + bit;
+
+                        WriteScaledPixel1x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                    }
+                }
+            }
+        }
+
+        private void RenderBitmapMode1(Display display)
+        {
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, Background);
+
+            for (int y = 0; y < BitmapHeight; y++)
+            {
+                int targetY = y * 2;
+
+                for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
+                {
+                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+
+                    for (int pixel = 0; pixel < 4; pixel++)
+                    {
+                        int logicalColour = DecodeTwoBitPixel(value, pixel);
+                        uint colour = GetPaletteColour(logicalColour);
+                        int targetX = ((byteX * 4) + pixel) * 2;
+
+                        WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                    }
+                }
+            }
+        }
+
+        private void RenderBitmapMode2(Display display)
+        {
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, Background);
+
+            for (int y = 0; y < BitmapHeight; y++)
+            {
+                int targetY = y * 2;
+
+                for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
+                {
+                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+
+                    for (int pixel = 0; pixel < 2; pixel++)
+                    {
+                        int logicalColour = DecodeFourBitPixel(value, pixel);
+                        uint colour = GetPaletteColour(logicalColour);
+                        int targetX = ((byteX * 2) + pixel) * 4;
+
+                        WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                    }
+                }
+            }
+        }
+
         private void RenderBitmapMode4(Display display)
         {
             uint[] pixels = display.FrameBuffer;
@@ -246,9 +334,9 @@ namespace BBC
             {
                 int targetY = y * 2;
 
-                for (int byteX = 0; byteX < BitmapBytesPerRow; byteX++)
+                for (int byteX = 0; byteX < BitmapBytesPerRow10K; byteX++)
                 {
-                    byte value = memory[GetBitmapAddress(y, byteX)];
+                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow10K)];
 
                     for (int bit = 0; bit < 8; bit++)
                     {
@@ -271,15 +359,13 @@ namespace BBC
             {
                 int targetY = y * 2;
 
-                for (int byteX = 0; byteX < BitmapBytesPerRow; byteX++)
+                for (int byteX = 0; byteX < BitmapBytesPerRow10K; byteX++)
                 {
-                    byte value = memory[GetBitmapAddress(y, byteX)];
+                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow10K)];
 
                     for (int pixel = 0; pixel < 4; pixel++)
                     {
-                        int highBit = 7 - pixel;
-                        int lowBit = 3 - pixel;
-                        int logicalColour = ((value >> highBit) & 0x01) | (((value >> lowBit) & 0x01) << 1);
+                        int logicalColour = DecodeTwoBitPixel(value, pixel);
                         uint colour = GetPaletteColour(logicalColour);
                         int targetX = ((byteX * 4) + pixel) * 4;
 
@@ -331,12 +417,12 @@ namespace BBC
             return crtcStart & (Mode7ScreenBytes - 1);
         }
 
-        private int GetBitmapAddress(int y, int byteX)
+        private int GetBitmapAddress(int y, int byteX, int bytesPerRow)
         {
             int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
             int characterRow = y >> 3;
             int rasterLine = y & 0x07;
-            int memoryAddress = ((crtcStart + (characterRow * BitmapBytesPerRow) + byteX) << 3) + rasterLine;
+            int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
             return memoryAddress & 0x7FFF;
         }
 
@@ -344,6 +430,10 @@ namespace BBC
         {
             int paletteIndex = CurrentMode switch
             {
+                BbcScreenMode.Mode0 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
+                BbcScreenMode.Mode1 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
+                    | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
+                BbcScreenMode.Mode2 => logicalColour & 0x0F,
                 BbcScreenMode.Mode4 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
                 BbcScreenMode.Mode5 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
                     | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
@@ -381,6 +471,32 @@ namespace BBC
         private static byte DecodePhysicalColour(byte paletteRegisterValue)
         {
             return (byte)((paletteRegisterValue & 0x0F) ^ 0x07);
+        }
+
+        private static int DecodeTwoBitPixel(byte value, int pixel)
+        {
+            int highBit = 7 - pixel;
+            int lowBit = 3 - pixel;
+            return ((value >> highBit) & 0x01) | (((value >> lowBit) & 0x01) << 1);
+        }
+
+        private static int DecodeFourBitPixel(byte value, int pixel)
+        {
+            int offset = pixel == 0 ? 0 : 1;
+            return ((value >> (7 - offset)) & 0x01)
+                | (((value >> (3 - offset)) & 0x01) << 1)
+                | (((value >> (5 - offset)) & 0x01) << 2)
+                | (((value >> (1 - offset)) & 0x01) << 3);
+        }
+
+        private static void WriteScaledPixel1x2(uint[] pixels, int width, int height, int x, int y, uint colour)
+        {
+            if ((uint)x >= (uint)width || (uint)(y + 1) >= (uint)height)
+                return;
+
+            int offset = y * width + x;
+            pixels[offset] = colour;
+            pixels[offset + width] = colour;
         }
 
         private static void WriteScaledPixel2x2(uint[] pixels, int width, int height, int x, int y, uint colour)
