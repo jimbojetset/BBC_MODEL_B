@@ -40,7 +40,7 @@ namespace BBC
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
             foreach (string path in options.MountPaths)
-                emulator.MountHostFile(path, queueLoadCommand: true);
+                emulator.MountHostFile(path, queueLoadCommand: false);
 
             if (options.HeadlessMilliseconds > 0)
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
@@ -390,7 +390,7 @@ namespace BBC
             display.DrainDiscLoads(discLoadScratch);
 
             foreach (string path in discLoadScratch)
-                MountHostFile(path, queueLoadCommand: true);
+                MountHostFile(path, queueLoadCommand: false);
         }
 
         private void DrainHostKeyboardInput(Display display)
