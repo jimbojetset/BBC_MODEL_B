@@ -27,6 +27,7 @@ namespace BBC
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     {emulator.OsRomPath} -> ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  {emulator.BasicRomPath} -> ${Emulator.SidewaysRomStart:X4}-${Emulator.SidewaysRomEnd:X4}");
+            Console.WriteLine($"DFS ROM:    {emulator.DfsRomPath} -> bank {Emulator.DfsRomBank}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
             foreach (string path in options.MountPaths)
@@ -91,6 +92,7 @@ namespace BBC
         public const int RomSize = 16 * 1024;
         public const int SidewaysRomBanks = 16;
         public const int BasicRomBank = 15;
+        public const int DfsRomBank = 14;
         public const int CpuClockHz = 2_000_000;
         public const ushort KeyboardBufferStart = 0x03E0;
         public const ushort KeyboardBufferEnd = 0x03FF;
@@ -98,7 +100,9 @@ namespace BBC
         private const string RomDirectory = "ROMS";
         private const string OsRomFileName = "OS12.rom";
         private const string BasicRomFileName = "BASIC2.rom";
+        private const string DfsRomFileName = "DFS-0.9.rom";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
+        private const string DfsRomMarker = "DFS\0" + "0.90";
         private const string OsRomMarker = "BBC Computer";
         private const int TargetFramesPerSecond = 50;
         private const int FrameMilliseconds = 1000 / TargetFramesPerSecond;
@@ -122,6 +126,7 @@ namespace BBC
         private BreakKeyPress pendingBreak;
         private readonly SystemVia systemVia;
         private readonly HostFilingSystem hostFilingSystem;
+        private readonly DiscController8271 discController;
         private long keyboardInputEnabledAtTicks;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
@@ -145,12 +150,16 @@ namespace BBC
         /// <summary>Gets the loaded BASIC ROM path.</summary>
         public string BasicRomPath { get; private set; } = string.Empty;
 
+        /// <summary>Gets the loaded DFS ROM path.</summary>
+        public string DfsRomPath { get; private set; } = string.Empty;
+
         /// <summary>Initializes a new emulator coordinator.</summary>
         public Emulator()
         {
             Sound = new Sound();
             systemVia = new SystemVia(Sound);
             hostFilingSystem = new HostFilingSystem(Memory);
+            discController = new DiscController8271();
             Video = new Video(Memory.Memory, OsRomStart);
             Cpu = new CPU_6502(Memory, CpuClockHz);
             Cpu.OnReset = ResetDeviceState;
@@ -237,10 +246,24 @@ namespace BBC
         /// <param name="queueLoadCommand">Whether to type LOAD at the BBC prompt.</param>
         public void MountHostFile(string path, bool queueLoadCommand)
         {
+            if (IsDiscImagePath(path))
+            {
+                discController.Mount(path);
+
+                if (queueLoadCommand && discController.AutoLoadCommand is string dfsCommand)
+                    QueueKeyboardText("*DISC\r" + dfsCommand + "\r");
+
+                Console.WriteLine($"Mounted DFS: {discController.MountedPath}");
+                if (queueLoadCommand && discController.AutoLoadCommand is not null)
+                    Console.WriteLine($"Auto LOAD:  *DISC / {discController.AutoLoadCommand}");
+
+                return;
+            }
+
             hostFilingSystem.Mount(path);
 
-            if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is string command)
-                QueueKeyboardText(command + "\r");
+            if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is string hostCommand)
+                QueueKeyboardText(hostCommand + "\r");
 
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedPath}");
             if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is not null)
@@ -296,6 +319,7 @@ namespace BBC
             Video.Reset();
             Sound.Reset();
             systemVia.Reset();
+            discController.Reset();
             Cpu.SetIrqLine(false);
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
@@ -429,25 +453,39 @@ namespace BBC
 
             OsRomPath = Path.Combine(romRoot, OsRomFileName);
             BasicRomPath = Path.Combine(romRoot, BasicRomFileName);
+            DfsRomPath = Path.Combine(romRoot, DfsRomFileName);
 
-            ValidateRom(OsRomPath, OsRomMarker);
-            ValidateRom(BasicRomPath, BasicRomMarker);
+            ValidateRom(OsRomPath, OsRomMarker, RomSize);
+            ValidateRom(BasicRomPath, BasicRomMarker, RomSize);
+            ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
 
             Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
 
             Array.Fill(sidewaysRoms, (byte)0xFF);
-            File.ReadAllBytes(BasicRomPath).CopyTo(sidewaysRoms, BasicRomBank * RomSize);
+            LoadSidewaysRomBank(BasicRomPath, BasicRomBank);
+            LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
         }
 
-        private static void ValidateRom(string path, string marker)
+        private void LoadSidewaysRomBank(string path, int bank)
+        {
+            byte[] rom = File.ReadAllBytes(path);
+            rom.CopyTo(sidewaysRoms, bank * RomSize);
+        }
+
+        private static void ValidateRom(string path, string marker, int exactSize)
+        {
+            ValidateRom(path, marker, exactSize, exactSize);
+        }
+
+        private static void ValidateRom(string path, string marker, int minimumSize, int maximumSize)
         {
             if (!File.Exists(path))
                 throw new FileNotFoundException($"Required ROM not found: {path}");
 
             byte[] rom = File.ReadAllBytes(path);
 
-            if (rom.Length != RomSize)
-                throw new InvalidOperationException($"ROM '{path}' must be exactly {RomSize} bytes.");
+            if (rom.Length < minimumSize || rom.Length > maximumSize)
+                throw new InvalidOperationException($"ROM '{path}' must be between {minimumSize} and {maximumSize} bytes.");
 
             if (!ContainsAscii(rom, marker))
                 throw new InvalidOperationException($"ROM '{path}' does not contain expected marker '{marker}'.");
@@ -510,6 +548,9 @@ namespace BBC
                 return value;
             }
 
+            if (DiscController8271.IsAddress(address))
+                return discController.Read(address);
+
             return address switch
             {
                 0xFE08 => 0x02, // ACIA transmit data register empty.
@@ -537,12 +578,25 @@ namespace BBC
                 return;
             }
 
+            if (DiscController8271.IsAddress(address))
+            {
+                discController.Write(address, value);
+                return;
+            }
+
             switch (address)
             {
                 case 0xFE30:
                     selectedSidewaysRom = value & 0x0F;
                     break;
             }
+        }
+
+        private static bool IsDiscImagePath(string path)
+        {
+            string extension = Path.GetExtension(path);
+            return string.Equals(extension, ".ssd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase);
         }
     }
 }
