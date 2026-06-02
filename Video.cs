@@ -26,6 +26,8 @@ namespace BBC
         private const ushort TextCursorAddressHigh = 0x034B;
         private const uint Background = 0xFF000000;
         private const uint Foreground = 0xFFFFFFFF;
+        private const int BitmapHeight = 256;
+        private const int BitmapBytesPerRow = 40;
         private const int CrtcRegisterCount = 32;
         private const int PaletteRegisterCount = 16;
         private const byte UlaTeletext = 0x02;
@@ -36,6 +38,17 @@ namespace BBC
         private const byte UlaCursorMode1Group = 0xC0;
         private const byte UlaCursorMode2 = 0xE0;
         private const byte UlaCursorMode7 = 0x40;
+        private static readonly uint[] BbcColours =
+        [
+            0xFF000000, // black
+            0xFFFF0000, // red
+            0xFF00FF00, // green
+            0xFFFFFF00, // yellow
+            0xFF0000FF, // blue
+            0xFFFF00FF, // magenta
+            0xFF00FFFF, // cyan
+            0xFFFFFFFF  // white
+        ];
 
         private readonly byte[] memory;
         private readonly ushort osRomStart;
@@ -71,7 +84,7 @@ namespace BBC
         public void Reset()
         {
             Array.Clear(crtcRegisters);
-            Array.Clear(paletteRegisters);
+            ResetPalette();
             selectedCrtcRegister = 0;
             CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
@@ -128,6 +141,14 @@ namespace BBC
             {
                 case BbcScreenMode.Mode7:
                     RenderMode7TextScreen(display);
+                    break;
+
+                case BbcScreenMode.Mode4:
+                    RenderBitmapMode4(display);
+                    break;
+
+                case BbcScreenMode.Mode5:
+                    RenderBitmapMode5(display);
                     break;
 
                 default:
@@ -214,6 +235,58 @@ namespace BBC
             RenderMode7Cursor(display);
         }
 
+        private void RenderBitmapMode4(Display display)
+        {
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, Background);
+
+            for (int y = 0; y < BitmapHeight; y++)
+            {
+                int targetY = y * 2;
+
+                for (int byteX = 0; byteX < BitmapBytesPerRow; byteX++)
+                {
+                    byte value = memory[GetBitmapAddress(y, byteX)];
+
+                    for (int bit = 0; bit < 8; bit++)
+                    {
+                        int logicalColour = (value >> (7 - bit)) & 0x01;
+                        uint colour = GetPaletteColour(logicalColour);
+                        int targetX = ((byteX * 8) + bit) * 2;
+
+                        WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                    }
+                }
+            }
+        }
+
+        private void RenderBitmapMode5(Display display)
+        {
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, Background);
+
+            for (int y = 0; y < BitmapHeight; y++)
+            {
+                int targetY = y * 2;
+
+                for (int byteX = 0; byteX < BitmapBytesPerRow; byteX++)
+                {
+                    byte value = memory[GetBitmapAddress(y, byteX)];
+
+                    for (int pixel = 0; pixel < 4; pixel++)
+                    {
+                        int highBit = 7 - pixel;
+                        int lowBit = 3 - pixel;
+                        int logicalColour = ((value >> highBit) & 0x01) | (((value >> lowBit) & 0x01) << 1);
+                        uint colour = GetPaletteColour(logicalColour);
+                        int targetX = ((byteX * 4) + pixel) * 4;
+
+                        WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                    }
+                }
+            }
+        }
+
         private void RenderMode7Cursor(Display display)
         {
             if ((Environment.TickCount64 / 320 & 1) == 0)
@@ -254,6 +327,59 @@ namespace BBC
         {
             int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
             return crtcStart & (Mode7ScreenBytes - 1);
+        }
+
+        private int GetBitmapAddress(int y, int byteX)
+        {
+            int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
+            int characterRow = y >> 3;
+            int rasterLine = y & 0x07;
+            int memoryAddress = ((crtcStart + (characterRow * BitmapBytesPerRow) + byteX) << 3) + rasterLine;
+            return memoryAddress & 0x7FFF;
+        }
+
+        private uint GetPaletteColour(int logicalColour)
+        {
+            int paletteIndex = CurrentMode switch
+            {
+                BbcScreenMode.Mode4 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
+                BbcScreenMode.Mode5 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
+                    | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
+                _ => logicalColour & 0x0F
+            };
+            int physicalColour = (paletteRegisters[paletteIndex] ^ 0x07) & 0x07;
+            return BbcColours[physicalColour];
+        }
+
+        private void ResetPalette()
+        {
+            for (int i = 0; i < paletteRegisters.Length; i++)
+                paletteRegisters[i] = (byte)((i & 0x07) ^ 0x07);
+        }
+
+        private static void WriteScaledPixel2x2(uint[] pixels, int width, int height, int x, int y, uint colour)
+        {
+            if ((uint)(x + 1) >= (uint)width || (uint)(y + 1) >= (uint)height)
+                return;
+
+            int offset = y * width + x;
+            pixels[offset] = colour;
+            pixels[offset + 1] = colour;
+            pixels[offset + width] = colour;
+            pixels[offset + width + 1] = colour;
+        }
+
+        private static void WriteScaledPixel4x2(uint[] pixels, int width, int height, int x, int y, uint colour)
+        {
+            if ((uint)(x + 3) >= (uint)width || (uint)(y + 1) >= (uint)height)
+                return;
+
+            int offset = y * width + x;
+            for (int i = 0; i < 4; i++)
+            {
+                pixels[offset + i] = colour;
+                pixels[offset + width + i] = colour;
+            }
         }
 
         private static BbcScreenMode DecodeModeFromUlaControl(byte control)
