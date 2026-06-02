@@ -116,6 +116,12 @@ namespace BBC
                     continue;
                 }
 
+                if (ev.Type == SDL_TEXTINPUT)
+                {
+                    EnqueueTextInput(ev);
+                    continue;
+                }
+
                 if (ev.Type == SDL_KEYDOWN && ev.KeyRepeat == 0)
                     EnqueueKeyDown(ev.KeySym);
 
@@ -296,6 +302,20 @@ namespace BBC
             byte? key = MapHostKeyToBbcKey(keySym);
             if (key.HasValue)
                 pendingKeyChanges.Enqueue(new HostKeyChange(key.Value, false));
+        }
+
+        private void EnqueueTextInput(SdlEvent ev)
+        {
+            byte[] textBytes = ev.Text;
+            int length = Array.IndexOf(textBytes, (byte)0);
+            if (length < 0)
+                length = textBytes.Length;
+
+            if (length == 0)
+                return;
+
+            string text = Encoding.UTF8.GetString(textBytes, 0, length);
+            EnqueueHostText(text);
         }
 
         private static byte? MapHostKeyToBbcKey(int keySym)
@@ -548,6 +568,7 @@ namespace BBC
         private const uint SDL_QUIT = 0x100;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_KEYUP = 0x301;
+        private const uint SDL_TEXTINPUT = 0x303;
         private const uint SDL_DROPFILE = 0x1000;
         private const int SDLK_SPACE = 32;
         private const int SDLK_AT = 64;
