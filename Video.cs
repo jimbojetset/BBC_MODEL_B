@@ -30,6 +30,12 @@ namespace BBC
         private const int BitmapBytesPerRow10K = 40;
         private const int BitmapBytesPerRow20K = 80;
         private const int CrtcRegisterCount = 32;
+        private const int CrtcCursorStartRegister = 10;
+        private const int CrtcCursorEndRegister = 11;
+        private const int CrtcDisplayStartHighRegister = 12;
+        private const int CrtcDisplayStartLowRegister = 13;
+        private const int CrtcCursorHighRegister = 14;
+        private const int CrtcCursorLowRegister = 15;
         private const int PaletteRegisterCount = 16;
         private const byte UlaTeletext = 0x02;
         private const byte UlaCharactersPerLineMask = 0x0C;
@@ -57,6 +63,7 @@ namespace BBC
         private readonly byte[] paletteRegisters = new byte[PaletteRegisterCount];
         private byte selectedCrtcRegister;
         private byte lastPaletteWrite;
+        private bool crtcCursorAddressWritten;
 
         /// <summary>Gets the currently selected BBC screen mode.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
@@ -88,6 +95,7 @@ namespace BBC
             Array.Clear(crtcRegisters);
             ResetPalette();
             selectedCrtcRegister = 0;
+            crtcCursorAddressWritten = false;
             CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
         }
@@ -120,6 +128,8 @@ namespace BBC
 
                 case 0xFE01:
                     crtcRegisters[selectedCrtcRegister & 0x1F] = value;
+                    if ((selectedCrtcRegister & 0x1F) is CrtcCursorHighRegister or CrtcCursorLowRegister)
+                        crtcCursorAddressWritten = true;
                     break;
 
                 case 0xFE20:
@@ -377,24 +387,29 @@ namespace BBC
 
         private void RenderMode7Cursor(Display display)
         {
-            if ((Environment.TickCount64 / 320 & 1) == 0)
+            if (!IsCursorVisible())
                 return;
 
-            ushort cursorAddress = (ushort)(memory[TextCursorAddressLow] | (memory[TextCursorAddressHigh] << 8));
-            int cursorOffset = ((cursorAddress - Mode7ScreenStart) - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
+            int cursorOffset = GetCursorDisplayOffset();
 
             if ((uint)cursorOffset >= (uint)(Mode7Columns * Mode7Rows))
                 return;
 
             const int cellWidth = Display.DefaultWidth / Mode7Columns;
             const int cellHeight = Display.DefaultHeight / Mode7Rows;
+            const int crtcScanlinesPerCell = 10;
 
             int column = cursorOffset % Mode7Columns;
             int row = cursorOffset / Mode7Columns;
+            (int shapeStart, int shapeEnd) = GetCursorShape(crtcScanlinesPerCell);
+
+            if (shapeEnd < shapeStart)
+                return;
+
             int startX = column * cellWidth;
-            int startY = row * cellHeight;
+            int startY = (row * cellHeight) + (shapeStart * cellHeight / crtcScanlinesPerCell);
             int endX = Math.Min(startX + cellWidth, display.Width);
-            int endY = Math.Min(startY + cellHeight, display.Height);
+            int endY = Math.Min((row * cellHeight) + ((shapeEnd + 1) * cellHeight / crtcScanlinesPerCell), display.Height);
 
             uint[] pixels = display.FrameBuffer;
             for (int y = startY; y < endY; y++)
@@ -405,6 +420,39 @@ namespace BBC
             }
         }
 
+        private bool IsCursorVisible()
+        {
+            byte cursorStart = crtcRegisters[CrtcCursorStartRegister];
+
+            if ((cursorStart & 0x60) != 0 && (Environment.TickCount64 / 320 & 1) == 0)
+                return false;
+
+            return true;
+        }
+
+        private (int Start, int End) GetCursorShape(int scanlinesPerCell)
+        {
+            if (crtcRegisters[CrtcCursorStartRegister] == 0 && crtcRegisters[CrtcCursorEndRegister] == 0)
+                return (0, scanlinesPerCell - 1);
+
+            int start = Math.Clamp(crtcRegisters[CrtcCursorStartRegister] & 0x1F, 0, scanlinesPerCell - 1);
+            int end = Math.Clamp(crtcRegisters[CrtcCursorEndRegister] & 0x1F, 0, scanlinesPerCell - 1);
+            return (start, end);
+        }
+
+        private int GetCursorDisplayOffset()
+        {
+            if (crtcCursorAddressWritten)
+            {
+                int cursorAddress = ((crtcRegisters[CrtcCursorHighRegister] & 0x3F) << 8)
+                    | crtcRegisters[CrtcCursorLowRegister];
+                return (cursorAddress - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
+            }
+
+            ushort cursorAddressFallback = (ushort)(memory[TextCursorAddressLow] | (memory[TextCursorAddressHigh] << 8));
+            return ((cursorAddressFallback - Mode7ScreenStart) - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
+        }
+
         private byte ReadMode7DisplayCharacter(int row, int column)
         {
             int offset = (GetMode7DisplayStartOffset() + (row * Mode7Columns) + column) & (Mode7ScreenBytes - 1);
@@ -413,13 +461,15 @@ namespace BBC
 
         private int GetMode7DisplayStartOffset()
         {
-            int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
+            int crtcStart = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
+                | crtcRegisters[CrtcDisplayStartLowRegister];
             return crtcStart & (Mode7ScreenBytes - 1);
         }
 
         private int GetBitmapAddress(int y, int byteX, int bytesPerRow)
         {
-            int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
+            int crtcStart = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
+                | crtcRegisters[CrtcDisplayStartLowRegister];
             int characterRow = y >> 3;
             int rasterLine = y & 0x07;
             int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
