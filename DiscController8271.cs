@@ -30,6 +30,8 @@ namespace BBC
         private readonly List<byte> writeData = new List<byte>();
         private readonly List<byte> parameters = new List<byte>();
         private readonly bool traceEnabled = Environment.GetEnvironmentVariable("BBC_8271_TRACE") == "1";
+        private readonly object traceLock = new object();
+        private readonly string tracePath;
         private byte command;
         private byte result;
         private bool resultAvailable = true;
@@ -37,6 +39,19 @@ namespace BBC
         private int selectedDrive;
         private string? mountedPath;
         private bool nmiPending;
+        private long traceSequence;
+
+        /// <summary>Initializes a new 8271-compatible disc controller.</summary>
+        public DiscController8271()
+        {
+            tracePath = Path.Combine(Environment.CurrentDirectory, "bbc-8271-trace.log");
+
+            if (traceEnabled)
+            {
+                File.WriteAllText(tracePath, $"BBC 8271 trace started {DateTimeOffset.Now:O}{Environment.NewLine}");
+                Console.WriteLine($"8271 trace:  {tracePath}");
+            }
+        }
 
         /// <summary>Raised when the controller would assert the BBC disc NMI line.</summary>
         public event Action? NmiRequested;
@@ -362,8 +377,11 @@ namespace BBC
 
         private void Trace(string message)
         {
-            if (traceEnabled)
-                Console.Error.WriteLine($"8271 {message}");
+            if (!traceEnabled)
+                return;
+
+            lock (traceLock)
+                File.AppendAllText(tracePath, $"{++traceSequence:D8} 8271 {message}{Environment.NewLine}");
         }
 
         private void RequestNmi()
