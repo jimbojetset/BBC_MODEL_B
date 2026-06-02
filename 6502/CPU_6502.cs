@@ -84,6 +84,7 @@ namespace BBC.CPU
         private int cyclesThisOperation = 0;
         private long totalCycles;
         public Action<int>? OnCyclesExecuted;
+        public Func<bool>? OnBeforeInstruction;
         private int externalStallCycles;
         public bool PacingEnabled { get; set; } = true;
 
@@ -244,10 +245,20 @@ namespace BBC.CPU
                         if (!registers.Flags.I && Volatile.Read(ref irqLineAsserted) != 0)
                             ProcessIRQ();
                         int beforeCycles = cyclesThisOperation;
-                        Execute(GetNextByteInstruction());
+                        bool handledByHost = OnBeforeInstruction?.Invoke() == true;
+
+                        if (!handledByHost)
+                            Execute(GetNextByteInstruction());
+
                         int deltaCycles = cyclesThisOperation - beforeCycles;
+                        if (handledByHost && deltaCycles <= 0)
+                            deltaCycles = 6;
+
                         if (deltaCycles > 0)
                         {
+                            if (handledByHost)
+                                cyclesThisOperation += deltaCycles;
+
                             Interlocked.Add(ref totalCycles, deltaCycles);
                             OnCyclesExecuted?.Invoke(deltaCycles);
                         }

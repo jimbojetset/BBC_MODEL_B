@@ -21,35 +21,58 @@ namespace BBC
         private static void Main(string[] args)
         {
             using Emulator emulator = new Emulator();
-            int headlessMilliseconds = ParseHeadlessMilliseconds(args);
-            emulator.Initialise(createDisplay: headlessMilliseconds == 0);
+            StartupOptions options = ParseStartupOptions(args);
+            emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
 
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     {emulator.OsRomPath} -> ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  {emulator.BasicRomPath} -> ${Emulator.SidewaysRomStart:X4}-${Emulator.SidewaysRomEnd:X4}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
-            if (headlessMilliseconds > 0)
-                emulator.RunHeadless(TimeSpan.FromMilliseconds(headlessMilliseconds));
+            foreach (string path in options.MountPaths)
+                emulator.MountHostFile(path, queueLoadCommand: true);
+
+            if (options.HeadlessMilliseconds > 0)
+                emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
             else
                 emulator.Run();
         }
 
-        private static int ParseHeadlessMilliseconds(string[] args)
+        private static StartupOptions ParseStartupOptions(string[] args)
         {
+            int headlessMilliseconds = 0;
+            List<string> mountPaths = new List<string>();
+
             for (int i = 0; i < args.Length; i++)
             {
-                if (!string.Equals(args[i], "--headless-ms", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(args[i], "--headless-ms", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out headlessMilliseconds) || headlessMilliseconds <= 0)
+                        throw new ArgumentException("--headless-ms requires a positive millisecond value.");
+
+                    i++;
                     continue;
+                }
 
-                if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out int milliseconds) || milliseconds <= 0)
-                    throw new ArgumentException("--headless-ms requires a positive millisecond value.");
+                if (string.Equals(args[i], "--disc", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(args[i], "--disk", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(args[i], "--file", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException($"{args[i]} requires a path.");
 
-                return milliseconds;
+                    mountPaths.Add(args[++i]);
+                    continue;
+                }
+
+                if (!args[i].StartsWith("--", StringComparison.Ordinal))
+                    mountPaths.Add(args[i]);
             }
 
-            return 0;
+            return new StartupOptions(headlessMilliseconds, mountPaths);
         }
+
+        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths);
     }
 
     /// <summary>
@@ -92,11 +115,14 @@ namespace BBC
         private readonly byte[] inputScratch = new byte[64];
         private readonly HostKeyChange[] keyChangeScratch = new HostKeyChange[64];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
+        private readonly List<string> discLoadScratch = new List<string>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
         private readonly SystemVia systemVia;
+        private readonly HostFilingSystem hostFilingSystem;
+        private long keyboardInputEnabledAtTicks;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -124,10 +150,12 @@ namespace BBC
         {
             Sound = new Sound();
             systemVia = new SystemVia(Sound);
+            hostFilingSystem = new HostFilingSystem(Memory);
             Video = new Video(Memory.Memory, OsRomStart);
             Cpu = new CPU_6502(Memory, CpuClockHz);
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
+            Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
@@ -161,12 +189,14 @@ namespace BBC
 
             long frameTicks = Math.Max(1, Stopwatch.Frequency / TargetFramesPerSecond);
             long nextFrame = Stopwatch.GetTimestamp() + frameTicks;
+            keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             while (Display.PumpEvents())
             {
                 if (cpuException is not null)
                     throw new InvalidOperationException("CPU execution failed.", cpuException);
 
                 DrainHostBreakInput(Display);
+                DrainHostDiscLoads(Display);
                 DrainHostKeyMatrixInput(Display);
                 DrainHostKeyboardInput(Display);
                 Video.Render(Display);
@@ -200,6 +230,21 @@ namespace BBC
             Console.WriteLine($"Headless PC: ${Cpu.registers.PC:X4}");
             Console.WriteLine($"Mode 7 non-blank cells: {Video.CountMode7NonBlankCells()}");
             Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
+        }
+
+        /// <summary>Mounts a host file or disc image and optionally queues a BASIC LOAD command.</summary>
+        /// <param name="path">The host path.</param>
+        /// <param name="queueLoadCommand">Whether to type LOAD at the BBC prompt.</param>
+        public void MountHostFile(string path, bool queueLoadCommand)
+        {
+            hostFilingSystem.Mount(path);
+
+            if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is string command)
+                QueueKeyboardText(command + "\r");
+
+            Console.WriteLine($"Mounted:    {hostFilingSystem.MountedPath}");
+            if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is not null)
+                Console.WriteLine($"Auto LOAD:  {hostFilingSystem.AutoLoadCommand}");
         }
 
         /// <summary>Releases emulator-owned resources.</summary>
@@ -252,6 +297,7 @@ namespace BBC
             Sound.Reset();
             systemVia.Reset();
             Cpu.SetIrqLine(false);
+            keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
             Memory.Memory[EscapeFlag] = 0;
         }
@@ -262,8 +308,25 @@ namespace BBC
             Cpu.SetIrqLine(systemVia.IrqAsserted);
         }
 
+        private bool HandleHostFirmwareHooks()
+        {
+            return hostFilingSystem.TryHandleOsfile(Cpu);
+        }
+
+        private void DrainHostDiscLoads(Display display)
+        {
+            discLoadScratch.Clear();
+            display.DrainDiscLoads(discLoadScratch);
+
+            foreach (string path in discLoadScratch)
+                MountHostFile(path, queueLoadCommand: true);
+        }
+
         private void DrainHostKeyboardInput(Display display)
         {
+            if (Stopwatch.GetTimestamp() < keyboardInputEnabledAtTicks)
+                return;
+
             int count = display.DrainInput(inputScratch);
             for (int i = 0; i < count; i++)
             {
@@ -306,6 +369,17 @@ namespace BBC
         private void TriggerEscapeCondition()
         {
             Memory.Memory[EscapeFlag] |= EscapePendingFlag;
+        }
+
+        private void QueueKeyboardText(string text)
+        {
+            foreach (char ch in text)
+            {
+                if (ch == '\r' || ch == '\n')
+                    pendingKeyboardInput.Enqueue(13);
+                else if (ch >= 32 && ch <= 126)
+                    pendingKeyboardInput.Enqueue((byte)char.ToUpperInvariant(ch));
+            }
         }
 
         private bool TryInsertKeyboardBufferCharacter(byte character)

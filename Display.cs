@@ -12,6 +12,7 @@
 
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Diagnostics;
 
 namespace BBC
 {
@@ -30,6 +31,7 @@ namespace BBC
         private readonly Queue<byte> pendingInput = new Queue<byte>();
         private readonly Queue<BreakKeyPress> pendingBreaks = new Queue<BreakKeyPress>();
         private readonly Queue<HostKeyChange> pendingKeyChanges = new Queue<HostKeyChange>();
+        private readonly Queue<string> pendingDiscLoads = new Queue<string>();
         private readonly int pitchBytes;
 
         private IntPtr window;
@@ -108,6 +110,12 @@ namespace BBC
                     continue;
                 }
 
+                if (ev.Type == SDL_DROPFILE)
+                {
+                    EnqueueDroppedFile(ev.DropFile);
+                    continue;
+                }
+
                 if (ev.Type == SDL_KEYDOWN && ev.KeyRepeat == 0)
                     EnqueueKeyDown(ev.KeySym);
 
@@ -155,6 +163,14 @@ namespace BBC
                 destination[count++] = pendingKeyChanges.Dequeue();
 
             return count;
+        }
+
+        /// <summary>Copies pending host disc/file mount requests into a caller-provided list.</summary>
+        /// <param name="destination">The destination collection.</param>
+        public void DrainDiscLoads(ICollection<string> destination)
+        {
+            while (pendingDiscLoads.Count > 0)
+                destination.Add(pendingDiscLoads.Dequeue());
         }
 
         /// <summary>Fills the framebuffer with an ARGB8888 colour.</summary>
@@ -258,6 +274,12 @@ namespace BBC
             if (keySym == SDLK_V && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
             {
                 EnqueueClipboardText();
+                return;
+            }
+
+            if (keySym == SDLK_L && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
+            {
+                EnqueueSelectedFile();
                 return;
             }
 
@@ -372,6 +394,66 @@ namespace BBC
             }
         }
 
+        private void EnqueueDroppedFile(IntPtr filePointer)
+        {
+            if (filePointer == IntPtr.Zero)
+                return;
+
+            try
+            {
+                string? path = Marshal.PtrToStringUTF8(filePointer);
+                if (!string.IsNullOrWhiteSpace(path))
+                    pendingDiscLoads.Enqueue(path);
+            }
+            finally
+            {
+                SDL_free(filePointer);
+            }
+        }
+
+        private void EnqueueSelectedFile()
+        {
+            string? path = SelectNativeFile();
+            if (!string.IsNullOrWhiteSpace(path))
+                pendingDiscLoads.Enqueue(path);
+        }
+
+        private static string? SelectNativeFile()
+        {
+            try
+            {
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc or file\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc or file");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string? RunProcessForSingleLine(string fileName, params string[] arguments)
+        {
+            ProcessStartInfo startInfo = new ProcessStartInfo(fileName)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+
+            foreach (string argument in arguments)
+                startInfo.ArgumentList.Add(argument);
+
+            using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException($"Could not start {fileName}.");
+            string output = process.StandardOutput.ReadLine() ?? string.Empty;
+            process.WaitForExit();
+            return process.ExitCode == 0 ? output.Trim() : null;
+        }
+
         private void EnqueueHostText(string text)
         {
             for (int i = 0; i < text.Length; i++)
@@ -466,6 +548,7 @@ namespace BBC
         private const uint SDL_QUIT = 0x100;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_KEYUP = 0x301;
+        private const uint SDL_DROPFILE = 0x1000;
         private const int SDLK_SPACE = 32;
         private const int SDLK_AT = 64;
         private const int SDLK_CARET = 94;
@@ -551,6 +634,7 @@ namespace BBC
             [FieldOffset(0)] public uint Type;
             [FieldOffset(13)] public byte KeyRepeat;
             [FieldOffset(20)] public int KeySym;
+            [FieldOffset(8)] public IntPtr DropFile;
             [FieldOffset(12)] public byte Text0;
             [FieldOffset(13)] public byte Text1;
             [FieldOffset(14)] public byte Text2;
