@@ -41,6 +41,15 @@ namespace BBC
         /// <summary>Gets the current Video ULA control register value.</summary>
         public byte UlaControl { get; private set; }
 
+        /// <summary>Returns whether a SHEILA address belongs to the video hardware.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>True when the address is handled by this component.</returns>
+        public static bool IsSheilaAddress(ushort address)
+        {
+            return address is >= 0xFE00 and <= 0xFE01
+                or >= 0xFE20 and <= 0xFE23;
+        }
+
         /// <summary>Initializes a new video component.</summary>
         /// <param name="memory">The emulator's 64 KiB CPU-visible memory.</param>
         /// <param name="osRomStart">The start address of the OS ROM font data used by the temporary mode 7 renderer.</param>
@@ -69,8 +78,8 @@ namespace BBC
             {
                 0xFE00 => selectedCrtcRegister,
                 0xFE01 => crtcRegisters[selectedCrtcRegister & 0x1F],
-                0xFE20 => UlaControl,
-                0xFE21 => paletteRegisters[0],
+                0xFE20 or 0xFE22 => UlaControl,
+                0xFE21 or 0xFE23 => paletteRegisters[0],
                 _ => 0x00
             };
         }
@@ -91,10 +100,12 @@ namespace BBC
                     break;
 
                 case 0xFE20:
+                case 0xFE22:
                     UlaControl = value;
                     break;
 
                 case 0xFE21:
+                case 0xFE23:
                     paletteRegisters[(value >> 4) & 0x0F] = (byte)(value & 0x0F);
                     break;
             }

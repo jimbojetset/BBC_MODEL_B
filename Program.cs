@@ -378,10 +378,11 @@ namespace BBC
 
         private byte ReadSheila(ushort address)
         {
+            if (Video.IsSheilaAddress(address))
+                return Video.ReadSheila(address);
+
             return address switch
             {
-                >= 0xFE00 and <= 0xFE01 => Video.ReadSheila(address),
-                >= 0xFE20 and <= 0xFE23 => Video.ReadSheila(address),
                 0xFE08 => 0x02, // ACIA transmit data register empty.
                 0xFE30 => (byte)selectedSidewaysRom,
                 0xFE40 => 0xFF, // System VIA port B inputs idle high.
@@ -398,13 +399,14 @@ namespace BBC
 
         private void WriteSheila(ushort address, byte value)
         {
+            if (Video.IsSheilaAddress(address))
+            {
+                Video.WriteSheila(address, value);
+                return;
+            }
+
             switch (address)
             {
-                case >= 0xFE00 and <= 0xFE01:
-                case >= 0xFE20 and <= 0xFE23:
-                    Video.WriteSheila(address, value);
-                    break;
-
                 case 0xFE30:
                     selectedSidewaysRom = value & 0x0F;
                     break;
