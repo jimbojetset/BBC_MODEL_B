@@ -30,6 +30,9 @@ namespace BBC
         private const int BitmapBytesPerRow10K = 40;
         private const int BitmapBytesPerRow20K = 80;
         private const int CrtcRegisterCount = 32;
+        private const int CrtcHorizontalDisplayedRegister = 1;
+        private const int CrtcVerticalDisplayedRegister = 6;
+        private const int CrtcScanLinesPerCharacterRegister = 9;
         private const int CrtcCursorStartRegister = 10;
         private const int CrtcCursorEndRegister = 11;
         private const int CrtcDisplayStartHighRegister = 12;
@@ -463,14 +466,16 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
+            int height = GetBitmapHeight();
 
-            for (int y = 0; y < BitmapHeight; y++)
+            for (int y = 0; y < height; y++)
             {
                 int targetY = y * 2;
 
-                for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
+                for (int byteX = 0; byteX < bytesPerRow; byteX++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
 
                     for (int bit = 0; bit < 8; bit++)
                     {
@@ -488,14 +493,16 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
+            int height = GetBitmapHeight();
 
-            for (int y = 0; y < BitmapHeight; y++)
+            for (int y = 0; y < height; y++)
             {
                 int targetY = y * 2;
 
-                for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
+                for (int byteX = 0; byteX < bytesPerRow; byteX++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
 
                     for (int pixel = 0; pixel < 4; pixel++)
                     {
@@ -513,14 +520,16 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
+            int height = GetBitmapHeight();
 
-            for (int y = 0; y < BitmapHeight; y++)
+            for (int y = 0; y < height; y++)
             {
                 int targetY = y * 2;
 
-                for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
+                for (int byteX = 0; byteX < bytesPerRow; byteX++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
 
                     for (int pixel = 0; pixel < 2; pixel++)
                     {
@@ -538,14 +547,16 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
+            int height = GetBitmapHeight();
 
-            for (int y = 0; y < BitmapHeight; y++)
+            for (int y = 0; y < height; y++)
             {
                 int targetY = y * 2;
 
-                for (int byteX = 0; byteX < BitmapBytesPerRow10K; byteX++)
+                for (int byteX = 0; byteX < bytesPerRow; byteX++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow10K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
 
                     for (int bit = 0; bit < 8; bit++)
                     {
@@ -563,14 +574,16 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
+            int height = GetBitmapHeight();
 
-            for (int y = 0; y < BitmapHeight; y++)
+            for (int y = 0; y < height; y++)
             {
                 int targetY = y * 2;
 
-                for (int byteX = 0; byteX < BitmapBytesPerRow10K; byteX++)
+                for (int byteX = 0; byteX < bytesPerRow; byteX++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow10K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
 
                     for (int pixel = 0; pixel < 4; pixel++)
                     {
@@ -677,6 +690,27 @@ namespace BBC
             int rasterLine = y & 0x07;
             int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
             return memoryAddress & 0x7FFF;
+        }
+
+        private int GetBitmapBytesPerRow(int defaultBytesPerRow)
+        {
+            int displayed = activeCrtcRegisters[CrtcHorizontalDisplayedRegister];
+            if (displayed <= 0)
+                return defaultBytesPerRow;
+
+            return Math.Clamp(displayed, 1, defaultBytesPerRow);
+        }
+
+        private int GetBitmapHeight()
+        {
+            int displayedRows = activeCrtcRegisters[CrtcVerticalDisplayedRegister];
+            int scanlinesPerCharacter = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
+            int height = displayedRows * scanlinesPerCharacter;
+
+            if (height <= 0)
+                return BitmapHeight;
+
+            return Math.Clamp(height, 1, BitmapHeight);
         }
 
         private uint GetPaletteColour(int logicalColour)
