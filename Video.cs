@@ -55,6 +55,7 @@ namespace BBC
         private readonly byte[] crtcRegisters = new byte[CrtcRegisterCount];
         private readonly byte[] paletteRegisters = new byte[PaletteRegisterCount];
         private byte selectedCrtcRegister;
+        private byte lastPaletteWrite;
 
         /// <summary>Gets the currently selected BBC screen mode.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
@@ -100,7 +101,7 @@ namespace BBC
                 0xFE00 => selectedCrtcRegister,
                 0xFE01 => crtcRegisters[selectedCrtcRegister & 0x1F],
                 0xFE20 or 0xFE22 => UlaControl,
-                0xFE21 or 0xFE23 => paletteRegisters[0],
+                0xFE21 or 0xFE23 => lastPaletteWrite,
                 _ => 0x00
             };
         }
@@ -128,7 +129,8 @@ namespace BBC
 
                 case 0xFE21:
                 case 0xFE23:
-                    paletteRegisters[(value >> 4) & 0x0F] = (byte)(value & 0x0F);
+                    lastPaletteWrite = value;
+                    paletteRegisters[(value >> 4) & 0x0F] = DecodePhysicalColour(value);
                     break;
             }
         }
@@ -347,14 +349,38 @@ namespace BBC
                     | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
                 _ => logicalColour & 0x0F
             };
-            int physicalColour = (paletteRegisters[paletteIndex] ^ 0x07) & 0x07;
-            return BbcColours[physicalColour];
+
+            return ResolvePhysicalColour(paletteRegisters[paletteIndex]);
         }
 
         private void ResetPalette()
         {
             for (int i = 0; i < paletteRegisters.Length; i++)
-                paletteRegisters[i] = (byte)((i & 0x07) ^ 0x07);
+                paletteRegisters[i] = (byte)(i & 0x07);
+
+            lastPaletteWrite = 0;
+        }
+
+        private uint ResolvePhysicalColour(byte physicalColour)
+        {
+            int colour = physicalColour & 0x0F;
+
+            if (colour >= 8 && (UlaControl & 0x01) != 0)
+            {
+                bool alternate = (Environment.TickCount64 / 500 & 1) != 0;
+                colour = alternate ? (colour & 0x07) ^ 0x07 : colour & 0x07;
+            }
+            else
+            {
+                colour &= 0x07;
+            }
+
+            return BbcColours[colour];
+        }
+
+        private static byte DecodePhysicalColour(byte paletteRegisterValue)
+        {
+            return (byte)((paletteRegisterValue & 0x0F) ^ 0x07);
         }
 
         private static void WriteScaledPixel2x2(uint[] pixels, int width, int height, int x, int y, uint colour)
