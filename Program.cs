@@ -250,13 +250,26 @@ namespace BBC
                 Initialise();
 
             StartCpu();
-            Thread.Sleep(duration);
+
+            long deadline = Stopwatch.GetTimestamp() + (long)(duration.TotalSeconds * Stopwatch.Frequency);
+            keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            while (Stopwatch.GetTimestamp() < deadline)
+            {
+                if (Stopwatch.GetTimestamp() >= keyboardInputEnabledAtTicks)
+                    DrainQueuedKeyboardInput();
+
+                Thread.Sleep(FrameMilliseconds);
+            }
+
             StopCpu();
 
             if (cpuException is not null)
                 throw new InvalidOperationException("CPU execution failed.", cpuException);
 
             Console.WriteLine($"Headless PC: ${Cpu.registers.PC:X4}");
+            if (Environment.GetEnvironmentVariable("BBC_HEADLESS_DUMP") == "1")
+                DumpHeadlessMemory((ushort)Cpu.registers.PC);
+
             Console.WriteLine($"Mode 7 non-blank cells: {Video.CountMode7NonBlankCells()}");
             Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
         }
@@ -269,13 +282,14 @@ namespace BBC
             if (IsDiscImagePath(path))
             {
                 discController.Mount(path);
+                hostFilingSystem.Mount(path);
 
-                if (queueLoadCommand && discController.AutoLoadCommand is string dfsCommand)
+                if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is string dfsCommand)
                     QueueKeyboardText("*DISC\r" + dfsCommand + "\r");
 
                 Console.WriteLine($"Mounted DFS: {discController.MountedPath}");
-                if (queueLoadCommand && discController.AutoLoadCommand is not null)
-                    Console.WriteLine($"Auto LOAD:  *DISC / {discController.AutoLoadCommand}");
+                if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is not null)
+                    Console.WriteLine($"Auto LOAD:  *DISC / {hostFilingSystem.AutoLoadCommand}");
 
                 return;
             }
@@ -352,6 +366,19 @@ namespace BBC
             Cpu.SetIrqLine(systemVia.IrqAsserted);
         }
 
+        private void DumpHeadlessMemory(ushort pc)
+        {
+            Console.Write("PC bytes:    ");
+            for (int i = 0; i < 16; i++)
+                Console.Write($"{Memory.Memory[(pc + i) & 0xFFFF]:X2} ");
+            Console.WriteLine();
+
+            Console.Write("Zero page:   ");
+            for (int i = 0; i < 16; i++)
+                Console.Write($"{Memory.Memory[i]:X2} ");
+            Console.WriteLine();
+        }
+
         private bool HandleHostFirmwareHooks()
         {
             return hostFilingSystem.TryHandleOsfile(Cpu);
@@ -382,10 +409,8 @@ namespace BBC
 
             while (pendingKeyboardInput.Count > 0)
             {
-                if (!TryInsertKeyboardBufferCharacter(pendingKeyboardInput.Peek()))
+                if (!DrainQueuedKeyboardInput())
                     break;
-
-                pendingKeyboardInput.Dequeue();
             }
         }
 
@@ -424,6 +449,22 @@ namespace BBC
                 else if (ch >= 32 && ch <= 126)
                     pendingKeyboardInput.Enqueue((byte)char.ToUpperInvariant(ch));
             }
+        }
+
+        private bool DrainQueuedKeyboardInput()
+        {
+            bool inserted = false;
+
+            while (pendingKeyboardInput.Count > 0)
+            {
+                if (!TryInsertKeyboardBufferCharacter(pendingKeyboardInput.Peek()))
+                    break;
+
+                pendingKeyboardInput.Dequeue();
+                inserted = true;
+            }
+
+            return inserted;
         }
 
         private bool TryInsertKeyboardBufferCharacter(byte character)

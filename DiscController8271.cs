@@ -40,6 +40,8 @@ namespace BBC
         private string? mountedPath;
         private bool nmiPending;
         private long traceSequence;
+        private int currentReadBytesProvided;
+        private int currentReadBytesConsumed;
 
         /// <summary>Initializes a new 8271-compatible disc controller.</summary>
         public DiscController8271()
@@ -101,6 +103,8 @@ namespace BBC
             selectedDrive = 0;
             Array.Clear(specialRegisters);
             nmiPending = false;
+            currentReadBytesProvided = 0;
+            currentReadBytesConsumed = 0;
         }
 
         /// <summary>Reads an 8271 register.</summary>
@@ -171,6 +175,7 @@ namespace BBC
                 return 0x00;
 
             byte value = readData.Dequeue();
+            currentReadBytesConsumed++;
             if (readData.Count == 0)
                 SetResult(0);
             else
@@ -181,9 +186,14 @@ namespace BBC
 
         private void BeginCommand(byte value)
         {
+            if (readData.Count > 0)
+                Trace($"COMMAND WITH STALE DATA remaining={readData.Count} consumed={currentReadBytesConsumed}/{currentReadBytesProvided}");
+
             command = value;
             parameters.Clear();
             resultAvailable = false;
+            currentReadBytesProvided = 0;
+            currentReadBytesConsumed = 0;
             Trace($"COMMAND {command:X2}");
 
             if (GetParameterCount(command) == 0)
@@ -306,6 +316,8 @@ namespace BBC
                 readData.Enqueue(source < image.Length ? image[source] : (byte)0x00);
             }
 
+            currentReadBytesProvided = length;
+            currentReadBytesConsumed = 0;
             RequestNmi();
         }
 
@@ -400,17 +412,17 @@ namespace BBC
             if (!TryReadCatalogue(out List<DfsFile> files))
                 return false;
 
-            DfsFile? bootFile = files.FirstOrDefault(file => string.Equals(file.Name, "!BOOT", StringComparison.OrdinalIgnoreCase));
-            if (bootFile is not null)
-            {
-                command = $"*EXEC {bootFile.Name}";
-                return true;
-            }
-
             DfsFile? basicFile = files.FirstOrDefault(file => LooksLikeBasicFile(file));
             if (basicFile is not null)
             {
                 command = $"LOAD \"{basicFile.Name}\"";
+                return true;
+            }
+
+            DfsFile? bootFile = files.FirstOrDefault(file => string.Equals(file.Name, "!BOOT", StringComparison.OrdinalIgnoreCase));
+            if (bootFile is not null)
+            {
+                command = $"*EXEC {bootFile.Name}";
                 return true;
             }
 
@@ -428,7 +440,7 @@ namespace BBC
             if (!HasMountedDisc || drives[0].Length < 512)
                 return false;
 
-            int fileCount = drives[0][0x107] / 8;
+            int fileCount = drives[0][0x105] / 8;
             for (int i = 0; i < fileCount && i < 31; i++)
             {
                 int nameOffset = 8 + (i * 8);
@@ -438,9 +450,9 @@ namespace BBC
                     continue;
 
                 int packed = drives[0][infoOffset + 6];
-                int loadAddress = drives[0][infoOffset] | (drives[0][infoOffset + 1] << 8) | ((packed & 0xC0) << 10);
-                int executionAddress = drives[0][infoOffset + 2] | (drives[0][infoOffset + 3] << 8) | ((packed & 0x30) << 12);
-                int length = drives[0][infoOffset + 4] | (drives[0][infoOffset + 5] << 8) | ((packed & 0x0C) << 14);
+                int loadAddress = drives[0][infoOffset] | (drives[0][infoOffset + 1] << 8) | ((packed & 0x0C) << 14);
+                int executionAddress = drives[0][infoOffset + 2] | (drives[0][infoOffset + 3] << 8) | ((packed & 0xC0) << 10);
+                int length = drives[0][infoOffset + 4] | (drives[0][infoOffset + 5] << 8) | ((packed & 0x30) << 12);
                 int startSector = drives[0][infoOffset + 7] | ((packed & 0x03) << 8);
                 files.Add(new DfsFile(name, loadAddress, executionAddress, length, startSector));
             }

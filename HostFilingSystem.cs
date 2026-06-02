@@ -186,7 +186,7 @@ namespace BBC
 
         private static HostFile[] ReadSsdFiles(byte[] image)
         {
-            int fileCount = image[0x107] / 8;
+            int fileCount = image[0x105] / 8;
             List<HostFile> result = new List<HostFile>();
 
             for (int i = 0; i < fileCount && i < 31; i++)
@@ -198,9 +198,9 @@ namespace BBC
                     continue;
 
                 int packed = image[infoOffset + 6];
-                uint load = (uint)(image[infoOffset] | (image[infoOffset + 1] << 8) | ((packed & 0xC0) << 10));
-                uint exec = (uint)(image[infoOffset + 2] | (image[infoOffset + 3] << 8) | ((packed & 0x30) << 12));
-                int length = image[infoOffset + 4] | (image[infoOffset + 5] << 8) | ((packed & 0x0C) << 14);
+                uint load = (uint)(image[infoOffset] | (image[infoOffset + 1] << 8) | ((packed & 0x0C) << 14));
+                uint exec = (uint)(image[infoOffset + 2] | (image[infoOffset + 3] << 8) | ((packed & 0xC0) << 10));
+                int length = image[infoOffset + 4] | (image[infoOffset + 5] << 8) | ((packed & 0x30) << 12);
                 int startSector = image[infoOffset + 7] | ((packed & 0x03) << 8);
                 int start = startSector * 256;
 
