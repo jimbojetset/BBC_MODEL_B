@@ -341,6 +341,13 @@ namespace BBC
 
         private static BbcKeyChord? MapHostKeyToBbcKey(int keySym, int modifiers)
         {
+            if ((modifiers & KMOD_ALT) != 0)
+            {
+                BbcKeyChord? optionKey = MapOptionHostKeyToBbcKey(keySym);
+                if (optionKey.HasValue)
+                    return optionKey;
+            }
+
             if ((modifiers & KMOD_SHIFT) != 0)
             {
                 BbcKeyChord? shiftedKey = MapShiftedHostKeyToBbcKey(keySym);
@@ -436,12 +443,21 @@ namespace BBC
                 SDLK_0 => Key(0x27, ShiftAdjustment.Suppress),
                 SDLK_2 => Key(0x47, ShiftAdjustment.Suppress),
                 SDLK_AT => Key(0x47, ShiftAdjustment.Suppress),
-                SDLK_3 or SDLK_HASH => Key(0x28, ShiftAdjustment.Suppress),
+                SDLK_HASH => Key(0x28, ShiftAdjustment.Suppress),
                 SDLK_UNDERSCORE => Key(0x17),
                 SDLK_8 => Key(0x48),
                 SDLK_9 => Key(0x15),
                 SDLK_EQUALS or SDLK_PLUS => Key(0x57),
                 SDLK_SEMICOLON or SDLK_COLON => Key(0x48, ShiftAdjustment.Suppress),
+                _ => null
+            };
+        }
+
+        private static BbcKeyChord? MapOptionHostKeyToBbcKey(int keySym)
+        {
+            return keySym switch
+            {
+                SDLK_3 or SDLK_HASH => Key(0x28, ShiftAdjustment.Suppress),
                 _ => null
             };
         }
@@ -718,6 +734,7 @@ namespace BBC
         private const int SDLK_F12 = 1073741893;
         private const int KMOD_SHIFT = 0x0003;
         private const int KMOD_CTRL = 0x00C0;
+        private const int KMOD_ALT = 0x0300;
         private const int KMOD_GUI = 0x0C00;
 
         [StructLayout(LayoutKind.Explicit, Size = 56)]
