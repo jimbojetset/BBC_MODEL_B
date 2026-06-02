@@ -369,6 +369,7 @@ namespace BBC
             Cpu.PacingEnabled = !discController.TransferActive;
             int previousFrame = systemVia.FrameCounter;
             systemVia.Tick(cycles);
+            discController.Tick(cycles);
             if (systemVia.FrameCounter != previousFrame)
                 Video.CaptureVisibleFrame();
 

@@ -24,6 +24,7 @@ namespace BBC
         private const byte StatusDataRequest = 0x04;
         private const byte StatusInterrupt = 0x08;
         private const byte StatusResultFull = 0x10;
+        private const int NmiReassertDelayCycles = 96;
         private readonly byte[][] drives = [[], [], [], []];
         private readonly byte[] specialRegisters = new byte[0x40];
         private readonly Queue<byte> readData = new Queue<byte>();
@@ -39,6 +40,7 @@ namespace BBC
         private int selectedDrive;
         private string? mountedPath;
         private bool nmiPending;
+        private int nmiDelayCycles;
         private long traceSequence;
         private int currentReadBytesProvided;
         private int currentReadBytesConsumed;
@@ -106,8 +108,24 @@ namespace BBC
             selectedDrive = 0;
             Array.Clear(specialRegisters);
             nmiPending = false;
+            nmiDelayCycles = 0;
             currentReadBytesProvided = 0;
             currentReadBytesConsumed = 0;
+        }
+
+        /// <summary>Advances delayed FDC NMI events by the supplied number of CPU cycles.</summary>
+        /// <param name="cycles">The elapsed 6502 cycles.</param>
+        public void Tick(int cycles)
+        {
+            if (nmiDelayCycles <= 0)
+                return;
+
+            nmiDelayCycles -= cycles;
+            if (nmiDelayCycles > 0)
+                return;
+
+            nmiDelayCycles = 0;
+            NmiRequested?.Invoke();
         }
 
         /// <summary>Reads an 8271 register.</summary>
@@ -180,9 +198,9 @@ namespace BBC
             byte value = readData.Dequeue();
             currentReadBytesConsumed++;
             if (readData.Count == 0)
-                SetResult(0);
+                SetResult(0, NmiReassertDelayCycles);
             else
-                RequestNmi();
+                RequestNmi(NmiReassertDelayCycles);
 
             return value;
         }
@@ -382,12 +400,12 @@ namespace BBC
             return offset >= 0;
         }
 
-        private void SetResult(byte value)
+        private void SetResult(byte value, int nmiDelayCycles = 0)
         {
             Trace($"RESULT {value:X2}");
             result = value;
             resultAvailable = true;
-            RequestNmi();
+            RequestNmi(nmiDelayCycles);
         }
 
         private void Trace(string message)
@@ -399,13 +417,19 @@ namespace BBC
                 File.AppendAllText(tracePath, $"{++traceSequence:D8} 8271 {message}{Environment.NewLine}");
         }
 
-        private void RequestNmi()
+        private void RequestNmi(int delayCycles = 0)
         {
             if (nmiPending)
                 return;
 
             nmiPending = true;
-            NmiRequested?.Invoke();
+            if (delayCycles <= 0)
+            {
+                NmiRequested?.Invoke();
+                return;
+            }
+
+            nmiDelayCycles = delayCycles;
         }
 
         private bool TryGetAutoLoadCommand(out string? command)
