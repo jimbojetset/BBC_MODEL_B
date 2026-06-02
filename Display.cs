@@ -11,7 +11,6 @@
 // ============================================================================
 
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Diagnostics;
 
 namespace BBC
@@ -113,12 +112,6 @@ namespace BBC
                 if (ev.Type == SDL_DROPFILE)
                 {
                     EnqueueDroppedFile(ev.DropFile);
-                    continue;
-                }
-
-                if (ev.Type == SDL_TEXTINPUT)
-                {
-                    EnqueueTextInput(ev);
                     continue;
                 }
 
@@ -304,20 +297,6 @@ namespace BBC
                 pendingKeyChanges.Enqueue(new HostKeyChange(key.Value, false));
         }
 
-        private void EnqueueTextInput(SdlEvent ev)
-        {
-            byte[] textBytes = ev.Text;
-            int length = Array.IndexOf(textBytes, (byte)0);
-            if (length < 0)
-                length = textBytes.Length;
-
-            if (length == 0)
-                return;
-
-            string text = Encoding.UTF8.GetString(textBytes, 0, length);
-            EnqueueHostText(text);
-        }
-
         private static byte? MapHostKeyToBbcKey(int keySym)
         {
             return keySym switch
@@ -362,7 +341,7 @@ namespace BBC
                 SDLK_J => 0x45,
                 SDLK_K => 0x46,
                 SDLK_AT => 0x47,
-                SDLK_COLON => 0x48,
+                SDLK_COLON or SDLK_ASTERISK or SDLK_KP_MULTIPLY => 0x48,
                 SDLK_RETURN or SDLK_KP_ENTER => 0x49,
                 SDLK_S => 0x51,
                 SDLK_C => 0x52,
@@ -568,9 +547,9 @@ namespace BBC
         private const uint SDL_QUIT = 0x100;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_KEYUP = 0x301;
-        private const uint SDL_TEXTINPUT = 0x303;
         private const uint SDL_DROPFILE = 0x1000;
         private const int SDLK_SPACE = 32;
+        private const int SDLK_ASTERISK = 42;
         private const int SDLK_AT = 64;
         private const int SDLK_CARET = 94;
         private const int SDLK_UNDERSCORE = 95;
@@ -639,6 +618,7 @@ namespace BBC
         private const int SDLK_F8 = 1073741889;
         private const int SDLK_F9 = 1073741890;
         private const int SDLK_F10 = 1073741891;
+        private const int SDLK_KP_MULTIPLY = 1073741909;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDLK_LCTRL = 1073742048;
         private const int SDLK_LSHIFT = 1073742049;
