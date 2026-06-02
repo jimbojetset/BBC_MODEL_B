@@ -403,7 +403,7 @@ namespace BBC
             DfsFile? bootFile = files.FirstOrDefault(file => string.Equals(file.Name, "!BOOT", StringComparison.OrdinalIgnoreCase));
             if (bootFile is not null)
             {
-                command = $"LOAD \"{bootFile.Name}\"";
+                command = $"*EXEC {bootFile.Name}";
                 return true;
             }
 
