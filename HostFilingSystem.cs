@@ -119,6 +119,12 @@ namespace BBC
             if (command.StartsWith('*'))
                 command = command[1..].TrimStart();
 
+            if (IsBareExecCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
             if (!TryParseRunCommand(command, out string requestedName))
                 return false;
 
@@ -132,6 +138,14 @@ namespace BBC
 
             cpu.registers.PC = file.ExecutionAddress;
             return true;
+        }
+
+        private static bool IsBareExecCommand(string command)
+        {
+            const string exec = "EXEC";
+            string trimmed = command.Trim();
+            return trimmed.Length == exec.Length
+                && string.Equals(trimmed, exec, StringComparison.OrdinalIgnoreCase);
         }
 
         private HostFile? FindFile(string requestedName)
