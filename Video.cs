@@ -356,7 +356,8 @@ namespace BBC
 
         private static void DrawTeletextMosaic(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool separated)
         {
-            int pattern = character & 0x3F;
+            int value = character & 0x7F;
+            int pattern = (value & 0x1F) | ((value & 0x40) >> 1);
             int blockWidth = cellWidth / 2;
             int blockHeight = cellHeight / 3;
             int gap = separated ? 2 : 0;
