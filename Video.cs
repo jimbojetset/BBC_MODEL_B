@@ -61,9 +61,23 @@ namespace BBC
         private readonly ushort osRomStart;
         private readonly byte[] crtcRegisters = new byte[CrtcRegisterCount];
         private readonly byte[] paletteRegisters = new byte[PaletteRegisterCount];
+        private readonly object frameSnapshotLock = new object();
+        private readonly byte[] frameMemory = new byte[0x10000];
+        private readonly byte[] frameCrtcRegisters = new byte[CrtcRegisterCount];
+        private readonly byte[] framePaletteRegisters = new byte[PaletteRegisterCount];
+        private byte[] activeMemory;
+        private byte[] activeCrtcRegisters;
+        private byte[] activePaletteRegisters;
         private byte selectedCrtcRegister;
         private byte lastPaletteWrite;
         private bool crtcCursorAddressWritten;
+        private bool frameCrtcCursorAddressWritten;
+        private bool hasFrameSnapshot;
+        private byte frameUlaControl;
+        private BbcScreenMode frameMode;
+        private byte activeUlaControl;
+        private BbcScreenMode activeMode;
+        private bool activeCrtcCursorAddressWritten;
 
         /// <summary>Gets the currently selected BBC screen mode.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
@@ -87,6 +101,11 @@ namespace BBC
         {
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
             this.osRomStart = osRomStart;
+            activeMemory = memory;
+            activeCrtcRegisters = crtcRegisters;
+            activePaletteRegisters = paletteRegisters;
+            activeUlaControl = UlaControl;
+            activeMode = CurrentMode;
         }
 
         /// <summary>Resets video device state.</summary>
@@ -96,8 +115,27 @@ namespace BBC
             ResetPalette();
             selectedCrtcRegister = 0;
             crtcCursorAddressWritten = false;
+            frameCrtcCursorAddressWritten = false;
+            hasFrameSnapshot = false;
             CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
+            frameUlaControl = UlaControl;
+            frameMode = CurrentMode;
+        }
+
+        /// <summary>Captures a coherent frame of BBC-visible video state at emulated vsync.</summary>
+        public void CaptureVisibleFrame()
+        {
+            lock (frameSnapshotLock)
+            {
+                memory.CopyTo(frameMemory, 0);
+                crtcRegisters.CopyTo(frameCrtcRegisters, 0);
+                paletteRegisters.CopyTo(framePaletteRegisters, 0);
+                frameCrtcCursorAddressWritten = crtcCursorAddressWritten;
+                frameUlaControl = UlaControl;
+                frameMode = CurrentMode;
+                hasFrameSnapshot = true;
+            }
         }
 
         /// <summary>Reads a byte from the CRTC or Video ULA register area.</summary>
@@ -150,35 +188,57 @@ namespace BBC
         /// <param name="display">The SDL-backed display to render into.</param>
         public void Render(Display display)
         {
-            switch (CurrentMode)
+            lock (frameSnapshotLock)
             {
-                case BbcScreenMode.Mode7:
-                    RenderMode7TextScreen(display);
-                    break;
+                if (hasFrameSnapshot)
+                {
+                    activeMemory = frameMemory;
+                    activeCrtcRegisters = frameCrtcRegisters;
+                    activePaletteRegisters = framePaletteRegisters;
+                    activeCrtcCursorAddressWritten = frameCrtcCursorAddressWritten;
+                    activeUlaControl = frameUlaControl;
+                    activeMode = frameMode;
+                }
+                else
+                {
+                    activeMemory = memory;
+                    activeCrtcRegisters = crtcRegisters;
+                    activePaletteRegisters = paletteRegisters;
+                    activeCrtcCursorAddressWritten = crtcCursorAddressWritten;
+                    activeUlaControl = UlaControl;
+                    activeMode = CurrentMode;
+                }
 
-                case BbcScreenMode.Mode0:
-                    RenderBitmapMode0(display);
-                    break;
+                switch (activeMode)
+                {
+                    case BbcScreenMode.Mode7:
+                        RenderMode7TextScreen(display);
+                        break;
 
-                case BbcScreenMode.Mode1:
-                    RenderBitmapMode1(display);
-                    break;
+                    case BbcScreenMode.Mode0:
+                        RenderBitmapMode0(display);
+                        break;
 
-                case BbcScreenMode.Mode2:
-                    RenderBitmapMode2(display);
-                    break;
+                    case BbcScreenMode.Mode1:
+                        RenderBitmapMode1(display);
+                        break;
 
-                case BbcScreenMode.Mode4:
-                    RenderBitmapMode4(display);
-                    break;
+                    case BbcScreenMode.Mode2:
+                        RenderBitmapMode2(display);
+                        break;
 
-                case BbcScreenMode.Mode5:
-                    RenderBitmapMode5(display);
-                    break;
+                    case BbcScreenMode.Mode4:
+                        RenderBitmapMode4(display);
+                        break;
 
-                default:
-                    RenderMode7TextScreen(display);
-                    break;
+                    case BbcScreenMode.Mode5:
+                        RenderBitmapMode5(display);
+                        break;
+
+                    default:
+                        RenderMode7TextScreen(display);
+                        break;
+                }
             }
         }
 
@@ -338,7 +398,7 @@ namespace BBC
 
             for (int glyphY = 0; glyphY < glyphHeight; glyphY++)
             {
-                byte bits = memory[glyphAddress + glyphY];
+                byte bits = activeMemory[glyphAddress + glyphY];
 
                 for (int glyphX = 0; glyphX < glyphWidth; glyphX++)
                 {
@@ -410,7 +470,7 @@ namespace BBC
 
                 for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
                 {
-                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
 
                     for (int bit = 0; bit < 8; bit++)
                     {
@@ -435,7 +495,7 @@ namespace BBC
 
                 for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
                 {
-                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
 
                     for (int pixel = 0; pixel < 4; pixel++)
                     {
@@ -460,7 +520,7 @@ namespace BBC
 
                 for (int byteX = 0; byteX < BitmapBytesPerRow20K; byteX++)
                 {
-                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow20K)];
 
                     for (int pixel = 0; pixel < 2; pixel++)
                     {
@@ -485,7 +545,7 @@ namespace BBC
 
                 for (int byteX = 0; byteX < BitmapBytesPerRow10K; byteX++)
                 {
-                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow10K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow10K)];
 
                     for (int bit = 0; bit < 8; bit++)
                     {
@@ -510,7 +570,7 @@ namespace BBC
 
                 for (int byteX = 0; byteX < BitmapBytesPerRow10K; byteX++)
                 {
-                    byte value = memory[GetBitmapAddress(y, byteX, BitmapBytesPerRow10K)];
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, BitmapBytesPerRow10K)];
 
                     for (int pixel = 0; pixel < 4; pixel++)
                     {
@@ -561,7 +621,7 @@ namespace BBC
 
         private bool IsCursorVisible()
         {
-            byte cursorStart = crtcRegisters[CrtcCursorStartRegister];
+            byte cursorStart = activeCrtcRegisters[CrtcCursorStartRegister];
             byte cursorMode = (byte)(cursorStart & 0x60);
 
             if (cursorMode == 0x20)
@@ -575,44 +635,44 @@ namespace BBC
 
         private (int Start, int End) GetCursorShape(int scanlinesPerCell)
         {
-            if (crtcRegisters[CrtcCursorStartRegister] == 0 && crtcRegisters[CrtcCursorEndRegister] == 0)
+            if (activeCrtcRegisters[CrtcCursorStartRegister] == 0 && activeCrtcRegisters[CrtcCursorEndRegister] == 0)
                 return (0, scanlinesPerCell - 1);
 
-            int start = Math.Clamp(crtcRegisters[CrtcCursorStartRegister] & 0x1F, 0, scanlinesPerCell - 1);
-            int end = Math.Clamp(crtcRegisters[CrtcCursorEndRegister] & 0x1F, 0, scanlinesPerCell - 1);
+            int start = Math.Clamp(activeCrtcRegisters[CrtcCursorStartRegister] & 0x1F, 0, scanlinesPerCell - 1);
+            int end = Math.Clamp(activeCrtcRegisters[CrtcCursorEndRegister] & 0x1F, 0, scanlinesPerCell - 1);
             return (start, end);
         }
 
         private int GetCursorDisplayOffset()
         {
-            if (crtcCursorAddressWritten)
+            if (activeCrtcCursorAddressWritten)
             {
-                int cursorAddress = ((crtcRegisters[CrtcCursorHighRegister] & 0x3F) << 8)
-                    | crtcRegisters[CrtcCursorLowRegister];
+                int cursorAddress = ((activeCrtcRegisters[CrtcCursorHighRegister] & 0x3F) << 8)
+                    | activeCrtcRegisters[CrtcCursorLowRegister];
                 return (cursorAddress - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
             }
 
-            ushort cursorAddressFallback = (ushort)(memory[TextCursorAddressLow] | (memory[TextCursorAddressHigh] << 8));
+            ushort cursorAddressFallback = (ushort)(activeMemory[TextCursorAddressLow] | (activeMemory[TextCursorAddressHigh] << 8));
             return ((cursorAddressFallback - Mode7ScreenStart) - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
         }
 
         private byte ReadMode7DisplayCharacter(int row, int column)
         {
             int offset = (GetMode7DisplayStartOffset() + (row * Mode7Columns) + column) & (Mode7ScreenBytes - 1);
-            return memory[Mode7ScreenStart + offset];
+            return activeMemory[Mode7ScreenStart + offset];
         }
 
         private int GetMode7DisplayStartOffset()
         {
-            int crtcStart = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
-                | crtcRegisters[CrtcDisplayStartLowRegister];
+            int crtcStart = ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
+                | activeCrtcRegisters[CrtcDisplayStartLowRegister];
             return crtcStart & (Mode7ScreenBytes - 1);
         }
 
         private int GetBitmapAddress(int y, int byteX, int bytesPerRow)
         {
-            int crtcStart = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
-                | crtcRegisters[CrtcDisplayStartLowRegister];
+            int crtcStart = ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
+                | activeCrtcRegisters[CrtcDisplayStartLowRegister];
             int characterRow = y >> 3;
             int rasterLine = y & 0x07;
             int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
@@ -621,7 +681,7 @@ namespace BBC
 
         private uint GetPaletteColour(int logicalColour)
         {
-            int paletteIndex = CurrentMode switch
+            int paletteIndex = activeMode switch
             {
                 BbcScreenMode.Mode0 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
                 BbcScreenMode.Mode1 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
@@ -633,7 +693,7 @@ namespace BBC
                 _ => logicalColour & 0x0F
             };
 
-            return ResolvePhysicalColour(paletteRegisters[paletteIndex]);
+            return ResolvePhysicalColour(activePaletteRegisters[paletteIndex]);
         }
 
         private void ResetPalette()
@@ -648,7 +708,7 @@ namespace BBC
         {
             int colour = physicalColour & 0x0F;
 
-            if (colour >= 8 && (UlaControl & 0x01) != 0)
+            if (colour >= 8 && (activeUlaControl & 0x01) != 0)
             {
                 bool alternate = (Environment.TickCount64 / 500 & 1) != 0;
                 colour = alternate ? (colour & 0x07) ^ 0x07 : colour & 0x07;

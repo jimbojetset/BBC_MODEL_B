@@ -366,7 +366,11 @@ namespace BBC
 
         private void AdvanceDeviceCycles(int cycles)
         {
+            int previousFrame = systemVia.FrameCounter;
             systemVia.Tick(cycles);
+            if (systemVia.FrameCounter != previousFrame)
+                Video.CaptureVisibleFrame();
+
             Cpu.SetIrqLine(systemVia.IrqAsserted);
         }
 

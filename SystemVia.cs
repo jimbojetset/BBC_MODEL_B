@@ -44,6 +44,7 @@ namespace BBC
         private bool timer2HasInterrupted;
         private int peripheralCycleRemainder;
         private int vsyncCycleCounter;
+        private int frameCounter;
 
         /// <summary>Initializes a new system VIA shim.</summary>
         /// <param name="sound">The sound generator connected to the VIA slow bus.</param>
@@ -81,7 +82,11 @@ namespace BBC
             timer2HasInterrupted = false;
             peripheralCycleRemainder = 0;
             vsyncCycleCounter = 0;
+            frameCounter = 0;
         }
+
+        /// <summary>Gets the number of emulated 50 Hz video frames since reset.</summary>
+        public int FrameCounter => Volatile.Read(ref frameCounter);
 
         /// <summary>Updates one BBC keyboard matrix key state.</summary>
         /// <param name="internalKey">The BBC internal key number.</param>
@@ -285,6 +290,7 @@ namespace BBC
             while (vsyncCycleCounter >= VsyncPeripheralCycles)
             {
                 vsyncCycleCounter -= VsyncPeripheralCycles;
+                Interlocked.Increment(ref frameCounter);
                 SetInterrupt(InterruptFlagVsync);
             }
         }
