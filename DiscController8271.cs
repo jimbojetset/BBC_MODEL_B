@@ -29,6 +29,7 @@ namespace BBC
         private readonly Queue<byte> readData = new Queue<byte>();
         private readonly List<byte> writeData = new List<byte>();
         private readonly List<byte> parameters = new List<byte>();
+        private readonly bool traceEnabled = Environment.GetEnvironmentVariable("BBC_8271_TRACE") == "1";
         private byte command;
         private byte result;
         private bool resultAvailable = true;
@@ -203,34 +204,34 @@ namespace BBC
             {
                 case 0x0A:
                 case 0x0E:
-                    PrepareWrite(parameters[0], parameters[1], 128, 1);
+                    PrepareWrite(parameters[1], parameters[0], 128, 1);
                     break;
 
                 case 0x0B:
                 case 0x0F:
-                    PrepareWrite(parameters[0], parameters[1], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
+                    PrepareWrite(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
                 case 0x12:
                 case 0x16:
-                    ReadSectors(parameters[0], parameters[1], 128, 1);
+                    ReadSectors(parameters[1], parameters[0], 128, 1);
                     break;
 
                 case 0x13:
                 case 0x17:
-                    ReadSectors(parameters[0], parameters[1], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
+                    ReadSectors(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
                 case 0x1B:
-                    ReadSectorIds(parameters[0], parameters[2]);
+                    ReadSectorIds(parameters[1], parameters[2]);
                     break;
 
                 case 0x1E:
-                    SetResult(HasSector(parameters[0], parameters[1]) ? (byte)0 : (byte)0x18);
+                    SetResult(HasSector(parameters[1], parameters[0]) ? (byte)0 : (byte)0x18);
                     break;
 
                 case 0x1F:
-                    SetResult(HasSector(parameters[0], parameters[1]) ? (byte)0 : (byte)0x18);
+                    SetResult(HasSector(parameters[1], parameters[0]) ? (byte)0 : (byte)0x18);
                     break;
 
                 case 0x29:
@@ -266,8 +267,11 @@ namespace BBC
 
         private void ReadSectors(int track, int sector, int sectorSize, int count)
         {
+            Trace($"READ T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
+
             if (!TryGetOffset(track, sector, out int offset) || offset + (sectorSize * count) > drives[selectedDrive].Length)
             {
+                Trace($"READ MISS T{track:D2}/S{sector:D2}");
                 SetResult(0x18);
                 return;
             }
@@ -280,8 +284,11 @@ namespace BBC
 
         private void PrepareWrite(int track, int sector, int sectorSize, int count)
         {
+            Trace($"WRITE T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
+
             if (!TryGetOffset(track, sector, out int offset) || offset + (sectorSize * count) > drives[selectedDrive].Length)
             {
+                Trace($"WRITE MISS T{track:D2}/S{sector:D2}");
                 SetResult(0x18);
                 return;
             }
@@ -325,9 +332,16 @@ namespace BBC
 
         private void SetResult(byte value)
         {
+            Trace($"RESULT {value:X2}");
             result = value;
             resultAvailable = true;
             RequestNmi();
+        }
+
+        private void Trace(string message)
+        {
+            if (traceEnabled)
+                Console.Error.WriteLine($"8271 {message}");
         }
 
         private void RequestNmi()
