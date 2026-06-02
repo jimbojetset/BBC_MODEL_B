@@ -11,3 +11,4 @@ bbc-8271-trace.log
 
 ROMS/*.crdownload
 ROMS/*.rom
+*.ssd
