@@ -369,7 +369,7 @@ namespace BBC
                 SDLK_MINUS => Key(0x17),
                 SDLK_EQUALS => Key(0x17, ShiftAdjustment.Force),
                 SDLK_CARET => Key(0x18),
-                SDLK_LEFT => Key(0x19),
+                SDLK_LEFT => Key(0x40),
                 SDLK_F10 => Key(0x20),
                 SDLK_W => Key(0x21),
                 SDLK_E => Key(0x22),
@@ -431,7 +431,7 @@ namespace BBC
                 SDLK_F8 => Key(0x76),
                 SDLK_F9 => Key(0x77),
                 SDLK_BACKSLASH => Key(0x78),
-                SDLK_RIGHT => Key(0x79),
+                SDLK_RIGHT => Key(0x01),
                 _ => null
             };
         }
