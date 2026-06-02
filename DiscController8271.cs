@@ -269,15 +269,21 @@ namespace BBC
         {
             Trace($"READ T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
 
-            if (!TryGetOffset(track, sector, out int offset) || offset + (sectorSize * count) > drives[selectedDrive].Length)
+            if (!TryGetOffset(track, sector, out int offset))
             {
                 Trace($"READ MISS T{track:D2}/S{sector:D2}");
                 SetResult(0x18);
                 return;
             }
 
-            for (int i = 0; i < sectorSize * count; i++)
-                readData.Enqueue(drives[selectedDrive][offset + i]);
+            int length = sectorSize * count;
+            byte[] image = drives[selectedDrive];
+
+            for (int i = 0; i < length; i++)
+            {
+                int source = offset + i;
+                readData.Enqueue(source < image.Length ? image[source] : (byte)0x00);
+            }
 
             RequestNmi();
         }
