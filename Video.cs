@@ -200,14 +200,8 @@ namespace BBC
 
         private void RenderMode7TextScreen(Display display)
         {
-            const int glyphWidth = 8;
-            const int glyphHeight = 8;
             const int cellWidth = Display.DefaultWidth / Mode7Columns;
             const int cellHeight = Display.DefaultHeight / Mode7Rows;
-            const int xScale = 2;
-            const int yScale = 2;
-            const int glyphXOffset = 0;
-            const int glyphYOffset = 2;
 
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
@@ -215,49 +209,164 @@ namespace BBC
             for (int row = 0; row < Mode7Rows; row++)
             {
                 int cellY = row * cellHeight;
+                TeletextState state = new TeletextState();
 
                 for (int column = 0; column < Mode7Columns; column++)
                 {
                     byte character = ReadMode7DisplayCharacter(row, column);
-
-                    if (character < 32 || character > 127)
-                        character = 32;
-
-                    int glyphAddress = osRomStart + ((character - 32) * glyphHeight);
                     int cellX = column * cellWidth;
 
-                    for (int glyphY = 0; glyphY < glyphHeight; glyphY++)
+                    if (TryApplyTeletextControl(character, state, pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight))
+                        continue;
+
+                    if (state.GraphicsMode && IsTeletextMosaicCharacter(character))
                     {
-                        byte bits = memory[glyphAddress + glyphY];
-
-                        for (int glyphX = 0; glyphX < glyphWidth; glyphX++)
-                        {
-                            if ((bits & (0x80 >> glyphX)) == 0)
-                                continue;
-
-                            int pixelX = cellX + glyphXOffset + (glyphX * xScale);
-                            int pixelY = cellY + glyphYOffset + (glyphY * yScale);
-
-                            for (int yy = 0; yy < yScale; yy++)
-                            {
-                                int y = pixelY + yy;
-                                if ((uint)y >= (uint)display.Height)
-                                    continue;
-
-                                int offset = y * display.Width;
-                                for (int xx = 0; xx < xScale; xx++)
-                                {
-                                    int x = pixelX + xx;
-                                    if ((uint)x < (uint)display.Width)
-                                        pixels[offset + x] = Foreground;
-                                }
-                            }
-                        }
+                        state.HeldMosaic = character;
+                        DrawTeletextMosaic(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, state.ForegroundColour, state.SeparatedGraphics);
+                    }
+                    else
+                    {
+                        DrawMode7AlphaCharacter(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, state.ForegroundColour, state.DoubleHeight);
                     }
                 }
             }
 
             RenderMode7Cursor(display);
+        }
+
+        private bool TryApplyTeletextControl(byte character, TeletextState state, uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight)
+        {
+            int control = character & 0x7F;
+            if (control >= 0x20)
+                return false;
+
+            if (state.HoldGraphics && state.HeldMosaic is byte held)
+                DrawTeletextMosaic(pixels, width, height, cellX, cellY, cellWidth, cellHeight, held, state.ForegroundColour, state.SeparatedGraphics);
+
+            switch (control)
+            {
+                case >= 0x01 and <= 0x07:
+                    state.GraphicsMode = false;
+                    state.ForegroundColour = BbcColours[control & 0x07];
+                    break;
+
+                case 0x0C:
+                    state.DoubleHeight = false;
+                    break;
+
+                case 0x0D:
+                    state.DoubleHeight = true;
+                    break;
+
+                case >= 0x10 and <= 0x17:
+                    state.GraphicsMode = true;
+                    state.ForegroundColour = BbcColours[control & 0x07];
+                    break;
+
+                case 0x19:
+                    state.SeparatedGraphics = false;
+                    break;
+
+                case 0x1A:
+                    state.SeparatedGraphics = true;
+                    break;
+
+                case 0x1C:
+                    state.BackgroundColour = Background;
+                    break;
+
+                case 0x1D:
+                    state.BackgroundColour = state.ForegroundColour;
+                    break;
+
+                case 0x1E:
+                    state.HoldGraphics = true;
+                    break;
+
+                case 0x1F:
+                    state.HoldGraphics = false;
+                    state.HeldMosaic = null;
+                    break;
+            }
+
+            return true;
+        }
+
+        private void DrawMode7AlphaCharacter(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool doubleHeight)
+        {
+            const int glyphWidth = 8;
+            const int glyphHeight = 8;
+            const int xScale = 2;
+            int yScale = doubleHeight ? 4 : 2;
+            const int glyphXOffset = 0;
+            const int glyphYOffset = 2;
+
+            character = (byte)(character & 0x7F);
+            if (character < 32)
+                character = 32;
+
+            int glyphAddress = osRomStart + ((character - 32) * glyphHeight);
+
+            for (int glyphY = 0; glyphY < glyphHeight; glyphY++)
+            {
+                byte bits = memory[glyphAddress + glyphY];
+
+                for (int glyphX = 0; glyphX < glyphWidth; glyphX++)
+                {
+                    if ((bits & (0x80 >> glyphX)) == 0)
+                        continue;
+
+                    int pixelX = cellX + glyphXOffset + (glyphX * xScale);
+                    int pixelY = cellY + glyphYOffset + (glyphY * yScale);
+
+                    for (int yy = 0; yy < yScale; yy++)
+                    {
+                        int y = pixelY + yy;
+                        if (y >= cellY + cellHeight || (uint)y >= (uint)height)
+                            continue;
+
+                        int offset = y * width;
+                        for (int xx = 0; xx < xScale; xx++)
+                        {
+                            int x = pixelX + xx;
+                            if ((uint)x < (uint)width)
+                                pixels[offset + x] = colour;
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void DrawTeletextMosaic(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool separated)
+        {
+            int pattern = character & 0x3F;
+            int blockWidth = cellWidth / 2;
+            int blockHeight = cellHeight / 3;
+            int gap = separated ? 2 : 0;
+
+            for (int block = 0; block < 6; block++)
+            {
+                if ((pattern & (1 << block)) == 0)
+                    continue;
+
+                int blockX = block & 1;
+                int blockY = block / 2;
+                int x0 = cellX + (blockX * blockWidth) + gap;
+                int y0 = cellY + (blockY * blockHeight) + gap;
+                int x1 = cellX + ((blockX + 1) * blockWidth) - gap;
+                int y1 = blockY == 2
+                    ? cellY + cellHeight - gap
+                    : cellY + ((blockY + 1) * blockHeight) - gap;
+
+                FillRect(pixels, width, height, x0, y0, x1, y1, colour);
+            }
+        }
+
+        private static bool IsTeletextMosaicCharacter(byte character)
+        {
+            int value = character & 0x7F;
+            return value is >= 0x20 and <= 0x3F
+                or >= 0x60 and <= 0x7F;
         }
 
         private void RenderBitmapMode0(Display display)
@@ -574,6 +683,21 @@ namespace BBC
             }
         }
 
+        private static void FillRect(uint[] pixels, int width, int height, int x0, int y0, int x1, int y1, uint colour)
+        {
+            x0 = Math.Clamp(x0, 0, width);
+            x1 = Math.Clamp(x1, 0, width);
+            y0 = Math.Clamp(y0, 0, height);
+            y1 = Math.Clamp(y1, 0, height);
+
+            for (int y = y0; y < y1; y++)
+            {
+                int offset = y * width;
+                for (int x = x0; x < x1; x++)
+                    pixels[offset + x] = colour;
+            }
+        }
+
         private static BbcScreenMode DecodeModeFromUlaControl(byte control)
         {
             byte cursorWidth = (byte)(control & UlaCursorWidthMask);
@@ -598,6 +722,17 @@ namespace BBC
             }
 
             return BbcScreenMode.Unknown;
+        }
+
+        private sealed class TeletextState
+        {
+            public bool GraphicsMode { get; set; }
+            public bool SeparatedGraphics { get; set; }
+            public bool HoldGraphics { get; set; }
+            public bool DoubleHeight { get; set; }
+            public byte? HeldMosaic { get; set; }
+            public uint ForegroundColour { get; set; } = Foreground;
+            public uint BackgroundColour { get; set; } = Background;
         }
     }
 
