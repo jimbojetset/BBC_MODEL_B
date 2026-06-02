@@ -40,7 +40,7 @@ namespace BBC
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
             foreach (string path in options.MountPaths)
-                emulator.MountHostFile(path, queueLoadCommand: false);
+                emulator.MountHostFile(path, queueLoadCommand: true);
 
             if (options.HeadlessMilliseconds > 0)
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
@@ -287,12 +287,12 @@ namespace BBC
                 discController.Mount(path);
                 hostFilingSystem.Mount(path);
 
-                if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is string dfsCommand)
-                    QueueKeyboardText("*DISC\r" + dfsCommand + "\r");
+                if (queueLoadCommand)
+                    QueueKeyboardText("*B.\rCH. \"LOAD\"\r");
 
                 Console.WriteLine($"Mounted DFS: {discController.MountedPath}");
-                if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is not null)
-                    Console.WriteLine($"Auto LOAD:  *DISC / {hostFilingSystem.AutoLoadCommand}");
+                if (queueLoadCommand)
+                    Console.WriteLine("Auto LOAD:  *B. / CH. \"LOAD\"");
 
                 return;
             }
