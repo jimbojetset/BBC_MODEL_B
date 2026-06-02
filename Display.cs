@@ -380,7 +380,7 @@ namespace BBC
                 SDLK_9 => Key(0x26),
                 SDLK_0 => Key(0x27),
                 SDLK_UNDERSCORE => Key(0x28),
-                SDLK_HASH => Key(0x28, ShiftAdjustment.Suppress),
+                SDLK_HASH => Key(0x28, ShiftAdjustment.Force),
                 SDLK_DOWN => Key(0x29),
                 SDLK_1 => Key(0x30),
                 SDLK_2 => Key(0x31),
@@ -443,7 +443,7 @@ namespace BBC
                 SDLK_0 => Key(0x27, ShiftAdjustment.Suppress),
                 SDLK_2 => Key(0x47, ShiftAdjustment.Suppress),
                 SDLK_AT => Key(0x47, ShiftAdjustment.Suppress),
-                SDLK_HASH => Key(0x28, ShiftAdjustment.Suppress),
+                SDLK_HASH => Key(0x28, ShiftAdjustment.Force),
                 SDLK_UNDERSCORE => Key(0x17),
                 SDLK_8 => Key(0x48),
                 SDLK_9 => Key(0x15),
@@ -457,7 +457,7 @@ namespace BBC
         {
             return keySym switch
             {
-                SDLK_3 or SDLK_HASH => Key(0x28, ShiftAdjustment.Suppress),
+                SDLK_3 or SDLK_HASH => Key(0x28, ShiftAdjustment.Force),
                 _ => null
             };
         }
