@@ -443,6 +443,7 @@ namespace BBC
                 SDLK_0 => Key(0x27, ShiftAdjustment.Suppress),
                 SDLK_2 => Key(0x47, ShiftAdjustment.Suppress),
                 SDLK_AT => Key(0x47, ShiftAdjustment.Suppress),
+                SDLK_APOSTROPHE or SDLK_QUOTEDBL => Key(0x31, ShiftAdjustment.Force),
                 SDLK_HASH => Key(0x28, ShiftAdjustment.Force),
                 SDLK_UNDERSCORE => Key(0x17),
                 SDLK_8 => Key(0x48),
@@ -658,6 +659,7 @@ namespace BBC
         private const int SDLK_CARET = 94;
         private const int SDLK_HASH = 35;
         private const int SDLK_APOSTROPHE = 39;
+        private const int SDLK_QUOTEDBL = 34;
         private const int SDLK_UNDERSCORE = 95;
         private const int SDLK_0 = 48;
         private const int SDLK_1 = 49;
