@@ -188,61 +188,63 @@ namespace BBC
 
         private void ExecuteCommand()
         {
-            switch (command)
+            byte opcode = (byte)(command & 0x3F);
+
+            switch (opcode)
             {
-                case 0x4A:
-                case 0x4E:
+                case 0x0A:
+                case 0x0E:
                     PrepareWrite(parameters[0], parameters[1], 128, 1);
                     break;
 
-                case 0x4B:
-                case 0x4F:
+                case 0x0B:
+                case 0x0F:
                     PrepareWrite(parameters[0], parameters[1], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
-                case 0x52:
-                case 0x56:
+                case 0x12:
+                case 0x16:
                     ReadSectors(parameters[0], parameters[1], 128, 1);
                     break;
 
-                case 0x53:
-                case 0x57:
+                case 0x13:
+                case 0x17:
                     ReadSectors(parameters[0], parameters[1], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
-                case 0x5B:
+                case 0x1B:
                     ReadSectorIds(parameters[0], parameters[2]);
                     break;
 
-                case 0x5E:
+                case 0x1E:
                     SetResult(HasSector(parameters[0], parameters[1]) ? (byte)0 : (byte)0x18);
                     break;
 
-                case 0x5F:
+                case 0x1F:
                     SetResult(HasSector(parameters[0], parameters[1]) ? (byte)0 : (byte)0x18);
                     break;
 
-                case 0x69:
+                case 0x29:
                     specialRegisters[0x12] = parameters[0];
                     specialRegisters[0x1A] = parameters[0];
                     SetResult(0);
                     break;
 
-                case 0x6C:
+                case 0x2C:
                     result = HasMountedDisc ? (byte)0x45 : (byte)0x00;
                     resultAvailable = true;
                     break;
 
-                case 0x75:
+                case 0x35:
                     SetResult(0);
                     break;
 
-                case 0x7A:
+                case 0x3A:
                     specialRegisters[parameters[0] & 0x3F] = parameters[1];
                     SetResult(0);
                     break;
 
-                case 0x7D:
+                case 0x3D:
                     result = specialRegisters[parameters[0] & 0x3F];
                     resultAvailable = true;
                     break;
@@ -332,15 +334,15 @@ namespace BBC
 
         private static int GetParameterCount(byte command)
         {
-            return command switch
+            return (command & 0x3F) switch
             {
-                0x4A or 0x4E or 0x52 or 0x56 or 0x5E => 2,
-                0x4B or 0x4F or 0x53 or 0x57 or 0x5B or 0x5F => 3,
-                0x63 => 5,
-                0x69 or 0x7D => 1,
-                0x6C => 0,
-                0x75 => 4,
-                0x7A => 2,
+                0x0A or 0x0E or 0x12 or 0x16 or 0x1E => 2,
+                0x0B or 0x0F or 0x13 or 0x17 or 0x1B or 0x1F => 3,
+                0x23 => 5,
+                0x29 or 0x3D => 1,
+                0x2C => 0,
+                0x35 => 4,
+                0x3A => 2,
                 _ => 0
             };
         }
@@ -348,7 +350,13 @@ namespace BBC
         private static int GetSectorSize(byte sectorSizeAndCount)
         {
             int sizeCode = sectorSizeAndCount >> 5;
-            return 128 << sizeCode;
+            return sizeCode switch
+            {
+                0 => 128,
+                1 => 256,
+                2 => 512,
+                _ => 1024
+            };
         }
 
         private static int GetSectorCount(byte sectorSizeAndCount)
