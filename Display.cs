@@ -396,9 +396,10 @@ namespace BBC
         {
             return keySym switch
             {
-                SDLK_8 => 0x48,
-                SDLK_9 => 0x15,
-                SDLK_0 => 0x26,
+                SDLK_3 => 0x28,
+                SDLK_8 => 0x15,
+                SDLK_9 => 0x26,
+                SDLK_0 => 0x27,
                 _ => null
             };
         }
