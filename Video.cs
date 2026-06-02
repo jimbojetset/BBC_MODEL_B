@@ -28,6 +28,14 @@ namespace BBC
         private const uint Foreground = 0xFFFFFFFF;
         private const int CrtcRegisterCount = 32;
         private const int PaletteRegisterCount = 16;
+        private const byte UlaTeletext = 0x02;
+        private const byte UlaCharactersPerLineMask = 0x0C;
+        private const byte UlaClockHigh = 0x10;
+        private const byte UlaCursorWidthMask = 0xE0;
+        private const byte UlaCursorMode0Group = 0x80;
+        private const byte UlaCursorMode1Group = 0xC0;
+        private const byte UlaCursorMode2 = 0xE0;
+        private const byte UlaCursorMode7 = 0x40;
 
         private readonly byte[] memory;
         private readonly ushort osRomStart;
@@ -102,6 +110,7 @@ namespace BBC
                 case 0xFE20:
                 case 0xFE22:
                     UlaControl = value;
+                    CurrentMode = DecodeModeFromUlaControl(value);
                     break;
 
                 case 0xFE21:
@@ -246,11 +255,61 @@ namespace BBC
             int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
             return crtcStart & (Mode7ScreenBytes - 1);
         }
+
+        private static BbcScreenMode DecodeModeFromUlaControl(byte control)
+        {
+            byte cursorWidth = (byte)(control & UlaCursorWidthMask);
+
+            if ((control & UlaTeletext) != 0 || cursorWidth == UlaCursorMode7)
+                return BbcScreenMode.Mode7;
+
+            if (cursorWidth == UlaCursorMode2)
+                return BbcScreenMode.Mode2;
+
+            if (cursorWidth == UlaCursorMode1Group)
+                return (control & UlaClockHigh) != 0 ? BbcScreenMode.Mode1 : BbcScreenMode.Mode5;
+
+            if (cursorWidth == UlaCursorMode0Group)
+            {
+                byte columns = (byte)(control & UlaCharactersPerLineMask);
+
+                if ((control & UlaClockHigh) != 0 || columns == 0x0C)
+                    return BbcScreenMode.Mode0;
+
+                return BbcScreenMode.Mode4;
+            }
+
+            return BbcScreenMode.Unknown;
+        }
     }
 
     /// <summary>BBC Micro display modes supported by the video component.</summary>
     public enum BbcScreenMode
     {
+        /// <summary>Unknown or currently undecodable video mode.</summary>
+        Unknown = -1,
+
+        /// <summary>Mode 0: 640 x 256, 2 logical colours.</summary>
+        Mode0 = 0,
+
+        /// <summary>Mode 1: 320 x 256, 4 logical colours.</summary>
+        Mode1 = 1,
+
+        /// <summary>Mode 2: 160 x 256, 16 logical colours.</summary>
+        Mode2 = 2,
+
+        /// <summary>Mode 3: 80 column text. Currently detected as the mode 0 ULA group.</summary>
+        Mode3 = 3,
+
+        /// <summary>Mode 4: 320 x 256, 2 logical colours.</summary>
+        Mode4 = 4,
+
+        /// <summary>Mode 5: 160 x 256, 4 logical colours.</summary>
+        Mode5 = 5,
+
+        /// <summary>Mode 6: 40 column text. Currently detected as the mode 4 ULA group.</summary>
+        Mode6 = 6,
+
         /// <summary>Mode 7 teletext/text display. This is the current baseline renderer.</summary>
         Mode7 = 7
     }

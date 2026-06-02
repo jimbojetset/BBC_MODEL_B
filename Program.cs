@@ -187,6 +187,7 @@ namespace BBC
 
             Console.WriteLine($"Headless PC: ${Cpu.registers.PC:X4}");
             Console.WriteLine($"Mode 7 non-blank cells: {Video.CountMode7NonBlankCells()}");
+            Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
         }
 
         /// <summary>Releases emulator-owned resources.</summary>
