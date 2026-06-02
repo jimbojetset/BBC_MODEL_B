@@ -468,6 +468,7 @@ namespace BBC
             Array.Fill(pixels, Background);
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
+            int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
 
             for (int y = 0; y < height; y++)
             {
@@ -481,7 +482,7 @@ namespace BBC
                     {
                         int logicalColour = (value >> (7 - bit)) & 0x01;
                         uint colour = GetPaletteColour(logicalColour);
-                        int targetX = (byteX * 8) + bit;
+                        int targetX = xOffset + (byteX * 8) + bit;
 
                         WriteScaledPixel1x2(pixels, display.Width, display.Height, targetX, targetY, colour);
                     }
@@ -495,6 +496,7 @@ namespace BBC
             Array.Fill(pixels, Background);
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
+            int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
 
             for (int y = 0; y < height; y++)
             {
@@ -508,7 +510,7 @@ namespace BBC
                     {
                         int logicalColour = DecodeTwoBitPixel(value, pixel);
                         uint colour = GetPaletteColour(logicalColour);
-                        int targetX = ((byteX * 4) + pixel) * 2;
+                        int targetX = xOffset + (((byteX * 4) + pixel) * 2);
 
                         WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
                     }
@@ -522,6 +524,7 @@ namespace BBC
             Array.Fill(pixels, Background);
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
+            int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
 
             for (int y = 0; y < height; y++)
             {
@@ -535,7 +538,7 @@ namespace BBC
                     {
                         int logicalColour = DecodeFourBitPixel(value, pixel);
                         uint colour = GetPaletteColour(logicalColour);
-                        int targetX = ((byteX * 2) + pixel) * 4;
+                        int targetX = xOffset + (((byteX * 2) + pixel) * 4);
 
                         WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
                     }
@@ -549,6 +552,7 @@ namespace BBC
             Array.Fill(pixels, Background);
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
+            int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
 
             for (int y = 0; y < height; y++)
             {
@@ -562,7 +566,7 @@ namespace BBC
                     {
                         int logicalColour = (value >> (7 - bit)) & 0x01;
                         uint colour = GetPaletteColour(logicalColour);
-                        int targetX = ((byteX * 8) + bit) * 2;
+                        int targetX = xOffset + (((byteX * 8) + bit) * 2);
 
                         WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
                     }
@@ -576,6 +580,7 @@ namespace BBC
             Array.Fill(pixels, Background);
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
+            int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
 
             for (int y = 0; y < height; y++)
             {
@@ -589,7 +594,7 @@ namespace BBC
                     {
                         int logicalColour = DecodeTwoBitPixel(value, pixel);
                         uint colour = GetPaletteColour(logicalColour);
-                        int targetX = ((byteX * 4) + pixel) * 4;
+                        int targetX = xOffset + (((byteX * 4) + pixel) * 4);
 
                         WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
                     }
@@ -711,6 +716,16 @@ namespace BBC
                 return BitmapHeight;
 
             return Math.Clamp(height, 1, BitmapHeight);
+        }
+
+        private int GetBitmapXOffset(int defaultBytesPerRow, int displayPixelsPerByte)
+        {
+            int bytesPerRow = GetBitmapBytesPerRow(defaultBytesPerRow);
+            int unusedBytes = defaultBytesPerRow - bytesPerRow;
+            if (unusedBytes <= 0)
+                return 0;
+
+            return unusedBytes * displayPixelsPerByte / 2;
         }
 
         private uint GetPaletteColour(int logicalColour)

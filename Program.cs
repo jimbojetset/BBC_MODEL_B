@@ -366,6 +366,7 @@ namespace BBC
 
         private void AdvanceDeviceCycles(int cycles)
         {
+            Cpu.PacingEnabled = !discController.TransferActive;
             int previousFrame = systemVia.FrameCounter;
             systemVia.Tick(cycles);
             if (systemVia.FrameCounter != previousFrame)

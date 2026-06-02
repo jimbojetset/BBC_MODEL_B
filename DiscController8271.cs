@@ -64,6 +64,9 @@ namespace BBC
         /// <summary>Gets the currently mounted host image path.</summary>
         public string? MountedPath => mountedPath;
 
+        /// <summary>Gets whether the controller is actively transferring bytes to or from the CPU.</summary>
+        public bool TransferActive => readData.Count > 0 || pendingWrite is not null;
+
         /// <summary>Gets the command that should be typed at BASIC after mounting.</summary>
         public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
 
