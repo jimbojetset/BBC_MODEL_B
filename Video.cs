@@ -226,7 +226,8 @@ namespace BBC
                     }
                     else
                     {
-                        DrawMode7AlphaCharacter(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, state.ForegroundColour, state.DoubleHeight);
+                        bool doubleHeightBottom = state.DoubleHeight && IsDoubleHeightBottomRow(row, column, character);
+                        DrawMode7AlphaCharacter(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, state.ForegroundColour, state.DoubleHeight, doubleHeightBottom);
                     }
                 }
             }
@@ -289,7 +290,25 @@ namespace BBC
             return true;
         }
 
-        private void DrawMode7AlphaCharacter(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool doubleHeight)
+        private bool IsDoubleHeightBottomRow(int row, int column, byte character)
+        {
+            if (row <= 0)
+                return false;
+
+            TeletextState previousState = new TeletextState();
+            byte previousCharacter = 32;
+
+            for (int previousColumn = 0; previousColumn <= column; previousColumn++)
+            {
+                previousCharacter = ReadMode7DisplayCharacter(row - 1, previousColumn);
+                if (TryApplyTeletextControl(previousCharacter, previousState))
+                    continue;
+            }
+
+            return previousState.DoubleHeight && (previousCharacter & 0x7F) == (character & 0x7F);
+        }
+
+        private void DrawMode7AlphaCharacter(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool doubleHeight, bool doubleHeightBottom)
         {
             const int glyphWidth = 8;
             const int glyphHeight = 8;
@@ -297,6 +316,7 @@ namespace BBC
             int yScale = doubleHeight ? 4 : 2;
             const int glyphXOffset = 0;
             const int glyphYOffset = 2;
+            int sourceYOffset = doubleHeightBottom ? cellHeight : 0;
 
             character = (byte)(character & 0x7F);
             if (character < 32)
@@ -314,7 +334,7 @@ namespace BBC
                         continue;
 
                     int pixelX = cellX + glyphXOffset + (glyphX * xScale);
-                    int pixelY = cellY + glyphYOffset + (glyphY * yScale);
+                    int pixelY = cellY + glyphYOffset + (glyphY * yScale) - sourceYOffset;
 
                     for (int yy = 0; yy < yScale; yy++)
                     {
@@ -529,8 +549,12 @@ namespace BBC
         private bool IsCursorVisible()
         {
             byte cursorStart = crtcRegisters[CrtcCursorStartRegister];
+            byte cursorMode = (byte)(cursorStart & 0x60);
 
-            if ((cursorStart & 0x60) != 0 && (Environment.TickCount64 / 320 & 1) == 0)
+            if (cursorMode == 0x20)
+                return false;
+
+            if (cursorMode != 0 && (Environment.TickCount64 / 320 & 1) == 0)
                 return false;
 
             return true;
