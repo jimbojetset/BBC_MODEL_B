@@ -216,7 +216,7 @@ namespace BBC
                     byte character = ReadMode7DisplayCharacter(row, column);
                     int cellX = column * cellWidth;
 
-                    if (TryApplyTeletextControl(character, state, pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight))
+                    if (TryApplyTeletextControl(character, state))
                         continue;
 
                     if (state.GraphicsMode && IsTeletextMosaicCharacter(character))
@@ -234,14 +234,11 @@ namespace BBC
             RenderMode7Cursor(display);
         }
 
-        private bool TryApplyTeletextControl(byte character, TeletextState state, uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight)
+        private bool TryApplyTeletextControl(byte character, TeletextState state)
         {
             int control = character & 0x7F;
             if (control >= 0x20)
                 return false;
-
-            if (state.HoldGraphics && state.HeldMosaic is byte held)
-                DrawTeletextMosaic(pixels, width, height, cellX, cellY, cellWidth, cellHeight, held, state.ForegroundColour, state.SeparatedGraphics);
 
             switch (control)
             {
@@ -264,11 +261,11 @@ namespace BBC
                     break;
 
                 case 0x19:
-                    state.SeparatedGraphics = true;
+                    state.SeparatedGraphics = false;
                     break;
 
                 case 0x1A:
-                    state.SeparatedGraphics = false;
+                    state.SeparatedGraphics = true;
                     break;
 
                 case 0x1C:
