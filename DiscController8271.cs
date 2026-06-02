@@ -63,7 +63,7 @@ namespace BBC
         public string? MountedPath => mountedPath;
 
         /// <summary>Gets the command that should be typed at BASIC after mounting.</summary>
-        public string? AutoLoadCommand => HasMountedDisc && TryGetFirstCatalogueFile(out string? name) ? $"LOAD \"{name}\"" : null;
+        public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
 
         /// <summary>Returns whether an address belongs to the 8271 FDC.</summary>
         /// <param name="address">The CPU-visible address.</param>
@@ -393,19 +393,67 @@ namespace BBC
             NmiRequested?.Invoke();
         }
 
-        private bool TryGetFirstCatalogueFile(out string? name)
+        private bool TryGetAutoLoadCommand(out string? command)
         {
-            name = null;
+            command = null;
+
+            if (!TryReadCatalogue(out List<DfsFile> files))
+                return false;
+
+            DfsFile? bootFile = files.FirstOrDefault(file => string.Equals(file.Name, "!BOOT", StringComparison.OrdinalIgnoreCase));
+            if (bootFile is not null)
+            {
+                command = $"LOAD \"{bootFile.Name}\"";
+                return true;
+            }
+
+            DfsFile? basicFile = files.FirstOrDefault(file => LooksLikeBasicFile(file));
+            if (basicFile is not null)
+            {
+                command = $"LOAD \"{basicFile.Name}\"";
+                return true;
+            }
+
+            DfsFile firstFile = files[0];
+            command = firstFile.LoadAddress == 0 && firstFile.ExecutionAddress == 0
+                ? $"*EXEC {firstFile.Name}"
+                : $"*RUN {firstFile.Name}";
+            return true;
+        }
+
+        private bool TryReadCatalogue(out List<DfsFile> files)
+        {
+            files = new List<DfsFile>();
 
             if (!HasMountedDisc || drives[0].Length < 512)
                 return false;
 
             int fileCount = drives[0][0x107] / 8;
-            if (fileCount <= 0)
-                return false;
+            for (int i = 0; i < fileCount && i < 31; i++)
+            {
+                int nameOffset = 8 + (i * 8);
+                int infoOffset = 0x108 + (i * 8);
+                string name = ReadDfsName(drives[0], nameOffset);
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
 
-            name = ReadDfsName(drives[0], 8);
-            return !string.IsNullOrWhiteSpace(name);
+                int packed = drives[0][infoOffset + 6];
+                int loadAddress = drives[0][infoOffset] | (drives[0][infoOffset + 1] << 8) | ((packed & 0xC0) << 10);
+                int executionAddress = drives[0][infoOffset + 2] | (drives[0][infoOffset + 3] << 8) | ((packed & 0x30) << 12);
+                int length = drives[0][infoOffset + 4] | (drives[0][infoOffset + 5] << 8) | ((packed & 0x0C) << 14);
+                int startSector = drives[0][infoOffset + 7] | ((packed & 0x03) << 8);
+                files.Add(new DfsFile(name, loadAddress, executionAddress, length, startSector));
+            }
+
+            return files.Count > 0;
+        }
+
+        private bool LooksLikeBasicFile(DfsFile file)
+        {
+            int offset = file.StartSector * SectorSize;
+            return file.LoadAddress == 0x1900
+                || file.LoadAddress == 0x1D00
+                || (offset + 2 < drives[0].Length && drives[0][offset] == 0x0D && drives[0][offset + 1] == 0x00);
         }
 
         private static int GetParameterCount(byte command)
@@ -451,5 +499,7 @@ namespace BBC
         }
 
         private readonly record struct PendingWrite(int Offset, int Length);
+
+        private sealed record DfsFile(string Name, int LoadAddress, int ExecutionAddress, int Length, int StartSector);
     }
 }
