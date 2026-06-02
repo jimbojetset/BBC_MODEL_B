@@ -91,6 +91,7 @@ namespace BBC
         private Exception? cpuException;
         private readonly byte[] inputScratch = new byte[64];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
+        private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
@@ -246,7 +247,15 @@ namespace BBC
                 if (inputScratch[i] == 27)
                     TriggerEscapeCondition();
                 else
-                    InsertKeyboardBufferCharacter(inputScratch[i]);
+                    pendingKeyboardInput.Enqueue(inputScratch[i]);
+            }
+
+            while (pendingKeyboardInput.Count > 0)
+            {
+                if (!TryInsertKeyboardBufferCharacter(pendingKeyboardInput.Peek()))
+                    break;
+
+                pendingKeyboardInput.Dequeue();
             }
         }
 
@@ -265,18 +274,19 @@ namespace BBC
             Memory.Memory[EscapeFlag] |= EscapePendingFlag;
         }
 
-        private void InsertKeyboardBufferCharacter(byte character)
+        private bool TryInsertKeyboardBufferCharacter(byte character)
         {
             byte start = Memory.Memory[KeyboardBufferStartIndex];
             byte end = Memory.Memory[KeyboardBufferEndIndex];
             byte nextEnd = NextKeyboardBufferOffset(end);
 
             if (nextEnd == start)
-                return;
+                return false;
 
             Memory.Memory[0x0300 + end] = character;
             Memory.Memory[KeyboardBufferEndIndex] = nextEnd;
             Memory.Memory[KeyboardBufferBusyFlag] &= unchecked((byte)~KeyboardBufferEmptyFlag);
+            return true;
         }
 
         private static byte NextKeyboardBufferOffset(byte offset)

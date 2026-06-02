@@ -238,21 +238,24 @@ namespace BBC
             if (length <= 0)
                 return;
 
-            foreach (Rune rune in Encoding.UTF8.GetString(utf8Text, 0, length).EnumerateRunes())
-            {
-                if (rune.Value >= 32 && rune.Value <= 126)
-                    pendingInput.Enqueue((byte)char.ToUpperInvariant((char)rune.Value));
-            }
+            EnqueueHostText(Encoding.UTF8.GetString(utf8Text, 0, length));
         }
 
         private void EnqueueSpecialKey(int keySym)
         {
+            int modifiers = SDL_GetModState();
+
             if (keySym == SDLK_F12)
             {
-                int modifiers = SDL_GetModState();
                 pendingBreaks.Enqueue(new BreakKeyPress(
                     (modifiers & KMOD_SHIFT) != 0,
                     (modifiers & KMOD_CTRL) != 0));
+                return;
+            }
+
+            if (keySym == SDLK_V && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
+            {
+                EnqueueClipboardText();
                 return;
             }
 
@@ -272,6 +275,56 @@ namespace BBC
 
             if (character.HasValue)
                 pendingInput.Enqueue(character.Value);
+        }
+
+        private void EnqueueClipboardText()
+        {
+            IntPtr textPointer = SDL_GetClipboardText();
+            if (textPointer == IntPtr.Zero)
+                return;
+
+            try
+            {
+                string? text = Marshal.PtrToStringUTF8(textPointer);
+                if (!string.IsNullOrEmpty(text))
+                    EnqueueHostText(text);
+            }
+            finally
+            {
+                SDL_free(textPointer);
+            }
+        }
+
+        private void EnqueueHostText(string text)
+        {
+            for (int i = 0; i < text.Length; i++)
+            {
+                char ch = text[i];
+
+                if (ch == '\r')
+                {
+                    if (i + 1 < text.Length && text[i + 1] == '\n')
+                        i++;
+
+                    pendingInput.Enqueue(13);
+                    continue;
+                }
+
+                if (ch == '\n')
+                {
+                    pendingInput.Enqueue(13);
+                    continue;
+                }
+
+                if (ch == '\t')
+                {
+                    pendingInput.Enqueue((byte)' ');
+                    continue;
+                }
+
+                if (ch >= 32 && ch <= 126)
+                    pendingInput.Enqueue((byte)char.ToUpperInvariant(ch));
+            }
         }
 
         private static void ThrowIfNull(IntPtr value, string operation)
@@ -346,8 +399,10 @@ namespace BBC
         private const int SDLK_UP = 1073741906;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDLK_F12 = 1073741893;
+        private const int SDLK_V = 118;
         private const int KMOD_SHIFT = 0x0003;
         private const int KMOD_CTRL = 0x00C0;
+        private const int KMOD_GUI = 0x0C00;
 
         [StructLayout(LayoutKind.Explicit, Size = 56)]
         private struct SdlEvent
@@ -444,6 +499,12 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_GetModState();
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr SDL_GetClipboardText();
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SDL_free(IntPtr memblock);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_StartTextInput();
