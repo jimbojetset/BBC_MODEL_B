@@ -35,6 +35,9 @@ namespace BBC
         private readonly byte[] paletteRegisters = new byte[PaletteRegisterCount];
         private byte selectedCrtcRegister;
 
+        /// <summary>Gets the currently selected BBC screen mode.</summary>
+        public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
+
         /// <summary>Gets the current Video ULA control register value.</summary>
         public byte UlaControl { get; private set; }
 
@@ -53,6 +56,7 @@ namespace BBC
             Array.Clear(crtcRegisters);
             Array.Clear(paletteRegisters);
             selectedCrtcRegister = 0;
+            CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
         }
 
@@ -100,7 +104,16 @@ namespace BBC
         /// <param name="display">The SDL-backed display to render into.</param>
         public void Render(Display display)
         {
-            RenderMode7TextScreen(display);
+            switch (CurrentMode)
+            {
+                case BbcScreenMode.Mode7:
+                    RenderMode7TextScreen(display);
+                    break;
+
+                default:
+                    RenderMode7TextScreen(display);
+                    break;
+            }
         }
 
         /// <summary>Counts non-blank mode 7 screen cells for smoke tests.</summary>
@@ -222,5 +235,12 @@ namespace BBC
             int crtcStart = ((crtcRegisters[12] & 0x3F) << 8) | crtcRegisters[13];
             return crtcStart & (Mode7ScreenBytes - 1);
         }
+    }
+
+    /// <summary>BBC Micro display modes supported by the video component.</summary>
+    public enum BbcScreenMode
+    {
+        /// <summary>Mode 7 teletext/text display. This is the current baseline renderer.</summary>
+        Mode7 = 7
     }
 }
