@@ -169,6 +169,7 @@ namespace BBC
             command = value;
             parameters.Clear();
             resultAvailable = false;
+            Trace($"COMMAND {command:X2}");
 
             if (GetParameterCount(command) == 0)
                 ExecuteCommand();
@@ -177,6 +178,7 @@ namespace BBC
         private void WriteParameter(byte value)
         {
             parameters.Add(value);
+            Trace($"PARAM {parameters.Count}/{GetParameterCount(command)} {value:X2}");
 
             if (parameters.Count >= GetParameterCount(command))
                 ExecuteCommand();
@@ -245,6 +247,7 @@ namespace BBC
                 case 0x2C:
                     result = HasMountedDisc ? (byte)0x45 : (byte)0x00;
                     resultAvailable = true;
+                    RequestNmi();
                     break;
 
                 case 0x35:
@@ -259,6 +262,7 @@ namespace BBC
                 case 0x3D:
                     result = specialRegisters[parameters[0] & 0x3F];
                     resultAvailable = true;
+                    RequestNmi();
                     break;
 
                 default:
@@ -316,6 +320,7 @@ namespace BBC
 
         private void ReadSectorIds(int track, int count)
         {
+            Trace($"READ IDS T{track:D2} count={count}");
             int sectorCount = count == 0 ? SectorsPerTrack : Math.Min(count, SectorsPerTrack);
 
             for (int sector = 0; sector < sectorCount; sector++)
@@ -325,6 +330,8 @@ namespace BBC
                 readData.Enqueue((byte)sector);
                 readData.Enqueue(1);
             }
+
+            RequestNmi();
         }
 
         private bool HasSector(int track, int sector)
