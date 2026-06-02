@@ -26,13 +26,17 @@ namespace BBC
         private const ushort AudioFormatS16 = 0x8010;
 
         private readonly object syncRoot = new object();
-        private readonly int[] tonePeriods = [1, 1, 1];
+        private readonly int[] tonePeriods = [0, 0, 0];
         private readonly int[] volumes = [15, 15, 15, 15];
-        private readonly double[] tonePhases = new double[3];
+        private readonly double[] toneCounters = new double[3];
+        private readonly int[] tonePolarity = [1, 1, 1];
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
-        private readonly Random noise = new Random(1);
+        private static readonly double[] VolumeTable = CreateVolumeTable();
 
         private byte noiseControl;
+        private double noiseCounter;
+        private int noisePolarity = 1;
+        private ushort noiseShiftRegister = 0x4000;
         private int latchedChannel;
         private bool latchedVolume;
         private uint audioDevice;
@@ -45,10 +49,14 @@ namespace BBC
         {
             lock (syncRoot)
             {
-                Array.Fill(tonePeriods, 1);
+                Array.Fill(tonePeriods, 0);
                 Array.Fill(volumes, 15);
-                Array.Clear(tonePhases);
+                Array.Clear(toneCounters);
+                Array.Fill(tonePolarity, 1);
                 noiseControl = 0;
+                noiseCounter = 0;
+                noisePolarity = 1;
+                noiseShiftRegister = 0x4000;
                 latchedChannel = 0;
                 latchedVolume = false;
             }
@@ -103,11 +111,11 @@ namespace BBC
                     }
                     else if (latchedChannel == 3)
                     {
-                        noiseControl = (byte)(value & 0x0F);
+                        SetNoiseControl((byte)(value & 0x0F));
                     }
                     else
                     {
-                        tonePeriods[latchedChannel] = Math.Max(1, (tonePeriods[latchedChannel] & 0x3F0) | (value & 0x0F));
+                        tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x3F0) | (value & 0x0F);
                     }
 
                     return;
@@ -119,11 +127,11 @@ namespace BBC
                 }
                 else if (latchedChannel == 3)
                 {
-                    noiseControl = (byte)(value & 0x0F);
+                    SetNoiseControl((byte)(value & 0x0F));
                 }
                 else
                 {
-                    tonePeriods[latchedChannel] = Math.Max(1, (tonePeriods[latchedChannel] & 0x0F) | ((value & 0x3F) << 4));
+                    tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x0F) | ((value & 0x3F) << 4);
                 }
             }
         }
@@ -192,31 +200,89 @@ namespace BBC
                 double mixed = 0;
 
                 for (int channel = 0; channel < 3; channel++)
-                {
-                    double frequency = ClockHz / (32.0 * Math.Max(1, periods[channel]));
-                    tonePhases[channel] += frequency / SampleRate;
-                    tonePhases[channel] -= Math.Floor(tonePhases[channel]);
-                    mixed += (tonePhases[channel] < 0.5 ? 1.0 : -1.0) * GetLinearVolume(attenuations[channel]);
-                }
+                    mixed += AdvanceTone(channel, periods[channel]) * GetVolume(attenuations[channel]);
 
-                mixed += GetNoiseSample(currentNoiseControl) * GetLinearVolume(attenuations[3]);
+                mixed += AdvanceNoise(currentNoiseControl, periods[2]) * GetVolume(attenuations[3]);
                 samples[i] = (short)Math.Clamp(mixed * 8192, short.MinValue, short.MaxValue);
             }
         }
 
-        private double GetNoiseSample(byte control)
+        private double AdvanceTone(int channel, int period)
         {
-            int rate = control & 0x03;
-            int gate = rate == 0 ? 4 : rate == 1 ? 8 : 16;
-            return noise.Next(gate) == 0 ? 1.0 : -1.0;
+            int effectivePeriod = period == 0 ? 1 : period;
+            toneCounters[channel] -= ClockHz / (16.0 * SampleRate);
+
+            while (toneCounters[channel] <= 0)
+            {
+                toneCounters[channel] += effectivePeriod;
+                tonePolarity[channel] = -tonePolarity[channel];
+            }
+
+            return tonePolarity[channel];
         }
 
-        private static double GetLinearVolume(int attenuation)
+        private double AdvanceNoise(byte control, int tone2Period)
         {
-            if (attenuation >= 15)
-                return 0;
+            int period = GetNoisePeriod(control, tone2Period);
+            noiseCounter -= ClockHz / (16.0 * SampleRate);
 
-            return (15 - attenuation) / 15.0 / 4.0;
+            while (noiseCounter <= 0)
+            {
+                noiseCounter += period;
+                StepNoiseShiftRegister(control);
+                noisePolarity = (noiseShiftRegister & 0x01) == 0 ? 1 : -1;
+            }
+
+            return noisePolarity;
+        }
+
+        private void StepNoiseShiftRegister(byte control)
+        {
+            int feedback;
+
+            if ((control & 0x04) != 0)
+                feedback = (noiseShiftRegister ^ (noiseShiftRegister >> 1)) & 0x01;
+            else
+                feedback = noiseShiftRegister & 0x01;
+
+            noiseShiftRegister = (ushort)((noiseShiftRegister >> 1) | (feedback << 14));
+            if (noiseShiftRegister == 0)
+                noiseShiftRegister = 0x4000;
+        }
+
+        private void SetNoiseControl(byte control)
+        {
+            noiseControl = control;
+            noiseCounter = 0;
+            noisePolarity = 1;
+            noiseShiftRegister = 0x4000;
+        }
+
+        private static int GetNoisePeriod(byte control, int tone2Period)
+        {
+            return (control & 0x03) switch
+            {
+                0 => 0x10,
+                1 => 0x20,
+                2 => 0x40,
+                _ => Math.Max(1, tone2Period == 0 ? 1 : tone2Period)
+            };
+        }
+
+        private static double GetVolume(int attenuation)
+        {
+            return VolumeTable[Math.Clamp(attenuation, 0, 15)];
+        }
+
+        private static double[] CreateVolumeTable()
+        {
+            double[] table = new double[16];
+
+            for (int i = 0; i < table.Length - 1; i++)
+                table[i] = Math.Pow(10.0, -2.0 * i / 20.0) / 4.0;
+
+            table[15] = 0;
+            return table;
         }
 
         private static void ThrowIfSdlFailed(int result, string operation)
