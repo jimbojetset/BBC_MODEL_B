@@ -18,11 +18,14 @@ namespace BBC
     public sealed class SystemVia
     {
         private const byte SoundWriteEnableLatchBit = 0;
+        private const byte KeyboardWriteEnableLatchBit = 3;
         private const byte InterruptFlagTimer1 = 0x40;
         private const byte InterruptFlagTimer2 = 0x20;
+        private const byte InterruptFlagKeyboard = 0x01;
         private const byte InterruptSummary = 0x80;
         private readonly Sound sound;
         private readonly byte[] registers = new byte[16];
+        private readonly bool[] pressedKeys = new bool[128];
         private byte addressableLatch = 0xFF;
         private byte interruptFlags;
         private byte interruptEnable;
@@ -58,6 +61,7 @@ namespace BBC
         public void Reset()
         {
             Array.Clear(registers);
+            Array.Clear(pressedKeys);
             addressableLatch = 0xFF;
             interruptFlags = 0;
             interruptEnable = 0;
@@ -73,6 +77,23 @@ namespace BBC
             timer2Running = false;
             timer2HasInterrupted = false;
             peripheralCycleRemainder = 0;
+        }
+
+        /// <summary>Updates one BBC keyboard matrix key state.</summary>
+        /// <param name="internalKey">The BBC internal key number.</param>
+        /// <param name="pressed">Whether the key is currently pressed.</param>
+        public void SetKeyState(byte internalKey, bool pressed)
+        {
+            if (internalKey >= pressedKeys.Length)
+                return;
+
+            pressedKeys[internalKey] = pressed;
+
+            if (pressed && IsKeyboardAutoScanEnabled())
+                SetInterrupt(InterruptFlagKeyboard);
+
+            if (dataDirectionA == 0x7F && !IsKeyboardAutoScanEnabled())
+                UpdateKeyboardColumnInterrupt();
         }
 
         /// <summary>Gets whether the VIA IRQ output is currently asserted.</summary>
@@ -141,6 +162,8 @@ namespace BBC
                 case 0x1:
                 case 0xF:
                     portA = value;
+                    if (dataDirectionA == 0x7F && !IsKeyboardAutoScanEnabled())
+                        UpdateKeyboardColumnInterrupt();
                     break;
 
                 case 0x2:
@@ -296,9 +319,57 @@ namespace BBC
         private byte ReadPortA()
         {
             if (dataDirectionA == 0x7F)
-                return 0x00;
+                return ReadKeyboardPortA();
 
             return ReadPort(portA, dataDirectionA);
+        }
+
+        private byte ReadKeyboardPortA()
+        {
+            byte selectedKey = (byte)(portA & 0x7F);
+
+            if (IsKeyboardAutoScanEnabled())
+                return AnyNonModifierKeyPressed() ? (byte)0x80 : (byte)0x00;
+
+            return selectedKey < pressedKeys.Length && pressedKeys[selectedKey]
+                ? (byte)(selectedKey | 0x80)
+                : (byte)0x00;
+        }
+
+        private bool AnyNonModifierKeyPressed()
+        {
+            for (int i = 0x10; i < pressedKeys.Length; i++)
+            {
+                if (pressedKeys[i])
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool IsKeyboardAutoScanEnabled()
+        {
+            return (addressableLatch & (1 << KeyboardWriteEnableLatchBit)) != 0;
+        }
+
+        private void UpdateKeyboardColumnInterrupt()
+        {
+            int column = portA & 0x0F;
+            bool keyInColumnPressed = false;
+
+            for (int key = 0x10 + column; key < pressedKeys.Length; key += 0x10)
+            {
+                if (pressedKeys[key])
+                {
+                    keyInColumnPressed = true;
+                    break;
+                }
+            }
+
+            if (keyInColumnPressed)
+                SetInterrupt(InterruptFlagKeyboard);
+            else
+                ClearInterrupt(InterruptFlagKeyboard);
         }
     }
 }

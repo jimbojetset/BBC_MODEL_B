@@ -90,6 +90,7 @@ namespace BBC
         private Thread? cpuThread;
         private Exception? cpuException;
         private readonly byte[] inputScratch = new byte[64];
+        private readonly HostKeyChange[] keyChangeScratch = new HostKeyChange[64];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
@@ -158,22 +159,25 @@ namespace BBC
 
             StartCpu();
 
-            Stopwatch frameTimer = Stopwatch.StartNew();
+            long frameTicks = Math.Max(1, Stopwatch.Frequency / TargetFramesPerSecond);
+            long nextFrame = Stopwatch.GetTimestamp() + frameTicks;
             while (Display.PumpEvents())
             {
                 if (cpuException is not null)
                     throw new InvalidOperationException("CPU execution failed.", cpuException);
 
                 DrainHostBreakInput(Display);
+                DrainHostKeyMatrixInput(Display);
                 DrainHostKeyboardInput(Display);
                 Video.Render(Display);
                 Display.Present();
 
-                int remaining = FrameMilliseconds - (int)frameTimer.ElapsedMilliseconds;
-                if (remaining > 0)
-                    Thread.Sleep(remaining);
+                WaitUntil(nextFrame);
+                nextFrame += frameTicks;
 
-                frameTimer.Restart();
+                long now = Stopwatch.GetTimestamp();
+                if (nextFrame < now - frameTicks * 4)
+                    nextFrame = now + frameTicks;
             }
 
             StopCpu();
@@ -278,6 +282,17 @@ namespace BBC
             }
         }
 
+        private void DrainHostKeyMatrixInput(Display display)
+        {
+            int count = display.DrainKeyChanges(keyChangeScratch);
+
+            for (int i = 0; i < count; i++)
+                systemVia.SetKeyState(keyChangeScratch[i].InternalKey, keyChangeScratch[i].Pressed);
+
+            if (count > 0)
+                Cpu.SetIrqLine(systemVia.IrqAsserted);
+        }
+
         private void DrainHostBreakInput(Display display)
         {
             int count = display.DrainBreaks(breakScratch);
@@ -313,6 +328,20 @@ namespace BBC
             return offset >= (KeyboardBufferEnd & 0xFF)
                 ? (byte)(KeyboardBufferStart & 0xFF)
                 : (byte)(offset + 1);
+        }
+
+        private static void WaitUntil(long deadlineTicks)
+        {
+            long remaining = deadlineTicks - Stopwatch.GetTimestamp();
+            if (remaining <= 0)
+                return;
+
+            long remainingMs = remaining * 1000 / Stopwatch.Frequency;
+            if (remainingMs > 1)
+                Thread.Sleep((int)(remainingMs - 1));
+
+            while (Stopwatch.GetTimestamp() < deadlineTicks)
+                Thread.SpinWait(64);
         }
 
         private void LoadSystemRoms()

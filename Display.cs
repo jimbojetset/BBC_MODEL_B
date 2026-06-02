@@ -29,6 +29,7 @@ namespace BBC
         private readonly uint[] frameBuffer;
         private readonly Queue<byte> pendingInput = new Queue<byte>();
         private readonly Queue<BreakKeyPress> pendingBreaks = new Queue<BreakKeyPress>();
+        private readonly Queue<HostKeyChange> pendingKeyChanges = new Queue<HostKeyChange>();
         private readonly int pitchBytes;
 
         private IntPtr window;
@@ -107,14 +108,11 @@ namespace BBC
                     continue;
                 }
 
-                if (ev.Type == SDL_TEXTINPUT)
-                {
-                    EnqueueTextInput(ev.Text);
-                    continue;
-                }
-
                 if (ev.Type == SDL_KEYDOWN && ev.KeyRepeat == 0)
-                    EnqueueSpecialKey(ev.KeySym);
+                    EnqueueKeyDown(ev.KeySym);
+
+                if (ev.Type == SDL_KEYUP)
+                    EnqueueKeyUp(ev.KeySym);
             }
 
             return !QuitRequested;
@@ -142,6 +140,19 @@ namespace BBC
 
             while (count < destination.Length && pendingBreaks.Count > 0)
                 destination[count++] = pendingBreaks.Dequeue();
+
+            return count;
+        }
+
+        /// <summary>Copies pending BBC keyboard matrix changes into a caller-provided buffer.</summary>
+        /// <param name="destination">The destination buffer.</param>
+        /// <returns>The number of changes copied.</returns>
+        public int DrainKeyChanges(Span<HostKeyChange> destination)
+        {
+            int count = 0;
+
+            while (count < destination.Length && pendingKeyChanges.Count > 0)
+                destination[count++] = pendingKeyChanges.Dequeue();
 
             return count;
         }
@@ -232,16 +243,7 @@ namespace BBC
             disposed = true;
         }
 
-        private void EnqueueTextInput(byte[] utf8Text)
-        {
-            int length = Array.IndexOf(utf8Text, (byte)0);
-            if (length <= 0)
-                return;
-
-            EnqueueHostText(Encoding.UTF8.GetString(utf8Text, 0, length));
-        }
-
-        private void EnqueueSpecialKey(int keySym)
+        private void EnqueueKeyDown(int keySym)
         {
             int modifiers = SDL_GetModState();
 
@@ -259,22 +261,97 @@ namespace BBC
                 return;
             }
 
-            byte? character = keySym switch
+            byte? key = MapHostKeyToBbcKey(keySym);
+            if (key.HasValue)
+                pendingKeyChanges.Enqueue(new HostKeyChange(key.Value, true));
+
+            if (keySym == SDLK_ESCAPE)
+                pendingInput.Enqueue(27);
+        }
+
+        private void EnqueueKeyUp(int keySym)
+        {
+            byte? key = MapHostKeyToBbcKey(keySym);
+            if (key.HasValue)
+                pendingKeyChanges.Enqueue(new HostKeyChange(key.Value, false));
+        }
+
+        private static byte? MapHostKeyToBbcKey(int keySym)
+        {
+            return keySym switch
             {
-                SDLK_RETURN => 13,
-                SDLK_KP_ENTER => 13,
-                SDLK_BACKSPACE => 127,
-                SDLK_DELETE => 127,
-                SDLK_ESCAPE => 27,
-                SDLK_LEFT => 8,
-                SDLK_RIGHT => 9,
-                SDLK_DOWN => 10,
-                SDLK_UP => 11,
+                SDLK_LSHIFT or SDLK_RSHIFT => 0x00,
+                SDLK_LCTRL or SDLK_RCTRL => 0x01,
+                SDLK_Q => 0x10,
+                SDLK_3 => 0x11,
+                SDLK_4 => 0x12,
+                SDLK_5 => 0x13,
+                SDLK_F4 => 0x14,
+                SDLK_8 => 0x15,
+                SDLK_F7 => 0x16,
+                SDLK_MINUS => 0x17,
+                SDLK_CARET => 0x18,
+                SDLK_LEFT => 0x19,
+                SDLK_F10 => 0x20,
+                SDLK_W => 0x21,
+                SDLK_E => 0x22,
+                SDLK_T => 0x23,
+                SDLK_7 => 0x24,
+                SDLK_I => 0x25,
+                SDLK_9 => 0x26,
+                SDLK_0 => 0x27,
+                SDLK_UNDERSCORE => 0x28,
+                SDLK_DOWN => 0x29,
+                SDLK_1 => 0x30,
+                SDLK_2 => 0x31,
+                SDLK_D => 0x32,
+                SDLK_R => 0x33,
+                SDLK_6 => 0x34,
+                SDLK_U => 0x35,
+                SDLK_O => 0x36,
+                SDLK_P => 0x37,
+                SDLK_LEFTBRACKET => 0x38,
+                SDLK_UP => 0x39,
+                SDLK_CAPSLOCK => 0x40,
+                SDLK_A => 0x41,
+                SDLK_X => 0x42,
+                SDLK_F => 0x43,
+                SDLK_Y => 0x44,
+                SDLK_J => 0x45,
+                SDLK_K => 0x46,
+                SDLK_AT => 0x47,
+                SDLK_COLON => 0x48,
+                SDLK_RETURN or SDLK_KP_ENTER => 0x49,
+                SDLK_S => 0x51,
+                SDLK_C => 0x52,
+                SDLK_G => 0x53,
+                SDLK_H => 0x54,
+                SDLK_N => 0x55,
+                SDLK_L => 0x56,
+                SDLK_SEMICOLON => 0x57,
+                SDLK_RIGHTBRACKET => 0x58,
+                SDLK_BACKSPACE or SDLK_DELETE => 0x59,
+                SDLK_TAB => 0x60,
+                SDLK_Z => 0x61,
+                SDLK_SPACE => 0x62,
+                SDLK_V => 0x63,
+                SDLK_B => 0x64,
+                SDLK_M => 0x65,
+                SDLK_COMMA => 0x66,
+                SDLK_PERIOD => 0x67,
+                SDLK_SLASH => 0x68,
+                SDLK_ESCAPE => 0x70,
+                SDLK_F1 => 0x71,
+                SDLK_F2 => 0x72,
+                SDLK_F3 => 0x73,
+                SDLK_F5 => 0x74,
+                SDLK_F6 => 0x75,
+                SDLK_F8 => 0x76,
+                SDLK_F9 => 0x77,
+                SDLK_BACKSLASH => 0x78,
+                SDLK_RIGHT => 0x79,
                 _ => null
             };
-
-            if (character.HasValue)
-                pendingInput.Enqueue(character.Value);
         }
 
         private void EnqueueClipboardText()
@@ -388,18 +465,82 @@ namespace BBC
         private const int SDL_TRUE = 1;
         private const uint SDL_QUIT = 0x100;
         private const uint SDL_KEYDOWN = 0x300;
-        private const uint SDL_TEXTINPUT = 0x303;
+        private const uint SDL_KEYUP = 0x301;
+        private const int SDLK_SPACE = 32;
+        private const int SDLK_AT = 64;
+        private const int SDLK_CARET = 94;
+        private const int SDLK_UNDERSCORE = 95;
+        private const int SDLK_0 = 48;
+        private const int SDLK_1 = 49;
+        private const int SDLK_2 = 50;
+        private const int SDLK_3 = 51;
+        private const int SDLK_4 = 52;
+        private const int SDLK_5 = 53;
+        private const int SDLK_6 = 54;
+        private const int SDLK_7 = 55;
+        private const int SDLK_8 = 56;
+        private const int SDLK_9 = 57;
+        private const int SDLK_COLON = 58;
+        private const int SDLK_SEMICOLON = 59;
         private const int SDLK_BACKSPACE = 8;
+        private const int SDLK_TAB = 9;
         private const int SDLK_RETURN = 13;
         private const int SDLK_ESCAPE = 27;
+        private const int SDLK_COMMA = 44;
+        private const int SDLK_MINUS = 45;
+        private const int SDLK_PERIOD = 46;
+        private const int SDLK_SLASH = 47;
         private const int SDLK_DELETE = 127;
+        private const int SDLK_LEFTBRACKET = 91;
+        private const int SDLK_BACKSLASH = 92;
+        private const int SDLK_RIGHTBRACKET = 93;
+        private const int SDLK_A = 97;
+        private const int SDLK_B = 98;
+        private const int SDLK_C = 99;
+        private const int SDLK_D = 100;
+        private const int SDLK_E = 101;
+        private const int SDLK_F = 102;
+        private const int SDLK_G = 103;
+        private const int SDLK_H = 104;
+        private const int SDLK_I = 105;
+        private const int SDLK_J = 106;
+        private const int SDLK_K = 107;
+        private const int SDLK_L = 108;
+        private const int SDLK_M = 109;
+        private const int SDLK_N = 110;
+        private const int SDLK_O = 111;
+        private const int SDLK_P = 112;
+        private const int SDLK_Q = 113;
+        private const int SDLK_R = 114;
+        private const int SDLK_S = 115;
+        private const int SDLK_T = 116;
+        private const int SDLK_U = 117;
+        private const int SDLK_V = 118;
+        private const int SDLK_W = 119;
+        private const int SDLK_X = 120;
+        private const int SDLK_Y = 121;
+        private const int SDLK_Z = 122;
         private const int SDLK_RIGHT = 1073741903;
         private const int SDLK_LEFT = 1073741904;
         private const int SDLK_DOWN = 1073741905;
         private const int SDLK_UP = 1073741906;
+        private const int SDLK_CAPSLOCK = 1073741881;
+        private const int SDLK_F1 = 1073741882;
+        private const int SDLK_F2 = 1073741883;
+        private const int SDLK_F3 = 1073741884;
+        private const int SDLK_F4 = 1073741885;
+        private const int SDLK_F5 = 1073741886;
+        private const int SDLK_F6 = 1073741887;
+        private const int SDLK_F7 = 1073741888;
+        private const int SDLK_F8 = 1073741889;
+        private const int SDLK_F9 = 1073741890;
+        private const int SDLK_F10 = 1073741891;
         private const int SDLK_KP_ENTER = 1073741912;
+        private const int SDLK_LCTRL = 1073742048;
+        private const int SDLK_LSHIFT = 1073742049;
+        private const int SDLK_RSHIFT = 1073742053;
+        private const int SDLK_RCTRL = 1073742052;
         private const int SDLK_F12 = 1073741893;
-        private const int SDLK_V = 118;
         private const int KMOD_SHIFT = 0x0003;
         private const int KMOD_CTRL = 0x00C0;
         private const int KMOD_GUI = 0x0C00;
@@ -520,4 +661,9 @@ namespace BBC
     /// <param name="Shift">Whether Shift was held.</param>
     /// <param name="Control">Whether Control was held.</param>
     public readonly record struct BreakKeyPress(bool Shift, bool Control);
+
+    /// <summary>Describes a BBC keyboard matrix key transition from the host keyboard.</summary>
+    /// <param name="InternalKey">The BBC internal key number.</param>
+    /// <param name="Pressed">Whether the key is now pressed.</param>
+    public readonly record struct HostKeyChange(byte InternalKey, bool Pressed);
 }
