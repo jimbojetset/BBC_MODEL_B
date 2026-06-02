@@ -181,6 +181,7 @@ namespace BBC
             discController = new DiscController8271();
             Video = new Video(Memory.Memory, OsRomStart);
             Cpu = new CPU_6502(Memory, CpuClockHz);
+            discController.NmiRequested += () => Cpu.InitiateNMI(0xFFFA);
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;

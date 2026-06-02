@@ -35,6 +35,10 @@ namespace BBC
         private PendingWrite? pendingWrite;
         private int selectedDrive;
         private string? mountedPath;
+        private bool nmiPending;
+
+        /// <summary>Raised when the controller would assert the BBC disc NMI line.</summary>
+        public event Action? NmiRequested;
 
         /// <summary>Gets whether a disc image is mounted in drive 0.</summary>
         public bool HasMountedDisc => drives[0].Length > 0;
@@ -80,6 +84,7 @@ namespace BBC
             resultAvailable = true;
             selectedDrive = 0;
             Array.Clear(specialRegisters);
+            nmiPending = false;
         }
 
         /// <summary>Reads an 8271 register.</summary>
@@ -123,6 +128,7 @@ namespace BBC
 
         private byte ReadStatus()
         {
+            nmiPending = false;
             byte status = 0;
 
             if (readData.Count > 0 || pendingWrite is not null)
@@ -137,6 +143,7 @@ namespace BBC
         private byte ReadResult()
         {
             resultAvailable = false;
+            nmiPending = false;
             return result;
         }
 
@@ -148,6 +155,8 @@ namespace BBC
             byte value = readData.Dequeue();
             if (readData.Count == 0)
                 SetResult(0);
+            else
+                RequestNmi();
 
             return value;
         }
@@ -265,6 +274,8 @@ namespace BBC
 
             for (int i = 0; i < sectorSize * count; i++)
                 readData.Enqueue(drives[selectedDrive][offset + i]);
+
+            RequestNmi();
         }
 
         private void PrepareWrite(int track, int sector, int sectorSize, int count)
@@ -277,6 +288,7 @@ namespace BBC
 
             pendingWrite = new PendingWrite(offset, sectorSize * count);
             writeData.Clear();
+            RequestNmi();
         }
 
         private void WriteSectors(PendingWrite write, List<byte> bytes)
@@ -315,6 +327,16 @@ namespace BBC
         {
             result = value;
             resultAvailable = true;
+            RequestNmi();
+        }
+
+        private void RequestNmi()
+        {
+            if (nmiPending)
+                return;
+
+            nmiPending = true;
+            NmiRequested?.Invoke();
         }
 
         private bool TryGetFirstCatalogueFile(out string? name)
