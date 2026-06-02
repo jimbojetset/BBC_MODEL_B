@@ -264,11 +264,11 @@ namespace BBC
                     break;
 
                 case 0x19:
-                    state.SeparatedGraphics = false;
+                    state.SeparatedGraphics = true;
                     break;
 
                 case 0x1A:
-                    state.SeparatedGraphics = true;
+                    state.SeparatedGraphics = false;
                     break;
 
                 case 0x1C:
