@@ -87,6 +87,7 @@ namespace BBC.CPU
         public Func<bool>? OnBeforeInstruction;
         private int externalStallCycles;
         public bool PacingEnabled { get; set; } = true;
+        public double SpeedScale { get; set; } = 1.0;
 
         /// <summary>Adds externally requested CPU stall cycles.</summary>
         /// <param name="cycles">The number of emulated CPU cycles to advance.</param>
@@ -178,7 +179,8 @@ namespace BBC.CPU
             running = true;
 
             int sliceCycles = SliceCycles;
-            long ticksPerSlice = Math.Max(1, Stopwatch.Frequency * SliceCycles / clockFreq);
+            int effectiveClockFreq = Math.Max(1, (int)Math.Round(clockFreq * Math.Clamp(SpeedScale, 0.01, 4.0)));
+            long ticksPerSlice = Math.Max(1, Stopwatch.Frequency * SliceCycles / effectiveClockFreq);
 
             long nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
 

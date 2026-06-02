@@ -32,6 +32,7 @@ namespace BBC
             }
 
             emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
+            emulator.Cpu.SpeedScale = options.SpeedScale;
 
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     {emulator.OsRomPath} -> ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
@@ -53,6 +54,7 @@ namespace BBC
             int headlessMilliseconds = 0;
             List<string> mountPaths = new List<string>();
             string? printAutoLoadPath = null;
+            double speedScale = 1.0;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -74,6 +76,15 @@ namespace BBC
                     continue;
                 }
 
+                if (string.Equals(args[i], "--speed", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length || !TryParseSpeedScale(args[i + 1], out speedScale))
+                        throw new ArgumentException("--speed requires a value such as 0.25 or 25%.");
+
+                    i++;
+                    continue;
+                }
+
                 if (string.Equals(args[i], "--disc", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(args[i], "--disk", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(args[i], "--file", StringComparison.OrdinalIgnoreCase))
@@ -89,10 +100,26 @@ namespace BBC
                     mountPaths.Add(args[i]);
             }
 
-            return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath);
+            return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath, speedScale);
         }
 
-        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath);
+        private static bool TryParseSpeedScale(string value, out double speedScale)
+        {
+            string trimmed = value.Trim();
+            bool percent = trimmed.EndsWith('%');
+            if (percent)
+                trimmed = trimmed[..^1];
+
+            if (!double.TryParse(trimmed, out speedScale))
+                return false;
+
+            if (percent)
+                speedScale /= 100.0;
+
+            return speedScale is >= 0.01 and <= 4.0;
+        }
+
+        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath, double SpeedScale);
     }
 
     /// <summary>
