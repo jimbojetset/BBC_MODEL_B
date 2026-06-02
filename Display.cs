@@ -24,6 +24,7 @@ namespace BBC
         public const int DefaultHeight = 512;
         public const int DefaultScale = 2;
 
+        private const byte BbcShiftKey = 0x00;
         private const uint Black = 0xFF000000;
 
         private readonly uint[] frameBuffer;
@@ -31,7 +32,7 @@ namespace BBC
         private readonly Queue<BreakKeyPress> pendingBreaks = new Queue<BreakKeyPress>();
         private readonly Queue<HostKeyChange> pendingKeyChanges = new Queue<HostKeyChange>();
         private readonly Queue<string> pendingDiscLoads = new Queue<string>();
-        private readonly Dictionary<int, byte> activeHostKeys = new Dictionary<int, byte>();
+        private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
 
         private IntPtr window;
@@ -283,11 +284,12 @@ namespace BBC
                 return;
             }
 
-            byte? key = MapHostKeyToBbcKey(keySym, modifiers);
-            if (key.HasValue)
+            BbcKeyChord? chord = MapHostKeyToBbcKey(keySym, modifiers);
+            if (chord.HasValue)
             {
-                activeHostKeys[keySym] = key.Value;
-                pendingKeyChanges.Enqueue(new HostKeyChange(key.Value, true));
+                bool shiftAdjusted = ApplyShiftAdjustment(chord.Value.ShiftAdjustment, (modifiers & KMOD_SHIFT) != 0);
+                activeHostKeys[keySym] = new ActiveHostKey(chord.Value.InternalKey, chord.Value.ShiftAdjustment, shiftAdjusted);
+                pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, true));
             }
 
             if (keySym == SDLK_ESCAPE)
@@ -296,112 +298,163 @@ namespace BBC
 
         private void EnqueueKeyUp(int keySym)
         {
-            if (activeHostKeys.Remove(keySym, out byte activeKey))
+            if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
             {
-                pendingKeyChanges.Enqueue(new HostKeyChange(activeKey, false));
+                pendingKeyChanges.Enqueue(new HostKeyChange(activeKey.InternalKey, false));
+                RestoreAdjustedShift(activeKey, (SDL_GetModState() & KMOD_SHIFT) != 0);
                 return;
             }
 
-            byte? key = MapHostKeyToBbcKey(keySym, SDL_GetModState());
-            if (key.HasValue)
-                pendingKeyChanges.Enqueue(new HostKeyChange(key.Value, false));
+            BbcKeyChord? chord = MapHostKeyToBbcKey(keySym, SDL_GetModState());
+            if (chord.HasValue)
+                pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, false));
         }
 
-        private static byte? MapHostKeyToBbcKey(int keySym, int modifiers)
+        private bool ApplyShiftAdjustment(ShiftAdjustment adjustment, bool hostShiftDown)
+        {
+            if (adjustment == ShiftAdjustment.Suppress && hostShiftDown)
+            {
+                pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, false));
+                return true;
+            }
+
+            if (adjustment == ShiftAdjustment.Force && !hostShiftDown)
+            {
+                pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, true));
+                return true;
+            }
+
+            return false;
+        }
+
+        private void RestoreAdjustedShift(ActiveHostKey activeKey, bool hostShiftDown)
+        {
+            if (!activeKey.ShiftAdjusted)
+                return;
+
+            if (activeKey.ShiftAdjustment == ShiftAdjustment.Suppress && hostShiftDown)
+                pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, true));
+
+            if (activeKey.ShiftAdjustment == ShiftAdjustment.Force && !hostShiftDown)
+                pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, false));
+        }
+
+        private static BbcKeyChord? MapHostKeyToBbcKey(int keySym, int modifiers)
         {
             if ((modifiers & KMOD_SHIFT) != 0)
             {
-                byte? shiftedKey = MapShiftedHostKeyToBbcKey(keySym);
+                BbcKeyChord? shiftedKey = MapShiftedHostKeyToBbcKey(keySym);
                 if (shiftedKey.HasValue)
                     return shiftedKey;
             }
 
             return keySym switch
             {
-                SDLK_LSHIFT or SDLK_RSHIFT => 0x00,
-                SDLK_LCTRL or SDLK_RCTRL => 0x01,
-                SDLK_Q => 0x10,
-                SDLK_3 => 0x11,
-                SDLK_4 => 0x12,
-                SDLK_5 => 0x13,
-                SDLK_F4 => 0x14,
-                SDLK_8 => 0x15,
-                SDLK_F7 => 0x16,
-                SDLK_MINUS => 0x17,
-                SDLK_CARET => 0x18,
-                SDLK_LEFT => 0x19,
-                SDLK_F10 => 0x20,
-                SDLK_W => 0x21,
-                SDLK_E => 0x22,
-                SDLK_T => 0x23,
-                SDLK_7 => 0x24,
-                SDLK_I => 0x25,
-                SDLK_9 => 0x26,
-                SDLK_0 => 0x27,
-                SDLK_UNDERSCORE => 0x28,
-                SDLK_DOWN => 0x29,
-                SDLK_1 => 0x30,
-                SDLK_2 => 0x31,
-                SDLK_D => 0x32,
-                SDLK_R => 0x33,
-                SDLK_6 => 0x34,
-                SDLK_U => 0x35,
-                SDLK_O => 0x36,
-                SDLK_P => 0x37,
-                SDLK_LEFTBRACKET => 0x38,
-                SDLK_UP => 0x39,
-                SDLK_CAPSLOCK => 0x40,
-                SDLK_A => 0x41,
-                SDLK_X => 0x42,
-                SDLK_F => 0x43,
-                SDLK_Y => 0x44,
-                SDLK_J => 0x45,
-                SDLK_K => 0x46,
-                SDLK_AT => 0x47,
-                SDLK_COLON or SDLK_ASTERISK or SDLK_KP_MULTIPLY => 0x48,
-                SDLK_RETURN or SDLK_KP_ENTER => 0x49,
-                SDLK_S => 0x51,
-                SDLK_C => 0x52,
-                SDLK_G => 0x53,
-                SDLK_H => 0x54,
-                SDLK_N => 0x55,
-                SDLK_L => 0x56,
-                SDLK_SEMICOLON => 0x57,
-                SDLK_RIGHTBRACKET => 0x58,
-                SDLK_BACKSPACE or SDLK_DELETE => 0x59,
-                SDLK_TAB => 0x60,
-                SDLK_Z => 0x61,
-                SDLK_SPACE => 0x62,
-                SDLK_V => 0x63,
-                SDLK_B => 0x64,
-                SDLK_M => 0x65,
-                SDLK_COMMA => 0x66,
-                SDLK_PERIOD => 0x67,
-                SDLK_SLASH => 0x68,
-                SDLK_ESCAPE => 0x70,
-                SDLK_F1 => 0x71,
-                SDLK_F2 => 0x72,
-                SDLK_F3 => 0x73,
-                SDLK_F5 => 0x74,
-                SDLK_F6 => 0x75,
-                SDLK_F8 => 0x76,
-                SDLK_F9 => 0x77,
-                SDLK_BACKSLASH => 0x78,
-                SDLK_RIGHT => 0x79,
+                SDLK_LSHIFT or SDLK_RSHIFT => Key(BbcShiftKey),
+                SDLK_LCTRL or SDLK_RCTRL => Key(0x01),
+                SDLK_Q => Key(0x10),
+                SDLK_3 => Key(0x11),
+                SDLK_4 => Key(0x12),
+                SDLK_5 => Key(0x13),
+                SDLK_F4 => Key(0x14),
+                SDLK_8 => Key(0x15),
+                SDLK_F7 => Key(0x16),
+                SDLK_MINUS => Key(0x17),
+                SDLK_EQUALS => Key(0x17, ShiftAdjustment.Force),
+                SDLK_CARET => Key(0x18),
+                SDLK_LEFT => Key(0x19),
+                SDLK_F10 => Key(0x20),
+                SDLK_W => Key(0x21),
+                SDLK_E => Key(0x22),
+                SDLK_T => Key(0x23),
+                SDLK_7 => Key(0x24),
+                SDLK_APOSTROPHE => Key(0x24, ShiftAdjustment.Force),
+                SDLK_I => Key(0x25),
+                SDLK_9 => Key(0x26),
+                SDLK_0 => Key(0x27),
+                SDLK_UNDERSCORE => Key(0x28),
+                SDLK_HASH => Key(0x11, ShiftAdjustment.Force),
+                SDLK_DOWN => Key(0x29),
+                SDLK_1 => Key(0x30),
+                SDLK_2 => Key(0x31),
+                SDLK_D => Key(0x32),
+                SDLK_R => Key(0x33),
+                SDLK_6 => Key(0x34),
+                SDLK_U => Key(0x35),
+                SDLK_O => Key(0x36),
+                SDLK_P => Key(0x37),
+                SDLK_LEFTBRACKET => Key(0x38),
+                SDLK_UP => Key(0x39),
+                SDLK_CAPSLOCK => Key(0x40),
+                SDLK_A => Key(0x41),
+                SDLK_X => Key(0x42),
+                SDLK_F => Key(0x43),
+                SDLK_Y => Key(0x44),
+                SDLK_J => Key(0x45),
+                SDLK_K => Key(0x46),
+                SDLK_AT => Key(0x47),
+                SDLK_COLON => Key(0x48, ShiftAdjustment.Suppress),
+                SDLK_ASTERISK or SDLK_KP_MULTIPLY => Key(0x48, ShiftAdjustment.Force),
+                SDLK_RETURN or SDLK_KP_ENTER => Key(0x49),
+                SDLK_S => Key(0x51),
+                SDLK_C => Key(0x52),
+                SDLK_G => Key(0x53),
+                SDLK_H => Key(0x54),
+                SDLK_N => Key(0x55),
+                SDLK_L => Key(0x56),
+                SDLK_SEMICOLON => Key(0x57),
+                SDLK_PLUS => Key(0x57, ShiftAdjustment.Force),
+                SDLK_RIGHTBRACKET => Key(0x58),
+                SDLK_BACKSPACE or SDLK_DELETE => Key(0x59),
+                SDLK_TAB => Key(0x60),
+                SDLK_Z => Key(0x61),
+                SDLK_SPACE => Key(0x62),
+                SDLK_V => Key(0x63),
+                SDLK_B => Key(0x64),
+                SDLK_M => Key(0x65),
+                SDLK_COMMA => Key(0x66),
+                SDLK_PERIOD => Key(0x67),
+                SDLK_SLASH => Key(0x68),
+                SDLK_ESCAPE => Key(0x70),
+                SDLK_F1 => Key(0x71),
+                SDLK_F2 => Key(0x72),
+                SDLK_F3 => Key(0x73),
+                SDLK_F5 => Key(0x74),
+                SDLK_F6 => Key(0x75),
+                SDLK_F8 => Key(0x76),
+                SDLK_F9 => Key(0x77),
+                SDLK_BACKSLASH => Key(0x78),
+                SDLK_RIGHT => Key(0x79),
                 _ => null
             };
         }
 
-        private static byte? MapShiftedHostKeyToBbcKey(int keySym)
+        private static BbcKeyChord? MapShiftedHostKeyToBbcKey(int keySym)
         {
             return keySym switch
             {
-                SDLK_3 => 0x28,
-                SDLK_8 => 0x15,
-                SDLK_9 => 0x26,
-                SDLK_0 => 0x27,
+                SDLK_0 => Key(0x27, ShiftAdjustment.Suppress),
+                SDLK_UNDERSCORE => Key(0x17),
+                SDLK_EQUALS or SDLK_PLUS => Key(0x57),
+                SDLK_SEMICOLON or SDLK_COLON => Key(0x48, ShiftAdjustment.Suppress),
                 _ => null
             };
+        }
+
+        private static BbcKeyChord Key(byte internalKey, ShiftAdjustment shiftAdjustment = ShiftAdjustment.Preserve)
+        {
+            return new BbcKeyChord(internalKey, shiftAdjustment);
+        }
+
+        private readonly record struct ActiveHostKey(byte InternalKey, ShiftAdjustment ShiftAdjustment, bool ShiftAdjusted);
+
+        private readonly record struct BbcKeyChord(byte InternalKey, ShiftAdjustment ShiftAdjustment);
+
+        private enum ShiftAdjustment
+        {
+            Preserve,
+            Suppress,
+            Force
         }
 
         private void EnqueueClipboardText()
@@ -579,8 +632,11 @@ namespace BBC
         private const uint SDL_DROPFILE = 0x1000;
         private const int SDLK_SPACE = 32;
         private const int SDLK_ASTERISK = 42;
+        private const int SDLK_PLUS = 43;
         private const int SDLK_AT = 64;
         private const int SDLK_CARET = 94;
+        private const int SDLK_HASH = 35;
+        private const int SDLK_APOSTROPHE = 39;
         private const int SDLK_UNDERSCORE = 95;
         private const int SDLK_0 = 48;
         private const int SDLK_1 = 49;
@@ -602,6 +658,7 @@ namespace BBC
         private const int SDLK_MINUS = 45;
         private const int SDLK_PERIOD = 46;
         private const int SDLK_SLASH = 47;
+        private const int SDLK_EQUALS = 61;
         private const int SDLK_DELETE = 127;
         private const int SDLK_LEFTBRACKET = 91;
         private const int SDLK_BACKSLASH = 92;
