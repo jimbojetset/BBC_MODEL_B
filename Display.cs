@@ -31,6 +31,7 @@ namespace BBC
         private readonly Queue<byte> pendingInput = new Queue<byte>();
         private readonly Queue<BreakKeyPress> pendingBreaks = new Queue<BreakKeyPress>();
         private readonly Queue<HostKeyChange> pendingKeyChanges = new Queue<HostKeyChange>();
+        private readonly Queue<HostJoystickChange> pendingJoystickChanges = new Queue<HostJoystickChange>();
         private readonly Queue<string> pendingDiscLoads = new Queue<string>();
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
@@ -166,6 +167,19 @@ namespace BBC
             return count;
         }
 
+        /// <summary>Copies pending joystick changes into a caller-provided buffer.</summary>
+        /// <param name="destination">The destination buffer.</param>
+        /// <returns>The number of changes copied.</returns>
+        public int DrainJoystickChanges(Span<HostJoystickChange> destination)
+        {
+            int count = 0;
+
+            while (count < destination.Length && pendingJoystickChanges.Count > 0)
+                destination[count++] = pendingJoystickChanges.Dequeue();
+
+            return count;
+        }
+
         /// <summary>Copies pending host disc/file mount requests into a caller-provided list.</summary>
         /// <param name="destination">The destination collection.</param>
         public void DrainDiscLoads(ICollection<string> destination)
@@ -284,6 +298,8 @@ namespace BBC
                 return;
             }
 
+            EnqueueJoystickChange(keySym, true);
+
             BbcKeyChord? chord = MapHostKeyToBbcKey(keySym, modifiers);
             if (chord.HasValue)
             {
@@ -298,6 +314,8 @@ namespace BBC
 
         private void EnqueueKeyUp(int keySym)
         {
+            EnqueueJoystickChange(keySym, false);
+
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
             {
                 pendingKeyChanges.Enqueue(new HostKeyChange(activeKey.InternalKey, false));
@@ -308,6 +326,22 @@ namespace BBC
             BbcKeyChord? chord = MapHostKeyToBbcKey(keySym, SDL_GetModState());
             if (chord.HasValue)
                 pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, false));
+        }
+
+        private void EnqueueJoystickChange(int keySym, bool pressed)
+        {
+            JoystickControl? control = keySym switch
+            {
+                SDLK_LEFT => JoystickControl.Left,
+                SDLK_RIGHT => JoystickControl.Right,
+                SDLK_UP => JoystickControl.Up,
+                SDLK_DOWN => JoystickControl.Down,
+                SDLK_SPACE => JoystickControl.Fire,
+                _ => null
+            };
+
+            if (control.HasValue)
+                pendingJoystickChanges.Enqueue(new HostJoystickChange(control.Value, pressed));
         }
 
         private bool ApplyShiftAdjustment(ShiftAdjustment adjustment, bool hostShiftDown)
@@ -369,7 +403,7 @@ namespace BBC
                 SDLK_MINUS => Key(0x17),
                 SDLK_EQUALS => Key(0x17, ShiftAdjustment.Force),
                 SDLK_CARET => Key(0x18),
-                SDLK_LEFT => Key(0x40),
+                SDLK_LEFT => Key(0x19),
                 SDLK_F10 => Key(0x20),
                 SDLK_W => Key(0x21),
                 SDLK_E => Key(0x22),
@@ -431,7 +465,7 @@ namespace BBC
                 SDLK_F8 => Key(0x76),
                 SDLK_F9 => Key(0x77),
                 SDLK_BACKSLASH => Key(0x78),
-                SDLK_RIGHT => Key(0x01),
+                SDLK_RIGHT => Key(0x79),
                 _ => null
             };
         }
@@ -861,4 +895,19 @@ namespace BBC
     /// <param name="InternalKey">The BBC internal key number.</param>
     /// <param name="Pressed">Whether the key is now pressed.</param>
     public readonly record struct HostKeyChange(byte InternalKey, bool Pressed);
+
+    /// <summary>Describes an emulated joystick transition from the host keyboard.</summary>
+    /// <param name="Control">The joystick control that changed.</param>
+    /// <param name="Pressed">Whether the control is now pressed.</param>
+    public readonly record struct HostJoystickChange(JoystickControl Control, bool Pressed);
+
+    /// <summary>Emulated joystick controls.</summary>
+    public enum JoystickControl
+    {
+        Left,
+        Right,
+        Up,
+        Down,
+        Fire
+    }
 }

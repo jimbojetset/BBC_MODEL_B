@@ -137,6 +137,7 @@ namespace BBC
         private Exception? cpuException;
         private readonly byte[] inputScratch = new byte[64];
         private readonly HostKeyChange[] keyChangeScratch = new HostKeyChange[64];
+        private readonly HostJoystickChange[] joystickChangeScratch = new HostJoystickChange[16];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly List<string> discLoadScratch = new List<string>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
@@ -146,6 +147,7 @@ namespace BBC
         private readonly SystemVia systemVia;
         private readonly HostFilingSystem hostFilingSystem;
         private readonly DiscController8271 discController;
+        private JoystickState joystickState;
         private long keyboardInputEnabledAtTicks;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
@@ -227,6 +229,7 @@ namespace BBC
                 DrainHostBreakInput(Display);
                 DrainHostDiscLoads(Display);
                 DrainHostKeyMatrixInput(Display);
+                DrainHostJoystickInput(Display);
                 DrainHostKeyboardInput(Display);
                 Video.Render(Display);
                 Display.Present();
@@ -354,6 +357,7 @@ namespace BBC
             Sound.Reset();
             systemVia.Reset();
             discController.Reset();
+            joystickState = default;
             Cpu.SetIrqLine(false);
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
@@ -388,7 +392,19 @@ namespace BBC
 
         private bool TryHandleOsbyte()
         {
-            if ((Cpu.registers.PC & 0xFFFF) != 0xFFF4 || Cpu.registers.A != 0x81 || Cpu.registers.Y != 0xFF)
+            if ((Cpu.registers.PC & 0xFFFF) != 0xFFF4)
+                return false;
+
+            if (Cpu.registers.A == 0x80)
+            {
+                ReadAdval(Cpu.registers.X, out byte x, out byte y);
+                Cpu.registers.X = x;
+                Cpu.registers.Y = y;
+                ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            if (Cpu.registers.A != 0x81 || Cpu.registers.Y != 0xFF)
                 return false;
 
             if (!TryMapNegativeInkeyCode(Cpu.registers.X, out byte internalKey))
@@ -397,6 +413,20 @@ namespace BBC
             Cpu.registers.X = systemVia.IsKeyPressed(internalKey) ? (byte)0xFF : (byte)0x00;
             ReturnFromFirmwareSubroutine();
             return true;
+        }
+
+        private void ReadAdval(byte channel, out byte x, out byte y)
+        {
+            ushort value = channel switch
+            {
+                0 => joystickState.Fire ? (ushort)0x0001 : (ushort)0x0000,
+                1 => joystickState.Left ? (ushort)0xFFFF : joystickState.Right ? (ushort)0x0000 : (ushort)0x8000,
+                2 => joystickState.Up ? (ushort)0xFFFF : joystickState.Down ? (ushort)0x0000 : (ushort)0x8000,
+                _ => 0x8000
+            };
+
+            x = (byte)value;
+            y = (byte)(value >> 8);
         }
 
         private static bool TryMapNegativeInkeyCode(byte code, out byte internalKey)
@@ -520,6 +550,38 @@ namespace BBC
                 Cpu.SetIrqLine(systemVia.IrqAsserted);
         }
 
+        private void DrainHostJoystickInput(Display display)
+        {
+            int count = display.DrainJoystickChanges(joystickChangeScratch);
+
+            for (int i = 0; i < count; i++)
+            {
+                HostJoystickChange change = joystickChangeScratch[i];
+                switch (change.Control)
+                {
+                    case JoystickControl.Left:
+                        joystickState.Left = change.Pressed;
+                        break;
+
+                    case JoystickControl.Right:
+                        joystickState.Right = change.Pressed;
+                        break;
+
+                    case JoystickControl.Up:
+                        joystickState.Up = change.Pressed;
+                        break;
+
+                    case JoystickControl.Down:
+                        joystickState.Down = change.Pressed;
+                        break;
+
+                    case JoystickControl.Fire:
+                        joystickState.Fire = change.Pressed;
+                        break;
+                }
+            }
+        }
+
         private void DrainHostBreakInput(Display display)
         {
             int count = display.DrainBreaks(breakScratch);
@@ -582,6 +644,15 @@ namespace BBC
             return offset >= (KeyboardBufferEnd & 0xFF)
                 ? (byte)(KeyboardBufferStart & 0xFF)
                 : (byte)(offset + 1);
+        }
+
+        private struct JoystickState
+        {
+            public bool Left;
+            public bool Right;
+            public bool Up;
+            public bool Down;
+            public bool Fire;
         }
 
         private static void WaitUntil(long deadlineTicks)
