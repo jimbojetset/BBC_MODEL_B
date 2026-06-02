@@ -135,6 +135,13 @@ namespace BBC
                 return true;
             }
 
+            if (IsOptCommand(command))
+            {
+                TraceOscli(command, "handled OPT");
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
             if (!TryParseRunCommand(command, out string requestedName))
             {
                 TraceOscli(command, "passed through");
@@ -171,6 +178,14 @@ namespace BBC
             string trimmed = command.Trim();
             return trimmed.Length == exec.Length
                 && string.Equals(trimmed, exec, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsOptCommand(string command)
+        {
+            string trimmed = command.TrimStart();
+            return trimmed.Length >= 3
+                && string.Equals(trimmed[..3], "OPT", StringComparison.OrdinalIgnoreCase)
+                && (trimmed.Length == 3 || char.IsWhiteSpace(trimmed[3]));
         }
 
         private HostFile? FindFile(string requestedName)

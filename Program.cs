@@ -176,6 +176,7 @@ namespace BBC
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
         private long keyboardInputEnabledAtTicks;
+        private byte fileMessageOption = 1;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -389,6 +390,7 @@ namespace BBC
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
             Memory.Memory[EscapeFlag] = 0;
+            fileMessageOption = 1;
         }
 
         private void AdvanceDeviceCycles(int cycles)
@@ -433,6 +435,23 @@ namespace BBC
                 ReadAdval(Cpu.registers.X, out byte x, out byte y);
                 Cpu.registers.X = x;
                 Cpu.registers.Y = y;
+                ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            if (Cpu.registers.A == 0x8B)
+            {
+                if (Cpu.registers.X == 1)
+                    fileMessageOption = Cpu.registers.Y;
+
+                ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            if (Cpu.registers.A == 0x8C)
+            {
+                // The disc image remains mounted even when tape-oriented loaders
+                // issue the cassette-speed OSBYTE.
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
