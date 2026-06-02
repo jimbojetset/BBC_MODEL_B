@@ -126,6 +126,7 @@ namespace BBC
             Video = new Video(Memory.Memory, OsRomStart);
             Cpu = new CPU_6502(Memory, CpuClockHz);
             Cpu.OnReset = ResetDeviceState;
+            Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
@@ -246,8 +247,15 @@ namespace BBC
             Video.Reset();
             Sound.Reset();
             systemVia.Reset();
+            Cpu.SetIrqLine(false);
             selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
             Memory.Memory[EscapeFlag] = 0;
+        }
+
+        private void AdvanceDeviceCycles(int cycles)
+        {
+            systemVia.Tick(cycles);
+            Cpu.SetIrqLine(systemVia.IrqAsserted);
         }
 
         private void DrainHostKeyboardInput(Display display)
@@ -393,7 +401,11 @@ namespace BBC
                 return Video.ReadSheila(address);
 
             if (SystemVia.IsAddress(address))
-                return systemVia.Read(address);
+            {
+                byte value = systemVia.Read(address);
+                Cpu.SetIrqLine(systemVia.IrqAsserted);
+                return value;
+            }
 
             return address switch
             {
@@ -418,6 +430,7 @@ namespace BBC
             if (SystemVia.IsAddress(address))
             {
                 systemVia.Write(address, value);
+                Cpu.SetIrqLine(systemVia.IrqAsserted);
                 return;
             }
 

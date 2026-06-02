@@ -18,10 +18,26 @@ namespace BBC
     public sealed class SystemVia
     {
         private const byte SoundWriteEnableLatchBit = 0;
+        private const byte InterruptFlagTimer1 = 0x40;
+        private const byte InterruptFlagTimer2 = 0x20;
+        private const byte InterruptSummary = 0x80;
         private readonly Sound sound;
         private readonly byte[] registers = new byte[16];
         private byte addressableLatch = 0xFF;
+        private byte interruptFlags;
+        private byte interruptEnable;
         private byte portA;
+        private byte portB;
+        private byte dataDirectionA;
+        private byte dataDirectionB;
+        private ushort timer1Counter;
+        private ushort timer1Latch;
+        private ushort timer2Counter;
+        private ushort timer2Latch;
+        private bool timer1Running;
+        private bool timer2Running;
+        private bool timer2HasInterrupted;
+        private int peripheralCycleRemainder;
 
         /// <summary>Initializes a new system VIA shim.</summary>
         /// <param name="sound">The sound generator connected to the VIA slow bus.</param>
@@ -43,7 +59,43 @@ namespace BBC
         {
             Array.Clear(registers);
             addressableLatch = 0xFF;
+            interruptFlags = 0;
+            interruptEnable = 0;
             portA = 0;
+            portB = 0;
+            dataDirectionA = 0;
+            dataDirectionB = 0;
+            timer1Counter = 0;
+            timer1Latch = 0;
+            timer2Counter = 0;
+            timer2Latch = 0;
+            timer1Running = false;
+            timer2Running = false;
+            timer2HasInterrupted = false;
+            peripheralCycleRemainder = 0;
+        }
+
+        /// <summary>Gets whether the VIA IRQ output is currently asserted.</summary>
+        public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;
+
+        /// <summary>Advances VIA timers by the supplied number of CPU cycles.</summary>
+        /// <param name="cycles">The elapsed 6502 cycles.</param>
+        public void Tick(int cycles)
+        {
+            if (cycles <= 0)
+                return;
+
+            int peripheralCycles = (cycles + peripheralCycleRemainder) / 2;
+            peripheralCycleRemainder = (cycles + peripheralCycleRemainder) & 1;
+
+            if (peripheralCycles == 0)
+                return;
+
+            if (timer1Running)
+                TickTimer1(peripheralCycles);
+
+            if (timer2Running)
+                TickTimer2(peripheralCycles);
         }
 
         /// <summary>Reads a system VIA register.</summary>
@@ -55,10 +107,18 @@ namespace BBC
 
             return register switch
             {
-                0x0 => registers[0x0], // ORB/IRB
-                0x1 => portA,          // ORA/IRA
-                0xD => 0x00,           // IFR: no VIA interrupts yet.
-                0xE => 0x00,           // IER.
+                0x0 => ReadPort(portB, dataDirectionB),
+                0x1 or 0xF => ReadPortA(),
+                0x2 => dataDirectionB,
+                0x3 => dataDirectionA,
+                0x4 => ReadTimerLow(timer1Counter, InterruptFlagTimer1),
+                0x5 => (byte)(timer1Counter >> 8),
+                0x6 => (byte)timer1Latch,
+                0x7 => (byte)(timer1Latch >> 8),
+                0x8 => ReadTimerLow(timer2Counter, InterruptFlagTimer2),
+                0x9 => (byte)(timer2Counter >> 8),
+                0xD => GetInterruptFlags(),
+                0xE => (byte)(interruptEnable | 0x80),
                 _ => registers[register]
             };
         }
@@ -74,14 +134,111 @@ namespace BBC
             switch (register)
             {
                 case 0x0:
-                case 0xF:
+                    portB = value;
                     WritePortB(value);
                     break;
 
                 case 0x1:
+                case 0xF:
                     portA = value;
                     break;
+
+                case 0x2:
+                    dataDirectionB = value;
+                    break;
+
+                case 0x3:
+                    dataDirectionA = value;
+                    break;
+
+                case 0x4:
+                    timer1Latch = (ushort)((timer1Latch & 0xFF00) | value);
+                    registers[0x6] = value;
+                    break;
+
+                case 0x5:
+                    timer1Latch = (ushort)((value << 8) | (timer1Latch & 0x00FF));
+                    timer1Counter = timer1Latch;
+                    timer1Running = true;
+                    registers[0x7] = value;
+                    ClearInterrupt(InterruptFlagTimer1);
+                    break;
+
+                case 0x6:
+                    timer1Latch = (ushort)((timer1Latch & 0xFF00) | value);
+                    break;
+
+                case 0x7:
+                    timer1Latch = (ushort)((value << 8) | (timer1Latch & 0x00FF));
+                    ClearInterrupt(InterruptFlagTimer1);
+                    break;
+
+                case 0x8:
+                    timer2Latch = (ushort)((timer2Latch & 0xFF00) | value);
+                    break;
+
+                case 0x9:
+                    timer2Latch = (ushort)((value << 8) | (timer2Latch & 0x00FF));
+                    timer2Counter = timer2Latch;
+                    timer2Running = true;
+                    timer2HasInterrupted = false;
+                    ClearInterrupt(InterruptFlagTimer2);
+                    break;
+
+                case 0xD:
+                    ClearInterrupt((byte)(value & 0x7F));
+                    break;
+
+                case 0xE:
+                    if ((value & 0x80) != 0)
+                        interruptEnable |= (byte)(value & 0x7F);
+                    else
+                        interruptEnable &= unchecked((byte)~(value & 0x7F));
+                    break;
             }
+        }
+
+        private void TickTimer1(int cycles)
+        {
+            int remaining = cycles;
+
+            while (remaining > 0 && timer1Running)
+            {
+                if (remaining <= timer1Counter)
+                {
+                    timer1Counter -= (ushort)remaining;
+                    return;
+                }
+
+                remaining -= timer1Counter + 1;
+                SetInterrupt(InterruptFlagTimer1);
+
+                if (IsTimer1FreeRunning())
+                {
+                    timer1Counter = timer1Latch;
+                }
+                else
+                {
+                    timer1Running = false;
+                }
+            }
+        }
+
+        private void TickTimer2(int cycles)
+        {
+            if (timer2HasInterrupted)
+                return;
+
+            if (cycles <= timer2Counter)
+            {
+                timer2Counter -= (ushort)cycles;
+                return;
+            }
+
+            timer2Counter = 0xFFFF;
+            timer2Running = false;
+            timer2HasInterrupted = true;
+            SetInterrupt(InterruptFlagTimer2);
         }
 
         private void WritePortB(byte value)
@@ -99,6 +256,49 @@ namespace BBC
 
             if (latchBit == SoundWriteEnableLatchBit && previousSoundWriteEnable && !currentSoundWriteEnable)
                 sound.WriteData(portA);
+        }
+
+        private byte ReadTimerLow(ushort counter, byte interruptFlag)
+        {
+            ClearInterrupt(interruptFlag);
+            return (byte)counter;
+        }
+
+        private byte GetInterruptFlags()
+        {
+            byte flags = interruptFlags;
+            if ((flags & interruptEnable & 0x7F) != 0)
+                flags |= InterruptSummary;
+
+            return flags;
+        }
+
+        private void SetInterrupt(byte flag)
+        {
+            interruptFlags |= flag;
+        }
+
+        private void ClearInterrupt(byte flags)
+        {
+            interruptFlags &= unchecked((byte)~flags);
+        }
+
+        private bool IsTimer1FreeRunning()
+        {
+            return (registers[0xB] & 0x40) != 0;
+        }
+
+        private static byte ReadPort(byte output, byte direction)
+        {
+            return (byte)((output & direction) | (0xFF & ~direction));
+        }
+
+        private byte ReadPortA()
+        {
+            if (dataDirectionA == 0x7F)
+                return 0x00;
+
+            return ReadPort(portA, dataDirectionA);
         }
     }
 }
