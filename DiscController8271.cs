@@ -326,8 +326,15 @@ namespace BBC
 
         private bool TryGetOffset(int track, int sector, out int offset)
         {
-            offset = ((track * SectorsPerTrack) + sector) * SectorSize;
-            return HasMountedDisc && track >= 0 && sector >= 0 && sector < SectorsPerTrack && offset >= 0;
+            if (!HasMountedDisc || track < 0 || sector < 0)
+            {
+                offset = 0;
+                return false;
+            }
+
+            int logicalSector = (track * SectorsPerTrack) + sector;
+            offset = logicalSector * SectorSize;
+            return offset >= 0;
         }
 
         private void SetResult(byte value)
