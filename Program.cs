@@ -95,6 +95,7 @@ namespace BBC
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
+        private readonly SystemVia systemVia;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -104,6 +105,9 @@ namespace BBC
 
         /// <summary>Gets the video display controller.</summary>
         public Video Video { get; }
+
+        /// <summary>Gets the SN76489 sound generator.</summary>
+        public Sound Sound { get; }
 
         /// <summary>Gets the SDL display surface.</summary>
         public Display? Display { get; private set; }
@@ -117,6 +121,8 @@ namespace BBC
         /// <summary>Initializes a new emulator coordinator.</summary>
         public Emulator()
         {
+            Sound = new Sound();
+            systemVia = new SystemVia(Sound);
             Video = new Video(Memory.Memory, OsRomStart);
             Cpu = new CPU_6502(Memory, CpuClockHz);
             Cpu.OnReset = ResetDeviceState;
@@ -147,6 +153,7 @@ namespace BBC
                 Initialise(createDisplay: true);
 
             Display ??= new Display();
+            Sound.Start();
 
             StartCpu();
 
@@ -194,6 +201,7 @@ namespace BBC
         public void Dispose()
         {
             StopCpu();
+            Sound.Dispose();
             Display?.Dispose();
         }
 
@@ -236,6 +244,8 @@ namespace BBC
         private void ResetDeviceState()
         {
             Video.Reset();
+            Sound.Reset();
+            systemVia.Reset();
             selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
             Memory.Memory[EscapeFlag] = 0;
         }
@@ -382,14 +392,13 @@ namespace BBC
             if (Video.IsSheilaAddress(address))
                 return Video.ReadSheila(address);
 
+            if (SystemVia.IsAddress(address))
+                return systemVia.Read(address);
+
             return address switch
             {
                 0xFE08 => 0x02, // ACIA transmit data register empty.
                 0xFE30 => (byte)selectedSidewaysRom,
-                0xFE40 => 0xFF, // System VIA port B inputs idle high.
-                0xFE41 => 0xFF, // System VIA port A inputs idle high.
-                0xFE4D => 0x00, // System VIA IFR: no pending interrupts yet.
-                0xFE4E => 0x00, // System VIA IER.
                 0xFE60 => 0xFF, // User VIA port B inputs idle high.
                 0xFE61 => 0xFF, // User VIA port A inputs idle high.
                 0xFE6D => 0x00, // User VIA IFR.
@@ -403,6 +412,12 @@ namespace BBC
             if (Video.IsSheilaAddress(address))
             {
                 Video.WriteSheila(address, value);
+                return;
+            }
+
+            if (SystemVia.IsAddress(address))
+            {
+                systemVia.Write(address, value);
                 return;
             }
 
