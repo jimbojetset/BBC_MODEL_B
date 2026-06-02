@@ -31,6 +31,7 @@ namespace BBC
         private readonly Queue<BreakKeyPress> pendingBreaks = new Queue<BreakKeyPress>();
         private readonly Queue<HostKeyChange> pendingKeyChanges = new Queue<HostKeyChange>();
         private readonly Queue<string> pendingDiscLoads = new Queue<string>();
+        private readonly Dictionary<int, byte> activeHostKeys = new Dictionary<int, byte>();
         private readonly int pitchBytes;
 
         private IntPtr window;
@@ -282,9 +283,12 @@ namespace BBC
                 return;
             }
 
-            byte? key = MapHostKeyToBbcKey(keySym);
+            byte? key = MapHostKeyToBbcKey(keySym, modifiers);
             if (key.HasValue)
+            {
+                activeHostKeys[keySym] = key.Value;
                 pendingKeyChanges.Enqueue(new HostKeyChange(key.Value, true));
+            }
 
             if (keySym == SDLK_ESCAPE)
                 pendingInput.Enqueue(27);
@@ -292,13 +296,26 @@ namespace BBC
 
         private void EnqueueKeyUp(int keySym)
         {
-            byte? key = MapHostKeyToBbcKey(keySym);
+            if (activeHostKeys.Remove(keySym, out byte activeKey))
+            {
+                pendingKeyChanges.Enqueue(new HostKeyChange(activeKey, false));
+                return;
+            }
+
+            byte? key = MapHostKeyToBbcKey(keySym, SDL_GetModState());
             if (key.HasValue)
                 pendingKeyChanges.Enqueue(new HostKeyChange(key.Value, false));
         }
 
-        private static byte? MapHostKeyToBbcKey(int keySym)
+        private static byte? MapHostKeyToBbcKey(int keySym, int modifiers)
         {
+            if ((modifiers & KMOD_SHIFT) != 0)
+            {
+                byte? shiftedKey = MapShiftedHostKeyToBbcKey(keySym);
+                if (shiftedKey.HasValue)
+                    return shiftedKey;
+            }
+
             return keySym switch
             {
                 SDLK_LSHIFT or SDLK_RSHIFT => 0x00,
@@ -371,6 +388,17 @@ namespace BBC
                 SDLK_F9 => 0x77,
                 SDLK_BACKSLASH => 0x78,
                 SDLK_RIGHT => 0x79,
+                _ => null
+            };
+        }
+
+        private static byte? MapShiftedHostKeyToBbcKey(int keySym)
+        {
+            return keySym switch
+            {
+                SDLK_8 => 0x48,
+                SDLK_9 => 0x15,
+                SDLK_0 => 0x26,
                 _ => null
             };
         }
