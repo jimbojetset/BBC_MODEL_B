@@ -434,7 +434,11 @@ namespace BBC
             return keySym switch
             {
                 SDLK_0 => Key(0x27, ShiftAdjustment.Suppress),
+                SDLK_2 => Key(0x47, ShiftAdjustment.Suppress),
+                SDLK_AT => Key(0x47, ShiftAdjustment.Suppress),
                 SDLK_UNDERSCORE => Key(0x17),
+                SDLK_8 => Key(0x48),
+                SDLK_9 => Key(0x15),
                 SDLK_EQUALS or SDLK_PLUS => Key(0x57),
                 SDLK_SEMICOLON or SDLK_COLON => Key(0x48, ShiftAdjustment.Suppress),
                 _ => null
