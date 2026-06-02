@@ -217,8 +217,8 @@ namespace BBC
 
         private static string ReadDfsName(byte[] image, int offset)
         {
-            char directory = (char)(image[offset] & 0x7F);
-            string leaf = Encoding.ASCII.GetString(image, offset + 1, 7).Trim();
+            string leaf = Encoding.ASCII.GetString(image, offset, 7).Trim();
+            char directory = (char)(image[offset + 7] & 0x7F);
             return directory is >= '!' and <= '~' && directory != '$'
                 ? $"{directory}.{leaf}"
                 : leaf;

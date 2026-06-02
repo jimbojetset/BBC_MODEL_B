@@ -22,6 +22,15 @@ namespace BBC
         {
             using Emulator emulator = new Emulator();
             StartupOptions options = ParseStartupOptions(args);
+
+            if (!string.IsNullOrEmpty(options.PrintAutoLoadPath))
+            {
+                DiscController8271 disc = new DiscController8271();
+                disc.Mount(options.PrintAutoLoadPath);
+                Console.WriteLine(disc.AutoLoadCommand ?? string.Empty);
+                return;
+            }
+
             emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
 
             Console.WriteLine("BBC Model B emulator initialised.");
@@ -43,9 +52,19 @@ namespace BBC
         {
             int headlessMilliseconds = 0;
             List<string> mountPaths = new List<string>();
+            string? printAutoLoadPath = null;
 
             for (int i = 0; i < args.Length; i++)
             {
+                if (string.Equals(args[i], "--print-autoload", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException("--print-autoload requires an SSD path.");
+
+                    printAutoLoadPath = args[++i];
+                    continue;
+                }
+
                 if (string.Equals(args[i], "--headless-ms", StringComparison.OrdinalIgnoreCase))
                 {
                     if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out headlessMilliseconds) || headlessMilliseconds <= 0)
@@ -70,10 +89,10 @@ namespace BBC
                     mountPaths.Add(args[i]);
             }
 
-            return new StartupOptions(headlessMilliseconds, mountPaths);
+            return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath);
         }
 
-        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths);
+        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath);
     }
 
     /// <summary>
