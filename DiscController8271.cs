@@ -150,6 +150,8 @@ namespace BBC
 
         private byte ReadData()
         {
+            nmiPending = false;
+
             if (readData.Count == 0)
                 return 0x00;
 
