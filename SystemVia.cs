@@ -329,10 +329,10 @@ namespace BBC
             byte selectedKey = (byte)(portA & 0x7F);
 
             if (IsKeyboardAutoScanEnabled())
-                return AnyNonModifierKeyPressed() ? (byte)0x00 : (byte)0x80;
+                return AnyNonModifierKeyPressed() ? (byte)0x80 : (byte)0x00;
 
             bool pressed = selectedKey < pressedKeys.Length && pressedKeys[selectedKey];
-            return (byte)(selectedKey | (pressed ? 0x00 : 0x80));
+            return (byte)(selectedKey | (pressed ? 0x80 : 0x00));
         }
 
         private bool AnyNonModifierKeyPressed()
