@@ -381,7 +381,8 @@ namespace BBC
 
         private bool HandleHostFirmwareHooks()
         {
-            return hostFilingSystem.TryHandleOsfile(Cpu);
+            return hostFilingSystem.TryHandleOsfile(Cpu)
+                || hostFilingSystem.TryHandleOscli(Cpu);
         }
 
         private void DrainHostDiscLoads(Display display)

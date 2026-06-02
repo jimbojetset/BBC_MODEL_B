@@ -21,6 +21,7 @@ namespace BBC
     public sealed class HostFilingSystem
     {
         private const ushort OsfileEntry = 0xFFDD;
+        private const ushort OscliEntry = 0xFFF7;
         private const ushort DefaultBasicLoadAddress = 0x1900;
         private readonly FlatMemoryBus memory;
         private HostFile[] files = [];
@@ -105,6 +106,34 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Handles a host-backed *RUN command if the CPU is currently at the OSCLI entry.</summary>
+        /// <param name="cpu">The CPU.</param>
+        /// <returns>True when the command was handled by the host filing system.</returns>
+        public bool TryHandleOscli(CPU_6502 cpu)
+        {
+            if ((cpu.registers.PC & 0xFFFF) != OscliEntry || files.Length == 0)
+                return false;
+
+            ushort commandAddress = (ushort)(cpu.registers.X | (cpu.registers.Y << 8));
+            string command = ReadOsString(commandAddress).Trim();
+            if (command.StartsWith('*'))
+                command = command[1..].TrimStart();
+
+            if (!TryParseRunCommand(command, out string requestedName))
+                return false;
+
+            HostFile? matchedFile = FindFile(requestedName);
+            if (!matchedFile.HasValue)
+                return false;
+
+            HostFile file = matchedFile.Value;
+            for (int i = 0; i < file.Data.Length; i++)
+                memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
+
+            cpu.registers.PC = file.ExecutionAddress;
+            return true;
+        }
+
         private HostFile? FindFile(string requestedName)
         {
             string normalized = NormalizeName(requestedName);
@@ -116,6 +145,33 @@ namespace BBC
             }
 
             return files.Length == 1 ? files[0] : null;
+        }
+
+        private static bool TryParseRunCommand(string command, out string fileName)
+        {
+            fileName = string.Empty;
+            const string run = "RUN";
+
+            if (!command.StartsWith(run, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            string rest = command[run.Length..].TrimStart();
+            if (rest.Length == 0)
+                return false;
+
+            if (rest[0] == '"')
+            {
+                int endQuote = rest.IndexOf('"', 1);
+                if (endQuote < 0)
+                    return false;
+
+                fileName = rest[1..endQuote];
+                return fileName.Length > 0;
+            }
+
+            int separator = rest.IndexOfAny([' ', '\t', '\r']);
+            fileName = separator < 0 ? rest : rest[..separator];
+            return fileName.Length > 0;
         }
 
         private void WriteCatalogueInfo(ushort controlBlock, HostFile file)
