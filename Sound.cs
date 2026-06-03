@@ -29,6 +29,11 @@ namespace BBC
         private readonly int[] tonePeriods = [0, 0, 0];
         private readonly int[] volumes = [15, 15, 15, 15];
         private readonly int[] durationRemainingSamples = [0, 0, 0, 0];
+        private readonly bool[] channelUsesEnvelope = new bool[4];
+        private readonly int[] channelEnvelopeNumbers = new int[4];
+        private readonly int[] channelEnvelopeLevels = new int[4];
+        private readonly int[] channelEnvelopeSampleCounters = new int[4];
+        private readonly EnvelopePhase[] channelEnvelopePhases = new EnvelopePhase[4];
         private readonly double[] toneCounters = new double[3];
         private readonly int[] tonePolarity = [1, 1, 1];
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
@@ -54,6 +59,11 @@ namespace BBC
                 Array.Fill(tonePeriods, 0);
                 Array.Fill(volumes, 15);
                 Array.Fill(durationRemainingSamples, 0);
+                Array.Fill(channelUsesEnvelope, false);
+                Array.Fill(channelEnvelopeNumbers, 0);
+                Array.Fill(channelEnvelopeLevels, 0);
+                Array.Fill(channelEnvelopeSampleCounters, 0);
+                Array.Fill(channelEnvelopePhases, EnvelopePhase.Off);
                 Array.Clear(envelopes);
                 Array.Clear(toneCounters);
                 Array.Fill(tonePolarity, 1);
@@ -153,7 +163,7 @@ namespace BBC
 
             lock (syncRoot)
             {
-                envelopes[envelopeNumber] = new SoundEnvelope(data[8], data[9], data[10], data[11], data[12], data[13]);
+                envelopes[envelopeNumber] = new SoundEnvelope(data[1], data[8], data[9], data[10], data[11], data[12], data[13]);
             }
         }
 
@@ -166,22 +176,29 @@ namespace BBC
         {
             int bbcChannel = channel & 0x03;
             int chipChannel = bbcChannel == 0 ? 3 : bbcChannel - 1;
-            int attenuation = GetAttenuation(amplitude);
             int durationSamples = duration < 0 ? 0 : Math.Max(1, (int)duration) * SampleRate / 20;
 
             lock (syncRoot)
             {
-                if (attenuation >= 15 || duration == 0)
+                bool usesEnvelope = amplitude > 0 && amplitude < envelopes.Length && envelopes[amplitude].Defined;
+                int attenuation = usesEnvelope ? 15 : GetAttenuation(amplitude);
+
+                if ((!usesEnvelope && attenuation >= 15) || duration == 0)
                 {
                     volumes[chipChannel] = 15;
                     durationRemainingSamples[chipChannel] = 0;
+                    StopEnvelope(chipChannel);
                     return;
                 }
+
+                ConfigureEnvelope(chipChannel, amplitude, usesEnvelope, durationSamples);
 
                 if (chipChannel == 3)
                 {
                     SetNoiseControl(GetNoiseControlForPitch(pitch));
-                    volumes[3] = attenuation;
+                    if (!usesEnvelope)
+                        volumes[3] = attenuation;
+
                     durationRemainingSamples[3] = durationSamples;
                     return;
                 }
@@ -189,7 +206,9 @@ namespace BBC
                 int period = PitchToTonePeriod(pitch);
                 tonePeriods[chipChannel] = period;
                 toneCounters[chipChannel] = 0;
-                volumes[chipChannel] = attenuation;
+                if (!usesEnvelope)
+                    volumes[chipChannel] = attenuation;
+
                 durationRemainingSamples[chipChannel] = durationSamples;
             }
         }
@@ -249,6 +268,7 @@ namespace BBC
             lock (syncRoot)
             {
                 UpdateDurations(samples.Length);
+                UpdateEnvelopes(samples.Length);
                 tonePeriods.CopyTo(periods, 0);
                 volumes.CopyTo(attenuations, 0);
                 currentNoiseControl = noiseControl;
@@ -328,9 +348,136 @@ namespace BBC
                 if (durationRemainingSamples[channel] <= 0)
                 {
                     durationRemainingSamples[channel] = 0;
-                    volumes[channel] = 15;
+                    if (channelUsesEnvelope[channel])
+                        channelEnvelopePhases[channel] = EnvelopePhase.Release;
+                    else
+                        volumes[channel] = 15;
                 }
             }
+        }
+
+        private void ConfigureEnvelope(int channel, short amplitude, bool usesEnvelope, int durationSamples)
+        {
+            if (!usesEnvelope)
+            {
+                StopEnvelope(channel);
+                return;
+            }
+
+            int envelopeNumber = amplitude & 0x0F;
+            channelUsesEnvelope[channel] = true;
+            channelEnvelopeNumbers[channel] = envelopeNumber;
+            channelEnvelopeLevels[channel] = 0;
+            channelEnvelopePhases[channel] = EnvelopePhase.Attack;
+            channelEnvelopeSampleCounters[channel] = envelopes[envelopeNumber].StepSamples;
+            durationRemainingSamples[channel] = durationSamples;
+            StepEnvelope(channel);
+        }
+
+        private void StopEnvelope(int channel)
+        {
+            channelUsesEnvelope[channel] = false;
+            channelEnvelopeNumbers[channel] = 0;
+            channelEnvelopeLevels[channel] = 0;
+            channelEnvelopeSampleCounters[channel] = 0;
+            channelEnvelopePhases[channel] = EnvelopePhase.Off;
+        }
+
+        private void UpdateEnvelopes(int sampleCount)
+        {
+            for (int channel = 0; channel < channelUsesEnvelope.Length; channel++)
+            {
+                if (!channelUsesEnvelope[channel])
+                    continue;
+
+                int envelopeNumber = channelEnvelopeNumbers[channel];
+                SoundEnvelope envelope = envelopes[envelopeNumber];
+                if (!envelope.Defined)
+                {
+                    StopEnvelope(channel);
+                    volumes[channel] = 15;
+                    continue;
+                }
+
+                channelEnvelopeSampleCounters[channel] -= sampleCount;
+                while (channelEnvelopeSampleCounters[channel] <= 0 && channelUsesEnvelope[channel])
+                {
+                    channelEnvelopeSampleCounters[channel] += envelope.StepSamples;
+                    StepEnvelope(channel);
+                }
+            }
+        }
+
+        private void StepEnvelope(int channel)
+        {
+            SoundEnvelope envelope = envelopes[channelEnvelopeNumbers[channel]];
+
+            switch (channelEnvelopePhases[channel])
+            {
+                case EnvelopePhase.Attack:
+                    channelEnvelopeLevels[channel] += envelope.AttackChange;
+                    if (channelEnvelopeLevels[channel] >= envelope.AttackLevel || envelope.AttackChange <= 0)
+                    {
+                        channelEnvelopeLevels[channel] = envelope.AttackLevel;
+                        channelEnvelopePhases[channel] = EnvelopePhase.Decay;
+                    }
+
+                    break;
+
+                case EnvelopePhase.Decay:
+                    if (envelope.DecayChange == 0)
+                    {
+                        channelEnvelopePhases[channel] = EnvelopePhase.Sustain;
+                    }
+                    else
+                    {
+                        channelEnvelopeLevels[channel] += envelope.DecayChange;
+                        if (HasReachedTarget(channelEnvelopeLevels[channel], envelope.DecayLevel, envelope.DecayChange))
+                        {
+                            channelEnvelopeLevels[channel] = envelope.DecayLevel;
+                            channelEnvelopePhases[channel] = EnvelopePhase.Sustain;
+                        }
+                    }
+
+                    break;
+
+                case EnvelopePhase.Sustain:
+                    if (durationRemainingSamples[channel] == 0)
+                    {
+                        channelEnvelopePhases[channel] = EnvelopePhase.Release;
+                    }
+                    else if (envelope.SustainChange != 0)
+                    {
+                        channelEnvelopeLevels[channel] = Math.Max(0, channelEnvelopeLevels[channel] + envelope.SustainChange);
+                    }
+
+                    break;
+
+                case EnvelopePhase.Release:
+                    channelEnvelopeLevels[channel] += envelope.ReleaseChange;
+                    if (channelEnvelopeLevels[channel] <= 0 || envelope.ReleaseChange >= 0)
+                    {
+                        volumes[channel] = 15;
+                        StopEnvelope(channel);
+                        return;
+                    }
+
+                    break;
+            }
+
+            channelEnvelopeLevels[channel] = Math.Clamp(channelEnvelopeLevels[channel], 0, 126);
+            volumes[channel] = EnvelopeLevelToAttenuation(channelEnvelopeLevels[channel]);
+        }
+
+        private static bool HasReachedTarget(int level, int target, int change)
+        {
+            return change > 0 ? level >= target : level <= target;
+        }
+
+        private static int EnvelopeLevelToAttenuation(int level)
+        {
+            int volume = Math.Clamp((level * 15 + 63) / 126, 0, 15);
+            return 15 - volume;
         }
 
         private static int GetAttenuation(short amplitude)
@@ -397,27 +544,42 @@ namespace BBC
 
         private readonly struct SoundEnvelope
         {
-            public SoundEnvelope(byte attackStepCount, byte decayStepCount, byte sustainStepCount, byte attackLevel, byte decayLevel, byte sustainLevel)
+            public SoundEnvelope(byte stepDuration, byte attackChange, byte decayChange, byte sustainChange, byte releaseChange, byte attackLevel, byte decayLevel)
             {
-                AttackStepCount = attackStepCount;
-                DecayStepCount = decayStepCount;
-                SustainStepCount = sustainStepCount;
+                Defined = true;
+                StepSamples = Math.Max(1, (stepDuration & 0x7F) == 0 ? 1 : stepDuration & 0x7F) * SampleRate / 100;
+                AttackChange = unchecked((sbyte)attackChange);
+                DecayChange = unchecked((sbyte)decayChange);
+                SustainChange = unchecked((sbyte)sustainChange);
+                ReleaseChange = unchecked((sbyte)releaseChange);
                 AttackLevel = attackLevel;
                 DecayLevel = decayLevel;
-                SustainLevel = sustainLevel;
             }
 
-            public byte AttackStepCount { get; }
+            public bool Defined { get; }
 
-            public byte DecayStepCount { get; }
+            public int StepSamples { get; }
 
-            public byte SustainStepCount { get; }
+            public int AttackChange { get; }
 
-            public byte AttackLevel { get; }
+            public int DecayChange { get; }
 
-            public byte DecayLevel { get; }
+            public int SustainChange { get; }
 
-            public byte SustainLevel { get; }
+            public int ReleaseChange { get; }
+
+            public int AttackLevel { get; }
+
+            public int DecayLevel { get; }
+        }
+
+        private enum EnvelopePhase
+        {
+            Off,
+            Attack,
+            Decay,
+            Sustain,
+            Release
         }
 
         private static void ThrowIfSdlFailed(int result, string operation)
