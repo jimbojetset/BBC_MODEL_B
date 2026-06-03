@@ -71,6 +71,12 @@ namespace BBC
         private byte[] activeMemory;
         private byte[] activeCrtcRegisters;
         private byte[] activePaletteRegisters;
+        private int screenMemoryStart = 0x3000;
+        private int screenMemorySize = 0x5000;
+        private int frameScreenMemoryStart = 0x3000;
+        private int frameScreenMemorySize = 0x5000;
+        private int activeScreenMemoryStart = 0x3000;
+        private int activeScreenMemorySize = 0x5000;
         private byte selectedCrtcRegister;
         private byte lastPaletteWrite;
         private bool crtcCursorAddressWritten;
@@ -122,8 +128,27 @@ namespace BBC
             hasFrameSnapshot = false;
             CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
+            screenMemoryStart = 0x3000;
+            screenMemorySize = 0x5000;
+            frameScreenMemoryStart = screenMemoryStart;
+            frameScreenMemorySize = screenMemorySize;
             frameUlaControl = UlaControl;
             frameMode = CurrentMode;
+        }
+
+        /// <summary>Sets the BBC video RAM window used by hardware scrolling wraparound.</summary>
+        /// <param name="start">The first RAM address in the selected video window.</param>
+        /// <param name="size">The selected video window size in bytes.</param>
+        public void SetScreenMemoryWindow(int start, int size)
+        {
+            if (start < 0 || start >= memory.Length)
+                throw new ArgumentOutOfRangeException(nameof(start));
+
+            if (size <= 0 || start + size > 0x8000)
+                throw new ArgumentOutOfRangeException(nameof(size));
+
+            screenMemoryStart = start;
+            screenMemorySize = size;
         }
 
         /// <summary>Captures a coherent frame of BBC-visible video state at emulated vsync.</summary>
@@ -137,6 +162,8 @@ namespace BBC
                 frameCrtcCursorAddressWritten = crtcCursorAddressWritten;
                 frameUlaControl = UlaControl;
                 frameMode = CurrentMode;
+                frameScreenMemoryStart = screenMemoryStart;
+                frameScreenMemorySize = screenMemorySize;
                 hasFrameSnapshot = true;
             }
         }
@@ -201,6 +228,8 @@ namespace BBC
                     activeCrtcCursorAddressWritten = frameCrtcCursorAddressWritten;
                     activeUlaControl = frameUlaControl;
                     activeMode = frameMode;
+                    activeScreenMemoryStart = frameScreenMemoryStart;
+                    activeScreenMemorySize = frameScreenMemorySize;
                 }
                 else
                 {
@@ -210,6 +239,8 @@ namespace BBC
                     activeCrtcCursorAddressWritten = crtcCursorAddressWritten;
                     activeUlaControl = UlaControl;
                     activeMode = CurrentMode;
+                    activeScreenMemoryStart = screenMemoryStart;
+                    activeScreenMemorySize = screenMemorySize;
                 }
 
                 switch (activeMode)
@@ -694,7 +725,20 @@ namespace BBC
             int characterRow = y >> 3;
             int rasterLine = y & 0x07;
             int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
-            return memoryAddress & 0x7FFF;
+            return WrapBitmapAddress(memoryAddress);
+        }
+
+        private int WrapBitmapAddress(int address)
+        {
+            if (address >= activeScreenMemoryStart && address < 0x8000)
+                return address;
+
+            int relative = address - activeScreenMemoryStart;
+            relative %= activeScreenMemorySize;
+            if (relative < 0)
+                relative += activeScreenMemorySize;
+
+            return activeScreenMemoryStart + relative;
         }
 
         private int GetBitmapBytesPerRow(int defaultBytesPerRow)

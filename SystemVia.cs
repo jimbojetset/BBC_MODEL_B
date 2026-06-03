@@ -19,6 +19,8 @@ namespace BBC
     {
         private const byte SoundWriteEnableLatchBit = 0;
         private const byte KeyboardWriteEnableLatchBit = 3;
+        private const byte ScreenAddressLatchLowBit = 4;
+        private const byte ScreenAddressLatchHighBit = 5;
         private const byte InterruptFlagTimer1 = 0x40;
         private const byte InterruptFlagTimer2 = 0x20;
         private const byte InterruptFlagVsync = 0x02;
@@ -52,6 +54,9 @@ namespace BBC
         {
             this.sound = sound ?? throw new ArgumentNullException(nameof(sound));
         }
+
+        /// <summary>Raised when the addressable latch changes the video RAM wrap window.</summary>
+        public event Action<int, int>? ScreenMemoryWindowChanged;
 
         /// <summary>Returns whether an address belongs to the system VIA.</summary>
         /// <param name="address">The CPU-visible address.</param>
@@ -87,6 +92,12 @@ namespace BBC
 
         /// <summary>Gets the number of emulated 50 Hz video frames since reset.</summary>
         public int FrameCounter => Volatile.Read(ref frameCounter);
+
+        /// <summary>Gets the currently selected video RAM start address.</summary>
+        public int ScreenMemoryStart => GetScreenMemoryWindow(addressableLatch).Start;
+
+        /// <summary>Gets the currently selected video RAM window size.</summary>
+        public int ScreenMemorySize => GetScreenMemoryWindow(addressableLatch).Size;
 
         /// <summary>Updates one BBC keyboard matrix key state.</summary>
         /// <param name="internalKey">The BBC internal key number.</param>
@@ -300,6 +311,7 @@ namespace BBC
             int latchBit = value & 0x07;
             bool latchValue = (value & 0x08) != 0;
             bool previousSoundWriteEnable = (addressableLatch & (1 << SoundWriteEnableLatchBit)) != 0;
+            (int PreviousStart, int PreviousSize) = GetScreenMemoryWindow(addressableLatch);
 
             if (latchValue)
                 addressableLatch |= (byte)(1 << latchBit);
@@ -310,6 +322,27 @@ namespace BBC
 
             if (latchBit == SoundWriteEnableLatchBit && previousSoundWriteEnable && !currentSoundWriteEnable)
                 sound.WriteData(portA);
+
+            if (latchBit is ScreenAddressLatchLowBit or ScreenAddressLatchHighBit)
+            {
+                (int start, int size) = GetScreenMemoryWindow(addressableLatch);
+                if (start != PreviousStart || size != PreviousSize)
+                    ScreenMemoryWindowChanged?.Invoke(start, size);
+            }
+        }
+
+        private static (int Start, int Size) GetScreenMemoryWindow(byte latch)
+        {
+            int code = ((latch >> ScreenAddressLatchLowBit) & 0x01)
+                | (((latch >> ScreenAddressLatchHighBit) & 0x01) << 1);
+
+            return code switch
+            {
+                0 => (0x3000, 0x5000), // Modes 0, 1, 2: 20K.
+                1 => (0x6000, 0x2000), // Mode 6/custom 8K windows.
+                2 => (0x5800, 0x2800), // Modes 4, 5: 10K.
+                _ => (0x4000, 0x4000)  // Mode 3: 16K.
+            };
         }
 
         private byte ReadTimerLow(ushort counter, byte interruptFlag)

@@ -210,6 +210,7 @@ namespace BBC
             hostFilingSystem = new HostFilingSystem(Memory);
             discController = new DiscController8271();
             Video = new Video(Memory.Memory, OsRomStart);
+            systemVia.ScreenMemoryWindowChanged += Video.SetScreenMemoryWindow;
             Cpu = new CPU_6502(Memory, CpuClockHz);
             discController.NmiRequested += () => Cpu.InitiateNMI(0xFFFA);
             Cpu.OnReset = ResetDeviceState;
@@ -385,6 +386,7 @@ namespace BBC
             Video.Reset();
             Sound.Reset();
             systemVia.Reset();
+            Video.SetScreenMemoryWindow(systemVia.ScreenMemoryStart, systemVia.ScreenMemorySize);
             discController.Reset();
             joystickState = default;
             Cpu.SetIrqLine(false);
