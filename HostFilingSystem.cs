@@ -43,8 +43,19 @@ namespace BBC
         /// <summary>Gets whether a host file or image is mounted.</summary>
         public bool HasMountedFile => files.Length > 0;
 
+        /// <summary>Gets or sets whether host-backed *RUN/FSCV execution shortcuts are enabled.</summary>
+        public bool RunCommandInterceptionEnabled { get; set; } = true;
+
         /// <summary>Gets the command that should be typed at BASIC after mounting.</summary>
         public string? AutoLoadCommand => files.Length == 0 ? null : $"LOAD \"{files[0].Name}\"";
+
+        /// <summary>Clears any mounted host-backed files.</summary>
+        public void Unmount()
+        {
+            files = [];
+            mountedPath = null;
+            RunCommandInterceptionEnabled = true;
+        }
 
         /// <summary>Mounts a host file or SSD disc image.</summary>
         /// <param name="path">The host path.</param>
@@ -66,6 +77,7 @@ namespace BBC
                 throw new InvalidOperationException($"No loadable files found in '{fullPath}'.");
 
             mountedPath = fullPath;
+            RunCommandInterceptionEnabled = true;
         }
 
         /// <summary>Handles an OSFILE call if the CPU is currently at the OSFILE entry.</summary>
@@ -143,6 +155,19 @@ namespace BBC
                 return true;
             }
 
+            if (IsTapeCommand(command))
+            {
+                TraceOscli(command, "handled TAPE");
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (!RunCommandInterceptionEnabled)
+            {
+                TraceOscli(command, "passed through: run interception disabled");
+                return false;
+            }
+
             if (!TryParseRunCommand(command, out string requestedName))
             {
                 TraceOscli(command, "passed through");
@@ -170,7 +195,7 @@ namespace BBC
         /// <returns>True when the FSCV call was handled by the host filing system.</returns>
         public bool TryHandleFscv(CPU_6502 cpu)
         {
-            if (files.Length == 0 || (cpu.registers.PC & 0xFFFF) != ReadWord(FscvVector))
+            if (files.Length == 0 || !RunCommandInterceptionEnabled || (cpu.registers.PC & 0xFFFF) != ReadWord(FscvVector))
                 return false;
 
             if (cpu.registers.A != 0x04)
@@ -215,6 +240,13 @@ namespace BBC
             return trimmed.Length >= 3
                 && string.Equals(trimmed[..3], "OPT", StringComparison.OrdinalIgnoreCase)
                 && (trimmed.Length == 3 || char.IsWhiteSpace(trimmed[3]));
+        }
+
+        private static bool IsTapeCommand(string command)
+        {
+            string trimmed = command.Trim();
+            return trimmed.Length == 4
+                && string.Equals(trimmed, "TAPE", StringComparison.OrdinalIgnoreCase);
         }
 
         private HostFile? FindFile(string requestedName)

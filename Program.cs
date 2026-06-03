@@ -321,13 +321,15 @@ namespace BBC
             {
                 discController.Mount(path);
                 hostFilingSystem.Mount(path);
+                hostFilingSystem.RunCommandInterceptionEnabled = true;
 
+                string autoCommand = discController.AutoLoadCommand ?? "*CAT";
                 if (queueLoadCommand)
-                    QueueKeyboardText("*B.\rCH. \"LOAD\"\r");
+                    QueueKeyboardText(autoCommand + "\r");
 
                 Console.WriteLine($"Mounted DFS: {discController.MountedPath}");
                 if (queueLoadCommand)
-                    Console.WriteLine("Auto LOAD:  *B. / CH. \"LOAD\"");
+                    Console.WriteLine($"Auto LOAD:  {autoCommand}");
 
                 return;
             }

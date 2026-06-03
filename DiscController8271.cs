@@ -208,8 +208,15 @@ namespace BBC
         private void BeginCommand(byte value)
         {
             if (readData.Count > 0)
+            {
                 Trace($"COMMAND WITH STALE DATA remaining={readData.Count} consumed={currentReadBytesConsumed}/{currentReadBytesProvided}");
+                readData.Clear();
+                currentReadBytesProvided = 0;
+                currentReadBytesConsumed = 0;
+            }
 
+            nmiPending = false;
+            nmiDelayCycles = 0;
             command = value;
             parameters.Clear();
             resultAvailable = false;
@@ -439,10 +446,12 @@ namespace BBC
             if (!TryReadCatalogue(out List<DfsFile> files))
                 return false;
 
-            DfsFile? basicFile = files.FirstOrDefault(file => LooksLikeBasicFile(file));
-            if (basicFile is not null)
+            DfsFile? loadFile = files.FirstOrDefault(file => string.Equals(file.Name, "LOAD", StringComparison.OrdinalIgnoreCase));
+            if (loadFile is not null)
             {
-                command = $"LOAD \"{basicFile.Name}\"";
+                command = LooksLikeBasicFile(loadFile)
+                    ? $"CH. \"{loadFile.Name}\""
+                    : $"*EXEC {loadFile.Name}";
                 return true;
             }
 
@@ -450,6 +459,13 @@ namespace BBC
             if (bootFile is not null)
             {
                 command = $"*EXEC {bootFile.Name}";
+                return true;
+            }
+
+            DfsFile? basicFile = files.FirstOrDefault(file => LooksLikeBasicFile(file));
+            if (basicFile is not null)
+            {
+                command = $"CH. \"{basicFile.Name}\"";
                 return true;
             }
 
