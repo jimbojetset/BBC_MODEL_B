@@ -422,6 +422,7 @@ namespace BBC
         {
             return hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
+                || hostFilingSystem.TryHandleFscv(Cpu)
                 || TryHandleOsbyte();
         }
 

@@ -22,6 +22,7 @@ namespace BBC
     {
         private const ushort OsfileEntry = 0xFFDD;
         private const ushort OscliEntry = 0xFFF7;
+        private const ushort FscvVector = 0x021E;
         private const ushort DefaultBasicLoadAddress = 0x1900;
         private readonly FlatMemoryBus memory;
         private readonly bool traceOscli = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
@@ -164,6 +165,34 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Handles host-backed filing system control vector calls.</summary>
+        /// <param name="cpu">The CPU.</param>
+        /// <returns>True when the FSCV call was handled by the host filing system.</returns>
+        public bool TryHandleFscv(CPU_6502 cpu)
+        {
+            if (files.Length == 0 || (cpu.registers.PC & 0xFFFF) != ReadWord(FscvVector))
+                return false;
+
+            if (cpu.registers.A != 0x04)
+                return false;
+
+            string requestedName = ReadOsString((ushort)(cpu.registers.X | (cpu.registers.Y << 8))).Trim();
+            HostFile? matchedFile = FindFile(requestedName);
+            if (!matchedFile.HasValue)
+            {
+                TraceOscli($"FSCV RUN {requestedName}", "target not found");
+                return false;
+            }
+
+            HostFile file = matchedFile.Value;
+            for (int i = 0; i < file.Data.Length; i++)
+                memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
+
+            TraceOscli($"FSCV RUN {requestedName}", $"handled RUN {file.Name} load=${file.LoadAddress:X4} exec=${file.ExecutionAddress:X4} length=${file.Data.Length:X4}");
+            cpu.registers.PC = file.ExecutionAddress;
+            return true;
+        }
+
         private void TraceOscli(string command, string outcome)
         {
             if (!traceOscli)
@@ -194,11 +223,17 @@ namespace BBC
 
             foreach (HostFile file in files)
             {
-                if (NormalizeName(file.Name) == normalized)
+                if (NormalizeName(file.Name) == normalized || NormalizeName(GetLeafName(file.Name)) == normalized)
                     return file;
             }
 
             return files.Length == 1 ? files[0] : null;
+        }
+
+        private static string GetLeafName(string name)
+        {
+            int dot = name.IndexOf('.');
+            return dot < 0 ? name : name[(dot + 1)..];
         }
 
         private static bool TryParseRunCommand(string command, out string fileName)
