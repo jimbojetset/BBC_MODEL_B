@@ -34,6 +34,7 @@ namespace BBC
         private readonly int[] channelEnvelopeLevels = new int[4];
         private readonly int[] channelEnvelopeSampleCounters = new int[4];
         private readonly EnvelopePhase[] channelEnvelopePhases = new EnvelopePhase[4];
+        private readonly double[] smoothedChannelGains = new double[4];
         private readonly double[] toneCounters = new double[3];
         private readonly int[] tonePolarity = [1, 1, 1];
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
@@ -64,6 +65,7 @@ namespace BBC
                 Array.Fill(channelEnvelopeLevels, 0);
                 Array.Fill(channelEnvelopeSampleCounters, 0);
                 Array.Fill(channelEnvelopePhases, EnvelopePhase.Off);
+                Array.Clear(smoothedChannelGains);
                 Array.Clear(envelopes);
                 Array.Clear(toneCounters);
                 Array.Fill(tonePolarity, 1);
@@ -261,28 +263,25 @@ namespace BBC
 
         private void FillSamples(short[] samples)
         {
-            int[] periods = new int[3];
-            int[] attenuations = new int[4];
-            byte currentNoiseControl;
-
             lock (syncRoot)
             {
-                UpdateDurations(samples.Length);
-                UpdateEnvelopes(samples.Length);
-                tonePeriods.CopyTo(periods, 0);
-                volumes.CopyTo(attenuations, 0);
-                currentNoiseControl = noiseControl;
-            }
+                for (int i = 0; i < samples.Length; i++)
+                {
+                    UpdateDurations(1);
+                    UpdateEnvelopes(1);
 
-            for (int i = 0; i < samples.Length; i++)
-            {
-                double mixed = 0;
+                    double mixed = 0;
 
-                for (int channel = 0; channel < 3; channel++)
-                    mixed += AdvanceTone(channel, periods[channel]) * GetVolume(attenuations[channel]);
+                    for (int channel = 0; channel < 3; channel++)
+                    {
+                        double targetGain = GetVolume(volumes[channel]);
+                        mixed += AdvanceTone(channel, tonePeriods[channel]) * SlewChannelGain(channel, targetGain);
+                    }
 
-                mixed += AdvanceNoise(currentNoiseControl, periods[2]) * GetVolume(attenuations[3]);
-                samples[i] = (short)Math.Clamp(mixed * 8192, short.MinValue, short.MaxValue);
+                    double noiseTargetGain = GetVolume(volumes[3]);
+                    mixed += AdvanceNoise(noiseControl, tonePeriods[2]) * SlewChannelGain(3, noiseTargetGain);
+                    samples[i] = (short)Math.Clamp(mixed * 8192, short.MinValue, short.MaxValue);
+                }
             }
         }
 
@@ -406,6 +405,18 @@ namespace BBC
                     StepEnvelope(channel);
                 }
             }
+        }
+
+        private double SlewChannelGain(int channel, double targetGain)
+        {
+            const double attackCoefficient = 0.25;
+            const double releaseCoefficient = 0.0025;
+
+            double currentGain = smoothedChannelGains[channel];
+            double coefficient = targetGain > currentGain ? attackCoefficient : releaseCoefficient;
+            currentGain += (targetGain - currentGain) * coefficient;
+            smoothedChannelGains[channel] = currentGain;
+            return currentGain;
         }
 
         private void StepEnvelope(int channel)
