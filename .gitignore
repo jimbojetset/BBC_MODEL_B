@@ -9,6 +9,7 @@ obj/
 .DS_Store
 bbc-8271-trace.log
 bbc-oscli-trace.log
+bbc-osbyte-trace.log
 Screenshots/
 
 ROMS/*.crdownload

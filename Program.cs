@@ -177,6 +177,8 @@ namespace BBC
         private JoystickState joystickState;
         private long keyboardInputEnabledAtTicks;
         private byte fileMessageOption = 1;
+        private readonly bool traceOsbyte = Environment.GetEnvironmentVariable("BBC_OSBYTE_TRACE") == "1";
+        private readonly string osbyteTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-osbyte-trace.log");
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -434,11 +436,14 @@ namespace BBC
             if ((Cpu.registers.PC & 0xFFFF) != 0xFFF4)
                 return false;
 
+            TraceOsbyte("entry");
+
             if (Cpu.registers.A == 0x80)
             {
                 ReadAdval(Cpu.registers.X, out byte x, out byte y);
                 Cpu.registers.X = x;
                 Cpu.registers.Y = y;
+                TraceOsbyte("handled ADVAL");
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
@@ -448,6 +453,7 @@ namespace BBC
                 if (Cpu.registers.X == 1)
                     fileMessageOption = Cpu.registers.Y;
 
+                TraceOsbyte("handled OPT");
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
@@ -456,19 +462,37 @@ namespace BBC
             {
                 // The disc image remains mounted even when tape-oriented loaders
                 // issue the cassette-speed OSBYTE.
+                TraceOsbyte("handled TAPE speed");
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
 
             if (Cpu.registers.A != 0x81 || Cpu.registers.Y != 0xFF)
+            {
+                TraceOsbyte("passed through");
                 return false;
+            }
 
             if (!TryMapNegativeInkeyCode(Cpu.registers.X, out byte internalKey))
+            {
+                TraceOsbyte("unmapped negative INKEY");
                 return false;
+            }
 
-            Cpu.registers.X = systemVia.IsKeyPressed(internalKey) ? (byte)0xFF : (byte)0x00;
+            byte result = systemVia.IsKeyPressed(internalKey) ? (byte)0xFF : (byte)0x00;
+            Cpu.registers.X = result;
+            Cpu.registers.Y = result;
+            TraceOsbyte($"handled negative INKEY key=${internalKey:X2} result=${result:X2}");
             ReturnFromFirmwareSubroutine();
             return true;
+        }
+
+        private void TraceOsbyte(string outcome)
+        {
+            if (!traceOsbyte)
+                return;
+
+            File.AppendAllText(osbyteTracePath, $"{DateTimeOffset.Now:O} OSBYTE A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} -> {outcome}{Environment.NewLine}");
         }
 
         private void ReadAdval(byte channel, out byte x, out byte y)
