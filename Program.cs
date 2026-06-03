@@ -172,6 +172,7 @@ namespace BBC
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
         private readonly SystemVia systemVia;
+        private readonly UserVia userVia = new UserVia();
         private readonly HostFilingSystem hostFilingSystem;
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
@@ -179,6 +180,8 @@ namespace BBC
         private byte fileMessageOption = 1;
         private readonly bool traceOsbyte = Environment.GetEnvironmentVariable("BBC_OSBYTE_TRACE") == "1";
         private readonly string osbyteTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-osbyte-trace.log");
+        private readonly bool traceOsword = Environment.GetEnvironmentVariable("BBC_OSWORD_TRACE") == "1";
+        private readonly string oswordTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-osword-trace.log");
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -388,6 +391,7 @@ namespace BBC
             Video.Reset();
             Sound.Reset();
             systemVia.Reset();
+            userVia.Reset();
             Video.SetScreenMemoryWindow(systemVia.ScreenMemoryStart, systemVia.ScreenMemorySize);
             discController.Reset();
             joystickState = default;
@@ -403,11 +407,17 @@ namespace BBC
             Cpu.PacingEnabled = !discController.TransferActive;
             int previousFrame = systemVia.FrameCounter;
             systemVia.Tick(cycles);
+            userVia.Tick(cycles);
             discController.Tick(cycles);
             if (systemVia.FrameCounter != previousFrame)
                 Video.CaptureVisibleFrame();
 
-            Cpu.SetIrqLine(systemVia.IrqAsserted);
+            UpdateCpuIrqLine();
+        }
+
+        private void UpdateCpuIrqLine()
+        {
+            Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted);
         }
 
         private void DumpHeadlessMemory(ushort pc)
@@ -428,7 +438,44 @@ namespace BBC
             return hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
                 || hostFilingSystem.TryHandleFscv(Cpu)
+                || TryHandleOsword()
                 || TryHandleOsbyte();
+        }
+
+        private bool TryHandleOsword()
+        {
+            if ((Cpu.registers.PC & 0xFFFF) != 0xFFF1)
+                return false;
+
+            ushort blockAddress = (ushort)(Cpu.registers.X | (Cpu.registers.Y << 8));
+
+            if (Cpu.registers.A == 0x07)
+            {
+                short channel = ReadSignedWord(blockAddress);
+                short amplitude = ReadSignedWord((ushort)(blockAddress + 2));
+                short pitch = ReadSignedWord((ushort)(blockAddress + 4));
+                short duration = ReadSignedWord((ushort)(blockAddress + 6));
+
+                Sound.PlaySoundCommand(channel, amplitude, pitch, duration);
+                TraceOsword($"SOUND block=${blockAddress:X4} channel={channel} amplitude={amplitude} pitch={pitch} duration={duration}");
+                ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            if (Cpu.registers.A == 0x08)
+            {
+                Span<byte> envelope = stackalloc byte[14];
+                for (int i = 0; i < envelope.Length; i++)
+                    envelope[i] = Memory.Memory[(blockAddress + i) & 0xFFFF];
+
+                Sound.SetEnvelope(envelope);
+                TraceOsword($"ENVELOPE block=${blockAddress:X4} number={envelope[0] & 0x0F}");
+                ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            TraceOsword($"passed through A=${Cpu.registers.A:X2} block=${blockAddress:X4}");
+            return false;
         }
 
         private bool TryHandleOsbyte()
@@ -493,6 +540,21 @@ namespace BBC
                 return;
 
             File.AppendAllText(osbyteTracePath, $"{DateTimeOffset.Now:O} OSBYTE A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} -> {outcome}{Environment.NewLine}");
+        }
+
+        private void TraceOsword(string outcome)
+        {
+            if (!traceOsword)
+                return;
+
+            File.AppendAllText(oswordTracePath, $"{DateTimeOffset.Now:O} OSWORD A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} -> {outcome}{Environment.NewLine}");
+        }
+
+        private short ReadSignedWord(ushort address)
+        {
+            int lo = Memory.Memory[address & 0xFFFF];
+            int hi = Memory.Memory[(address + 1) & 0xFFFF];
+            return unchecked((short)(lo | (hi << 8)));
         }
 
         private void ReadAdval(byte channel, out byte x, out byte y)
@@ -638,7 +700,7 @@ namespace BBC
                 systemVia.SetKeyState(keyChangeScratch[i].InternalKey, keyChangeScratch[i].Pressed);
 
             if (count > 0)
-                Cpu.SetIrqLine(systemVia.IrqAsserted);
+                UpdateCpuIrqLine();
         }
 
         private void DrainHostJoystickInput(Display display)
@@ -869,7 +931,14 @@ namespace BBC
             if (SystemVia.IsAddress(address))
             {
                 byte value = systemVia.Read(address);
-                Cpu.SetIrqLine(systemVia.IrqAsserted);
+                UpdateCpuIrqLine();
+                return value;
+            }
+
+            if (UserVia.IsAddress(address))
+            {
+                byte value = userVia.Read(address);
+                UpdateCpuIrqLine();
                 return value;
             }
 
@@ -880,10 +949,6 @@ namespace BBC
             {
                 0xFE08 => 0x02, // ACIA transmit data register empty.
                 0xFE30 => (byte)selectedSidewaysRom,
-                0xFE60 => 0xFF, // User VIA port B inputs idle high.
-                0xFE61 => 0xFF, // User VIA port A inputs idle high.
-                0xFE6D => 0x00, // User VIA IFR.
-                0xFE6E => 0x00, // User VIA IER.
                 _ => 0x00
             };
         }
@@ -899,7 +964,14 @@ namespace BBC
             if (SystemVia.IsAddress(address))
             {
                 systemVia.Write(address, value);
-                Cpu.SetIrqLine(systemVia.IrqAsserted);
+                UpdateCpuIrqLine();
+                return;
+            }
+
+            if (UserVia.IsAddress(address))
+            {
+                userVia.Write(address, value);
+                UpdateCpuIrqLine();
                 return;
             }
 

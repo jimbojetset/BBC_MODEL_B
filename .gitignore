@@ -10,6 +10,7 @@ obj/
 bbc-8271-trace.log
 bbc-oscli-trace.log
 bbc-osbyte-trace.log
+bbc-osword-trace.log
 Screenshots/
 
 ROMS/*.crdownload

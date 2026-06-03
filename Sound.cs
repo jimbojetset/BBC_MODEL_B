@@ -28,9 +28,11 @@ namespace BBC
         private readonly object syncRoot = new object();
         private readonly int[] tonePeriods = [0, 0, 0];
         private readonly int[] volumes = [15, 15, 15, 15];
+        private readonly int[] durationRemainingSamples = [0, 0, 0, 0];
         private readonly double[] toneCounters = new double[3];
         private readonly int[] tonePolarity = [1, 1, 1];
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
+        private readonly SoundEnvelope[] envelopes = new SoundEnvelope[16];
         private static readonly double[] VolumeTable = CreateVolumeTable();
 
         private byte noiseControl;
@@ -51,6 +53,8 @@ namespace BBC
             {
                 Array.Fill(tonePeriods, 0);
                 Array.Fill(volumes, 15);
+                Array.Fill(durationRemainingSamples, 0);
+                Array.Clear(envelopes);
                 Array.Clear(toneCounters);
                 Array.Fill(tonePolarity, 1);
                 noiseControl = 0;
@@ -136,6 +140,60 @@ namespace BBC
             }
         }
 
+        /// <summary>Stores one BBC MOS ENVELOPE definition.</summary>
+        /// <param name="data">The 14-byte OSWORD &amp;08 envelope block.</param>
+        public void SetEnvelope(ReadOnlySpan<byte> data)
+        {
+            if (data.Length < 14)
+                return;
+
+            int envelopeNumber = data[0] & 0x0F;
+            if (envelopeNumber == 0)
+                return;
+
+            lock (syncRoot)
+            {
+                envelopes[envelopeNumber] = new SoundEnvelope(data[8], data[9], data[10], data[11], data[12], data[13]);
+            }
+        }
+
+        /// <summary>Plays a BBC MOS SOUND command through the SN76489.</summary>
+        /// <param name="channel">BBC SOUND channel word.</param>
+        /// <param name="amplitude">BBC SOUND amplitude word.</param>
+        /// <param name="pitch">BBC SOUND pitch word.</param>
+        /// <param name="duration">BBC SOUND duration word.</param>
+        public void PlaySoundCommand(short channel, short amplitude, short pitch, short duration)
+        {
+            int bbcChannel = channel & 0x03;
+            int chipChannel = bbcChannel == 0 ? 3 : bbcChannel - 1;
+            int attenuation = GetAttenuation(amplitude);
+            int durationSamples = duration < 0 ? 0 : Math.Max(1, (int)duration) * SampleRate / 20;
+
+            lock (syncRoot)
+            {
+                if (attenuation >= 15 || duration == 0)
+                {
+                    volumes[chipChannel] = 15;
+                    durationRemainingSamples[chipChannel] = 0;
+                    return;
+                }
+
+                if (chipChannel == 3)
+                {
+                    SetNoiseControl(GetNoiseControlForPitch(pitch));
+                    volumes[3] = attenuation;
+                    durationRemainingSamples[3] = durationSamples;
+                    return;
+                }
+
+                int period = PitchToTonePeriod(pitch);
+                tonePeriods[chipChannel] = period;
+                toneCounters[chipChannel] = 0;
+                volumes[chipChannel] = attenuation;
+                durationRemainingSamples[chipChannel] = durationSamples;
+            }
+        }
+
         /// <summary>Releases the SDL audio device.</summary>
         public void Dispose()
         {
@@ -190,6 +248,7 @@ namespace BBC
 
             lock (syncRoot)
             {
+                UpdateDurations(samples.Length);
                 tonePeriods.CopyTo(periods, 0);
                 volumes.CopyTo(attenuations, 0);
                 currentNoiseControl = noiseControl;
@@ -258,6 +317,57 @@ namespace BBC
             noiseShiftRegister = 0x4000;
         }
 
+        private void UpdateDurations(int sampleCount)
+        {
+            for (int channel = 0; channel < durationRemainingSamples.Length; channel++)
+            {
+                if (durationRemainingSamples[channel] <= 0)
+                    continue;
+
+                durationRemainingSamples[channel] -= sampleCount;
+                if (durationRemainingSamples[channel] <= 0)
+                {
+                    durationRemainingSamples[channel] = 0;
+                    volumes[channel] = 15;
+                }
+            }
+        }
+
+        private static int GetAttenuation(short amplitude)
+        {
+            if (amplitude == 0)
+                return 15;
+
+            int volume;
+            if (amplitude < 0)
+            {
+                volume = Math.Clamp(-amplitude, 0, 15);
+            }
+            else
+            {
+                // Positive amplitudes select MOS envelopes. Until full envelope
+                // shaping is emulated, play them at a clearly audible level.
+                volume = 14;
+            }
+
+            return 15 - volume;
+        }
+
+        private static int PitchToTonePeriod(short pitch)
+        {
+            int clampedPitch = Math.Clamp((int)pitch, 0, 255);
+            double frequency = 440.0 * Math.Pow(2.0, (clampedPitch - 88) / 48.0);
+            return Math.Clamp((int)Math.Round(ClockHz / (32.0 * frequency)), 1, 1023);
+        }
+
+        private static byte GetNoiseControlForPitch(short pitch)
+        {
+            int clampedPitch = Math.Clamp((int)pitch, 0, 7);
+            int noiseType = clampedPitch >= 4 ? 0x04 : 0x00;
+            int rate = clampedPitch & 0x03;
+            return (byte)(noiseType | rate);
+        }
+
         private static int GetNoisePeriod(byte control, int tone2Period)
         {
             return (control & 0x03) switch
@@ -283,6 +393,31 @@ namespace BBC
 
             table[15] = 0;
             return table;
+        }
+
+        private readonly struct SoundEnvelope
+        {
+            public SoundEnvelope(byte attackStepCount, byte decayStepCount, byte sustainStepCount, byte attackLevel, byte decayLevel, byte sustainLevel)
+            {
+                AttackStepCount = attackStepCount;
+                DecayStepCount = decayStepCount;
+                SustainStepCount = sustainStepCount;
+                AttackLevel = attackLevel;
+                DecayLevel = decayLevel;
+                SustainLevel = sustainLevel;
+            }
+
+            public byte AttackStepCount { get; }
+
+            public byte DecayStepCount { get; }
+
+            public byte SustainStepCount { get; }
+
+            public byte AttackLevel { get; }
+
+            public byte DecayLevel { get; }
+
+            public byte SustainLevel { get; }
         }
 
         private static void ThrowIfSdlFailed(int result, string operation)
