@@ -777,10 +777,12 @@ namespace BBC
             int paletteIndex = activeMode switch
             {
                 BbcScreenMode.Mode0 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
-                BbcScreenMode.Mode1 => logicalColour & 0x03,
+                BbcScreenMode.Mode1 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
+                    | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
                 BbcScreenMode.Mode2 => logicalColour & 0x0F,
                 BbcScreenMode.Mode4 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
-                BbcScreenMode.Mode5 => logicalColour & 0x03,
+                BbcScreenMode.Mode5 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
+                    | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
                 _ => logicalColour & 0x0F
             };
 
@@ -821,7 +823,7 @@ namespace BBC
         {
             int highBit = 7 - pixel;
             int lowBit = 3 - pixel;
-            return ((value >> highBit) & 0x01) | (((value >> lowBit) & 0x01) << 1);
+            return (((value >> highBit) & 0x01) << 1) | ((value >> lowBit) & 0x01);
         }
 
         private static int DecodeFourBitPixel(byte value, int pixel)
