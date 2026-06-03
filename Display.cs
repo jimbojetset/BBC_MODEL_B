@@ -12,6 +12,7 @@
 
 using System.Runtime.InteropServices;
 using System.Diagnostics;
+using System.IO.Compression;
 
 namespace BBC
 {
@@ -33,6 +34,7 @@ namespace BBC
         private readonly Queue<HostKeyChange> pendingKeyChanges = new Queue<HostKeyChange>();
         private readonly Queue<HostJoystickChange> pendingJoystickChanges = new Queue<HostJoystickChange>();
         private readonly Queue<string> pendingDiscLoads = new Queue<string>();
+        private int pendingScreenshotRequests;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
 
@@ -188,6 +190,15 @@ namespace BBC
                 destination.Add(pendingDiscLoads.Dequeue());
         }
 
+        /// <summary>Returns and clears the number of pending screenshot requests.</summary>
+        /// <returns>The number of requested screenshots.</returns>
+        public int DrainScreenshotRequests()
+        {
+            int count = pendingScreenshotRequests;
+            pendingScreenshotRequests = 0;
+            return count;
+        }
+
         /// <summary>Fills the framebuffer with an ARGB8888 colour.</summary>
         /// <param name="argb">The colour to write.</param>
         public void Clear(uint argb = Black)
@@ -245,6 +256,14 @@ namespace BBC
             Present();
         }
 
+        /// <summary>Saves the current framebuffer as a PNG image.</summary>
+        /// <param name="path">The destination PNG path.</param>
+        public void SavePng(string path)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            WritePng(path, frameBuffer, Width, Height);
+        }
+
         /// <summary>Releases SDL resources owned by this display.</summary>
         public void Dispose()
         {
@@ -289,6 +308,12 @@ namespace BBC
             if (keySym == SDLK_V && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
             {
                 EnqueueClipboardText();
+                return;
+            }
+
+            if (keySym == SDLK_S && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
+            {
+                pendingScreenshotRequests++;
                 return;
             }
 
@@ -633,6 +658,88 @@ namespace BBC
         {
             if (result < 0)
                 throw new InvalidOperationException($"{operation} failed: {GetSdlError()}");
+        }
+
+        private static void WritePng(string path, ReadOnlySpan<uint> argbPixels, int width, int height)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
+
+            using FileStream file = File.Create(path);
+            file.Write([0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+
+            byte[] ihdr = new byte[13];
+            WriteBigEndian(ihdr, 0, width);
+            WriteBigEndian(ihdr, 4, height);
+            ihdr[8] = 8;
+            ihdr[9] = 6;
+            WriteChunk(file, "IHDR", ihdr);
+
+            using MemoryStream raw = new MemoryStream((width * height * 4) + height);
+            for (int y = 0; y < height; y++)
+            {
+                raw.WriteByte(0);
+                int rowOffset = y * width;
+                for (int x = 0; x < width; x++)
+                {
+                    uint pixel = argbPixels[rowOffset + x];
+                    raw.WriteByte((byte)(pixel >> 16));
+                    raw.WriteByte((byte)(pixel >> 8));
+                    raw.WriteByte((byte)pixel);
+                    raw.WriteByte((byte)(pixel >> 24));
+                }
+            }
+
+            using MemoryStream compressed = new MemoryStream();
+            raw.Position = 0;
+            using (ZLibStream zlib = new ZLibStream(compressed, CompressionLevel.Fastest, leaveOpen: true))
+                raw.CopyTo(zlib);
+
+            WriteChunk(file, "IDAT", compressed.ToArray());
+            WriteChunk(file, "IEND", []);
+        }
+
+        private static void WriteChunk(Stream stream, string type, ReadOnlySpan<byte> data)
+        {
+            Span<byte> header = stackalloc byte[8];
+            WriteBigEndian(header, 0, data.Length);
+            for (int i = 0; i < 4; i++)
+                header[4 + i] = (byte)type[i];
+
+            stream.Write(header);
+            stream.Write(data);
+
+            uint crc = Crc32(header[4..8], data);
+            Span<byte> crcBytes = stackalloc byte[4];
+            WriteBigEndian(crcBytes, 0, unchecked((int)crc));
+            stream.Write(crcBytes);
+        }
+
+        private static uint Crc32(ReadOnlySpan<byte> type, ReadOnlySpan<byte> data)
+        {
+            uint crc = 0xFFFFFFFF;
+            crc = UpdateCrc32(crc, type);
+            crc = UpdateCrc32(crc, data);
+            return crc ^ 0xFFFFFFFF;
+        }
+
+        private static uint UpdateCrc32(uint crc, ReadOnlySpan<byte> data)
+        {
+            foreach (byte value in data)
+            {
+                crc ^= value;
+                for (int i = 0; i < 8; i++)
+                    crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+            }
+
+            return crc;
+        }
+
+        private static void WriteBigEndian(Span<byte> destination, int offset, int value)
+        {
+            destination[offset] = (byte)(value >> 24);
+            destination[offset + 1] = (byte)(value >> 16);
+            destination[offset + 2] = (byte)(value >> 8);
+            destination[offset + 3] = (byte)value;
         }
 
         private static string GetSdlError()

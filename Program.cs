@@ -260,6 +260,7 @@ namespace BBC
                 DrainHostJoystickInput(Display);
                 DrainHostKeyboardInput(Display);
                 Video.Render(Display);
+                DrainHostScreenshotRequests(Display);
                 Display.Present();
 
                 WaitUntil(nextFrame);
@@ -571,6 +572,17 @@ namespace BBC
                 MountHostFile(path, queueLoadCommand: false);
         }
 
+        private void DrainHostScreenshotRequests(Display display)
+        {
+            int count = display.DrainScreenshotRequests();
+            for (int i = 0; i < count; i++)
+            {
+                string path = CreateScreenshotPath();
+                display.SavePng(path);
+                Console.WriteLine($"Screenshot: {path}");
+            }
+        }
+
         private void DrainHostKeyboardInput(Display display)
         {
             if (Stopwatch.GetTimestamp() < keyboardInputEnabledAtTicks)
@@ -697,6 +709,13 @@ namespace BBC
             return offset >= (KeyboardBufferEnd & 0xFF)
                 ? (byte)(KeyboardBufferStart & 0xFF)
                 : (byte)(offset + 1);
+        }
+
+        private static string CreateScreenshotPath()
+        {
+            string directory = Path.Combine(Environment.CurrentDirectory, "Screenshots");
+            string fileName = $"bbc-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png";
+            return Path.Combine(directory, fileName);
         }
 
         private struct JoystickState
