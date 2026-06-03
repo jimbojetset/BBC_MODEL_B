@@ -208,6 +208,7 @@ namespace BBC
                 int period = PitchToTonePeriod(pitch);
                 tonePeriods[chipChannel] = period;
                 toneCounters[chipChannel] = 0;
+                tonePolarity[chipChannel] = 1;
                 if (!usesEnvelope)
                     volumes[chipChannel] = attenuation;
 
