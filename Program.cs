@@ -156,6 +156,7 @@ namespace BBC
         private const ushort KeyboardBufferStartIndex = 0x02D8;
         private const ushort KeyboardBufferEndIndex = 0x02E1;
         private const ushort EscapeFlag = 0x00FF;
+        private const ushort CliVector = 0x0208;
         private const ushort OscliEntry = 0xFFF7;
         private const byte KeyboardBufferEmptyFlag = 0x80;
         private const byte EscapePendingFlag = 0x80;
@@ -439,7 +440,7 @@ namespace BBC
 
         private bool TryHandleSidewaysRomLanguageCommand()
         {
-            if ((Cpu.registers.PC & 0xFFFF) != OscliEntry)
+            if (!IsCliEntryPoint((ushort)(Cpu.registers.PC & 0xFFFF)))
                 return false;
 
             ushort commandAddress = (ushort)(Cpu.registers.X | (Cpu.registers.Y << 8));
@@ -465,6 +466,11 @@ namespace BBC
 
             TraceOscli(command, "no language ROM match");
             return false;
+        }
+
+        private bool IsCliEntryPoint(ushort pc)
+        {
+            return pc == OscliEntry || pc == ReadWord(CliVector);
         }
 
         private bool TryHandleOsbyte()
@@ -647,6 +653,11 @@ namespace BBC
             }
 
             return builder.ToString();
+        }
+
+        private ushort ReadWord(ushort address)
+        {
+            return (ushort)(Memory.Memory[address & 0xFFFF] | (Memory.Memory[(address + 1) & 0xFFFF] << 8));
         }
 
         private static string GetCommandName(string command)
