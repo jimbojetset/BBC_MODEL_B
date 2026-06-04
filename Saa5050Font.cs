@@ -18,10 +18,11 @@ namespace BBC
     internal static class Saa5050Font
     {
         private const int GlyphWidth = 5;
+        private const int SourceCellWidth = 6;
+        private const int SourceCellHeight = 10;
         private const int GlyphRowsPerCharacter = 10;
-        private const int SourceGlyphHeight = 10;
-        private const int InterlacedWidth = 10;
-        private const int InterlacedHeight = 19;
+        private const int RoundedWidth = SourceCellWidth * 2;
+        private const int RoundedHeight = SourceCellHeight * 2;
         private const int GlyphXOffset = 2;
         private const int GlyphYOffset = 0;
 
@@ -134,86 +135,92 @@ namespace BBC
 
             int glyphOffset = (character - 32) * GlyphRowsPerCharacter;
             int sourceYOffset = doubleHeightBottom ? cellHeight : 0;
-            int verticalScale = doubleHeight ? 2 : 1;
 
-            for (int outputY = 0; outputY < InterlacedHeight; outputY++)
+            for (int outputY = 0; outputY < RoundedHeight; outputY++)
             {
-                ushort bits = GetInterlacedRow(glyphOffset, outputY);
+                ushort bits = GetRoundedRow(glyphOffset, outputY);
 
-                for (int outputX = 0; outputX < InterlacedWidth; outputX++)
+                for (int outputX = 0; outputX < RoundedWidth; outputX++)
                 {
-                    if ((bits & (0x200 >> outputX)) == 0)
+                    if ((bits & (0x800 >> outputX)) == 0)
                         continue;
 
                     int pixelX = cellX + GlyphXOffset + outputX;
-                    int pixelY = cellY + GlyphYOffset + (outputY * verticalScale) - sourceYOffset;
+                    int pixelY = cellY + GlyphYOffset + outputY - sourceYOffset;
+                    if (doubleHeight)
+                        pixelY = cellY + GlyphYOffset + (outputY * 2) - sourceYOffset;
 
-                    for (int yy = 0; yy < verticalScale; yy++)
-                    {
-                        int y = pixelY + yy;
-                        if (y >= cellY + cellHeight || (uint)y >= (uint)height)
-                            continue;
-
-                        if ((uint)pixelX < (uint)width)
-                            pixels[(y * width) + pixelX] = colour;
-                    }
+                    int verticalPixels = doubleHeight ? 2 : 1;
+                    for (int yy = 0; yy < verticalPixels; yy++)
+                        Plot(pixels, width, height, pixelX, pixelY + yy, colour);
                 }
             }
         }
 
-        private static ushort GetInterlacedRow(int glyphOffset, int outputY)
+        private static ushort GetRoundedRow(int glyphOffset, int outputY)
         {
-            int sourceY = outputY / 2;
-            byte current = GlyphRows[glyphOffset + sourceY];
-
-            if ((outputY & 1) == 0)
-                return ExpandSourceRow(current);
-
-            byte next = sourceY + 1 < SourceGlyphHeight ? GlyphRows[glyphOffset + sourceY + 1] : (byte)0;
-            return InterpolateRows(current, next);
-        }
-
-        private static ushort ExpandSourceRow(byte row)
-        {
+            int sourceY = outputY >> 1;
+            int phaseY = outputY & 1;
             ushort result = 0;
 
-            for (int sourceX = 0; sourceX < GlyphWidth; sourceX++)
+            for (int outputX = 0; outputX < RoundedWidth; outputX++)
             {
-                if ((row & (0x10 >> sourceX)) == 0)
-                    continue;
+                int sourceX = outputX >> 1;
+                int phaseX = outputX & 1;
 
-                int outputX = sourceX * 2;
-                result |= (ushort)(0x200 >> outputX);
-                result |= (ushort)(0x200 >> (outputX + 1));
+                if (IsSourcePixelSet(glyphOffset, sourceX, sourceY) ||
+                    IsRoundedDiagonalPixelSet(glyphOffset, sourceX, sourceY, phaseX, phaseY))
+                    result |= (ushort)(0x800 >> outputX);
             }
 
             return result;
         }
 
-        private static ushort InterpolateRows(byte current, byte next)
+        private static bool IsSourcePixelSet(int glyphOffset, int sourceX, int sourceY)
         {
-            ushort result = ExpandSourceRow((byte)(current & next));
+            if ((uint)sourceX >= GlyphWidth || (uint)sourceY >= SourceCellHeight)
+                return false;
 
-            for (int sourceX = 0; sourceX < GlyphWidth; sourceX++)
-            {
-                bool currentSet = (current & (0x10 >> sourceX)) != 0;
-                if (!currentSet)
-                    continue;
+            byte row = GlyphRows[glyphOffset + sourceY];
+            return (row & (0x10 >> sourceX)) != 0;
+        }
 
-                if (sourceX + 1 < GlyphWidth && (next & (0x10 >> (sourceX + 1))) != 0)
-                {
-                    result |= (ushort)(0x200 >> ((sourceX * 2) + 1));
-                    result |= (ushort)(0x200 >> ((sourceX + 1) * 2));
-                }
+        private static bool IsRoundedDiagonalPixelSet(int glyphOffset, int sourceX, int sourceY, int phaseX, int phaseY)
+        {
+            if ((uint)sourceX >= SourceCellWidth || (uint)sourceY >= SourceCellHeight)
+                return false;
 
-                if (sourceX > 0 && (next & (0x10 >> (sourceX - 1))) != 0)
-                {
-                    result |= (ushort)(0x200 >> (sourceX * 2));
-                    result |= (ushort)(0x200 >> (((sourceX - 1) * 2) + 1));
-                }
-            }
+            if (IsSourcePixelSet(glyphOffset, sourceX, sourceY))
+                return false;
 
-            return result;
+            bool left = IsSourcePixelSet(glyphOffset, sourceX - 1, sourceY);
+            bool right = IsSourcePixelSet(glyphOffset, sourceX + 1, sourceY);
+            bool up = IsSourcePixelSet(glyphOffset, sourceX, sourceY - 1);
+            bool down = IsSourcePixelSet(glyphOffset, sourceX, sourceY + 1);
+            bool upperLeft = IsSourcePixelSet(glyphOffset, sourceX - 1, sourceY - 1);
+            bool upperRight = IsSourcePixelSet(glyphOffset, sourceX + 1, sourceY - 1);
+            bool lowerLeft = IsSourcePixelSet(glyphOffset, sourceX - 1, sourceY + 1);
+            bool lowerRight = IsSourcePixelSet(glyphOffset, sourceX + 1, sourceY + 1);
+
+            if (left && up && !upperLeft && phaseX == 0 && phaseY == 0)
+                return true;
+
+            if (right && up && !upperRight && phaseX == 1 && phaseY == 0)
+                return true;
+
+            if (left && down && !lowerLeft && phaseX == 0 && phaseY == 1)
+                return true;
+
+            if (right && down && !lowerRight && phaseX == 1 && phaseY == 1)
+                return true;
+
+            return false;
+        }
+
+        private static void Plot(uint[] pixels, int width, int height, int x, int y, uint colour)
+        {
+            if ((uint)x < (uint)width && (uint)y < (uint)height)
+                pixels[(y * width) + x] = colour;
         }
     }
 }
