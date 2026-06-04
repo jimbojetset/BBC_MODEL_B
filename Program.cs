@@ -181,6 +181,8 @@ namespace BBC
         private byte fileMessageOption = 1;
         private readonly bool traceOsbyte = Environment.GetEnvironmentVariable("BBC_OSBYTE_TRACE") == "1";
         private readonly string osbyteTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-osbyte-trace.log");
+        private readonly bool traceOscli = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
+        private readonly string oscliTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-oscli-trace.log");
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -443,18 +445,21 @@ namespace BBC
                 command = command[1..].TrimStart();
 
             string commandName = GetCommandName(command);
+            TraceOscli(command, "sideways language command check");
             for (int bank = SidewaysRomBanks - 1; bank >= 0; bank--)
             {
                 string title = ReadSidewaysRomTitle(bank);
-                if (title.Length == 0 || !string.Equals(commandName, title, StringComparison.OrdinalIgnoreCase))
+                if (title.Length == 0 || !MatchesSidewaysRomCommand(commandName, title))
                     continue;
 
                 selectedSidewaysRom = bank;
                 Cpu.registers.A = 1;
                 Cpu.registers.PC = SidewaysRomStart;
+                TraceOscli(command, $"enter language ROM bank={bank} title={title}");
                 return true;
             }
 
+            TraceOscli(command, "no language ROM match");
             return false;
         }
 
@@ -520,6 +525,14 @@ namespace BBC
                 return;
 
             File.AppendAllText(osbyteTracePath, $"{DateTimeOffset.Now:O} OSBYTE A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} -> {outcome}{Environment.NewLine}");
+        }
+
+        private void TraceOscli(string command, string outcome)
+        {
+            if (!traceOscli)
+                return;
+
+            File.AppendAllText(oscliTracePath, $"{DateTimeOffset.Now:O} OSCLI \"{command}\" -> {outcome}{Environment.NewLine}");
         }
 
         private void ReadAdval(byte channel, out byte x, out byte y)
@@ -636,6 +649,19 @@ namespace BBC
         {
             int separator = command.IndexOfAny([' ', '\t', '\r']);
             return separator < 0 ? command : command[..separator];
+        }
+
+        private static bool MatchesSidewaysRomCommand(string commandName, string romTitle)
+        {
+            if (string.Equals(commandName, romTitle, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (!commandName.EndsWith(".", StringComparison.Ordinal))
+                return false;
+
+            string abbreviation = commandName[..^1];
+            return abbreviation.Length > 0
+                && romTitle.StartsWith(abbreviation, StringComparison.OrdinalIgnoreCase);
         }
 
         private string ReadSidewaysRomTitle(int bank)
