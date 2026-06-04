@@ -19,9 +19,11 @@ namespace BBC
     {
         private const int GlyphWidth = 5;
         private const int GlyphRowsPerCharacter = 10;
-        private const int VisibleGlyphHeight = 9;
+        private const int SourceGlyphHeight = 10;
         private const int InterlacedWidth = 10;
-        private const int InterlacedHeight = 18;
+        private const int InterlacedHeight = 19;
+        private const int GlyphXOffset = 2;
+        private const int GlyphYOffset = 0;
 
         private static readonly byte[] GlyphRows =
         [
@@ -132,37 +134,86 @@ namespace BBC
 
             int glyphOffset = (character - 32) * GlyphRowsPerCharacter;
             int sourceYOffset = doubleHeightBottom ? cellHeight : 0;
-            int glyphXOffset = Math.Max(0, (cellWidth - InterlacedWidth) / 2);
-            int glyphYOffset = Math.Max(0, (cellHeight - InterlacedHeight) / 2);
-            int yScale = doubleHeight ? 4 : 2;
+            int verticalScale = doubleHeight ? 2 : 1;
 
-            for (int glyphY = 0; glyphY < VisibleGlyphHeight; glyphY++)
+            for (int outputY = 0; outputY < InterlacedHeight; outputY++)
             {
-                byte bits = GlyphRows[glyphOffset + glyphY];
-                for (int glyphX = 0; glyphX < GlyphWidth; glyphX++)
+                ushort bits = GetInterlacedRow(glyphOffset, outputY);
+
+                for (int outputX = 0; outputX < InterlacedWidth; outputX++)
                 {
-                    if ((bits & (0x10 >> glyphX)) == 0)
+                    if ((bits & (0x200 >> outputX)) == 0)
                         continue;
 
-                    int pixelX = cellX + glyphXOffset + (glyphX * 2);
-                    int pixelY = cellY + glyphYOffset + (glyphY * yScale) - sourceYOffset;
+                    int pixelX = cellX + GlyphXOffset + outputX;
+                    int pixelY = cellY + GlyphYOffset + (outputY * verticalScale) - sourceYOffset;
 
-                    for (int yy = 0; yy < yScale; yy++)
+                    for (int yy = 0; yy < verticalScale; yy++)
                     {
                         int y = pixelY + yy;
                         if (y >= cellY + cellHeight || (uint)y >= (uint)height)
                             continue;
 
-                        int offset = y * width;
-                        for (int xx = 0; xx < 2; xx++)
-                        {
-                            int x = pixelX + xx;
-                            if ((uint)x < (uint)width)
-                                pixels[offset + x] = colour;
-                        }
+                        if ((uint)pixelX < (uint)width)
+                            pixels[(y * width) + pixelX] = colour;
                     }
                 }
             }
+        }
+
+        private static ushort GetInterlacedRow(int glyphOffset, int outputY)
+        {
+            int sourceY = outputY / 2;
+            byte current = GlyphRows[glyphOffset + sourceY];
+
+            if ((outputY & 1) == 0)
+                return ExpandSourceRow(current);
+
+            byte next = sourceY + 1 < SourceGlyphHeight ? GlyphRows[glyphOffset + sourceY + 1] : (byte)0;
+            return InterpolateRows(current, next);
+        }
+
+        private static ushort ExpandSourceRow(byte row)
+        {
+            ushort result = 0;
+
+            for (int sourceX = 0; sourceX < GlyphWidth; sourceX++)
+            {
+                if ((row & (0x10 >> sourceX)) == 0)
+                    continue;
+
+                int outputX = sourceX * 2;
+                result |= (ushort)(0x200 >> outputX);
+                result |= (ushort)(0x200 >> (outputX + 1));
+            }
+
+            return result;
+        }
+
+        private static ushort InterpolateRows(byte current, byte next)
+        {
+            ushort result = ExpandSourceRow((byte)(current & next));
+
+            for (int sourceX = 0; sourceX < GlyphWidth; sourceX++)
+            {
+                bool currentSet = (current & (0x10 >> sourceX)) != 0;
+                if (!currentSet)
+                    continue;
+
+                if (sourceX + 1 < GlyphWidth && (next & (0x10 >> (sourceX + 1))) != 0)
+                {
+                    result |= (ushort)(0x200 >> ((sourceX * 2) + 1));
+                    result |= (ushort)(0x200 >> ((sourceX + 1) * 2));
+                }
+
+                if (sourceX > 0 && (next & (0x10 >> (sourceX - 1))) != 0)
+                {
+                    result |= (ushort)(0x200 >> (sourceX * 2));
+                    result |= (ushort)(0x200 >> (((sourceX - 1) * 2) + 1));
+                }
+            }
+
+            return result;
         }
     }
 }
