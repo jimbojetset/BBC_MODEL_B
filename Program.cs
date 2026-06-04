@@ -542,7 +542,9 @@ namespace BBC
             if (!traceOscli)
                 return;
 
-            File.AppendAllText(oscliTracePath, $"{DateTimeOffset.Now:O} OSCLI \"{command}\" -> {outcome}{Environment.NewLine}");
+            string message = $"{DateTimeOffset.Now:O} OSCLI \"{command}\" -> {outcome}";
+            Console.WriteLine(message);
+            File.AppendAllText(oscliTracePath, message + Environment.NewLine);
         }
 
         private void ReadAdval(byte channel, out byte x, out byte y)
