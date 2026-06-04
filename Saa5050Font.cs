@@ -19,10 +19,10 @@ namespace BBC
     {
         private const int GlyphWidth = 5;
         private const int GlyphHeight = 10;
-        private const int GlyphXScale = 2;
+        private const int GlyphXScale = 3;
         private const int GlyphYScale = 2;
         private const int DoubleHeightGlyphYScale = 4;
-        private const int GlyphXOffset = 2;
+        private const int GlyphXOffset = 0;
         private const int GlyphYOffset = 0;
 
         private static readonly byte[] GlyphRows =
