@@ -425,14 +425,14 @@ namespace BBC
 
         private bool HandleHostFirmwareHooks()
         {
-            return TryHandleOscli()
+            return TryHandleSidewaysRomLanguageCommand()
                 || hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
                 || hostFilingSystem.TryHandleFscv(Cpu)
                 || TryHandleOsbyte();
         }
 
-        private bool TryHandleOscli()
+        private bool TryHandleSidewaysRomLanguageCommand()
         {
             if ((Cpu.registers.PC & 0xFFFF) != OscliEntry)
                 return false;
@@ -442,12 +442,20 @@ namespace BBC
             if (command.StartsWith('*'))
                 command = command[1..].TrimStart();
 
-            if (!string.Equals(command, "BASIC", StringComparison.OrdinalIgnoreCase))
-                return false;
+            string commandName = GetCommandName(command);
+            for (int bank = SidewaysRomBanks - 1; bank >= 0; bank--)
+            {
+                string title = ReadSidewaysRomTitle(bank);
+                if (title.Length == 0 || !string.Equals(commandName, title, StringComparison.OrdinalIgnoreCase))
+                    continue;
 
-            selectedSidewaysRom = BasicRomBank;
-            ReturnFromFirmwareSubroutine();
-            return true;
+                selectedSidewaysRom = bank;
+                Cpu.registers.A = 1;
+                Cpu.registers.PC = SidewaysRomStart;
+                return true;
+            }
+
+            return false;
         }
 
         private bool TryHandleOsbyte()
@@ -616,6 +624,34 @@ namespace BBC
             {
                 byte value = Memory.Memory[(address + i) & 0xFFFF];
                 if (value == 0x0D)
+                    break;
+
+                builder.Append((char)value);
+            }
+
+            return builder.ToString();
+        }
+
+        private static string GetCommandName(string command)
+        {
+            int separator = command.IndexOfAny([' ', '\t', '\r']);
+            return separator < 0 ? command : command[..separator];
+        }
+
+        private string ReadSidewaysRomTitle(int bank)
+        {
+            if (bank < 0 || bank >= SidewaysRomBanks)
+                return string.Empty;
+
+            int offset = bank * RomSize + 9;
+            if (sidewaysRoms[offset] == 0xFF || sidewaysRoms[offset] == 0)
+                return string.Empty;
+
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < 64 && offset + i < sidewaysRoms.Length; i++)
+            {
+                byte value = sidewaysRoms[offset + i];
+                if (value == 0 || value == 0xFF || value < 32 || value > 126)
                     break;
 
                 builder.Append((char)value);
