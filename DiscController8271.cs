@@ -269,7 +269,7 @@ namespace BBC
             nmiPending = false;
             nmiDelayCycles = 0;
             command = value;
-            selectedDrive = GetDriveFromCommand(value);
+            selectedDrive = 0;
             parameters.Clear();
             resultAvailable = false;
             busy = true;
@@ -612,18 +612,6 @@ namespace BBC
         private bool IsDriveReady(int drive)
         {
             return drive >= 0 && drive < drives.Length && driveMounted[drive] && drives[drive].Length > 0;
-        }
-
-        private static int GetDriveFromCommand(byte command)
-        {
-            int encoded = (command >> 6) & 0x03;
-            return encoded switch
-            {
-                0 => 0,
-                1 => 1,
-                2 => 2,
-                _ => 3
-            };
         }
 
         private static void AdvanceSector(ref int track, ref int sector)
