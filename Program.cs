@@ -41,7 +41,7 @@ namespace BBC
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
             foreach (string path in options.MountPaths)
-                emulator.MountHostFile(path, queueLoadCommand: true);
+                emulator.MountHostFile(path, queueLoadCommand: false);
 
             if (options.HeadlessMilliseconds > 0)
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
@@ -312,9 +312,9 @@ namespace BBC
             Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
         }
 
-        /// <summary>Mounts a host file or disc image and optionally queues a BASIC LOAD command.</summary>
+        /// <summary>Mounts a host file or disc image.</summary>
         /// <param name="path">The host path.</param>
-        /// <param name="queueLoadCommand">Whether to type LOAD at the BBC prompt.</param>
+        /// <param name="queueLoadCommand">Ignored; retained for existing callers.</param>
         public void MountHostFile(string path, bool queueLoadCommand)
         {
             if (IsDiscImagePath(path))
@@ -323,25 +323,13 @@ namespace BBC
                 hostFilingSystem.Mount(path);
                 hostFilingSystem.RunCommandInterceptionEnabled = true;
 
-                string autoCommand = discController.AutoLoadCommand ?? "*CAT";
-                if (queueLoadCommand)
-                    QueueKeyboardText(autoCommand + "\r");
-
                 Console.WriteLine($"Mounted DFS: {discController.MountedPath}");
-                if (queueLoadCommand)
-                    Console.WriteLine($"Auto LOAD:  {autoCommand}");
-
                 return;
             }
 
             hostFilingSystem.Mount(path);
 
-            if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is string hostCommand)
-                QueueKeyboardText(hostCommand + "\r");
-
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedPath}");
-            if (queueLoadCommand && hostFilingSystem.AutoLoadCommand is not null)
-                Console.WriteLine($"Auto LOAD:  {hostFilingSystem.AutoLoadCommand}");
         }
 
         /// <summary>Releases emulator-owned resources.</summary>
