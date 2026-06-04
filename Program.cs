@@ -222,6 +222,9 @@ namespace BBC
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
+
+            if (traceOscli)
+                Console.WriteLine($"OSCLI trace: {oscliTracePath}");
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
@@ -454,6 +457,7 @@ namespace BBC
 
                 selectedSidewaysRom = bank;
                 Cpu.registers.A = 1;
+                Cpu.registers.X = (byte)bank;
                 Cpu.registers.PC = SidewaysRomStart;
                 TraceOscli(command, $"enter language ROM bank={bank} title={title}");
                 return true;
