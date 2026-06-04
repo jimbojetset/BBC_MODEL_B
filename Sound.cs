@@ -29,6 +29,7 @@ namespace BBC
         private readonly int[] tonePeriods = [0, 0, 0];
         private readonly int[] volumes = [15, 15, 15, 15];
         private readonly int[] durationRemainingSamples = [0, 0, 0, 0];
+        private readonly Queue<SoundNote>[] soundQueues = [new Queue<SoundNote>(), new Queue<SoundNote>(), new Queue<SoundNote>(), new Queue<SoundNote>()];
         private readonly bool[] channelUsesEnvelope = new bool[4];
         private readonly int[] channelEnvelopeNumbers = new int[4];
         private readonly int[] channelEnvelopeLevels = new int[4];
@@ -39,6 +40,9 @@ namespace BBC
         private readonly int[] tonePolarity = [1, 1, 1];
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
         private readonly SoundEnvelope[] envelopes = new SoundEnvelope[16];
+        private readonly bool traceEnabled = Environment.GetEnvironmentVariable("BBC_SOUND_TRACE") == "1";
+        private readonly object traceLock = new object();
+        private readonly string tracePath = Path.Combine(Environment.CurrentDirectory, "bbc-sound-trace.log");
         private static readonly double[] VolumeTable = CreateVolumeTable();
 
         private byte noiseControl;
@@ -52,6 +56,16 @@ namespace BBC
         private bool running;
         private bool disposed;
 
+        /// <summary>Initializes a new sound generator.</summary>
+        public Sound()
+        {
+            if (traceEnabled)
+            {
+                File.WriteAllText(tracePath, $"BBC sound trace started {DateTimeOffset.Now:O}{Environment.NewLine}");
+                Console.WriteLine($"Sound trace: {tracePath}");
+            }
+        }
+
         /// <summary>Resets all tone/noise registers to silence.</summary>
         public void Reset()
         {
@@ -60,6 +74,8 @@ namespace BBC
                 Array.Fill(tonePeriods, 0);
                 Array.Fill(volumes, 15);
                 Array.Fill(durationRemainingSamples, 0);
+                foreach (Queue<SoundNote> queue in soundQueues)
+                    queue.Clear();
                 Array.Fill(channelUsesEnvelope, false);
                 Array.Fill(channelEnvelopeNumbers, 0);
                 Array.Fill(channelEnvelopeLevels, 0);
@@ -116,6 +132,7 @@ namespace BBC
         {
             lock (syncRoot)
             {
+                Trace($"PSG WRITE {value:X2}");
                 if ((value & 0x80) != 0)
                 {
                     latchedChannel = (value >> 5) & 0x03;
@@ -124,6 +141,7 @@ namespace BBC
                     if (latchedVolume)
                     {
                         volumes[latchedChannel] = value & 0x0F;
+                        Trace($"PSG LATCH V ch={latchedChannel} att={volumes[latchedChannel]}");
                     }
                     else if (latchedChannel == 3)
                     {
@@ -132,6 +150,7 @@ namespace BBC
                     else
                     {
                         tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x3F0) | (value & 0x0F);
+                        Trace($"PSG LATCH T ch={latchedChannel} period={tonePeriods[latchedChannel]}");
                     }
 
                     return;
@@ -140,6 +159,7 @@ namespace BBC
                 if (latchedVolume)
                 {
                     volumes[latchedChannel] = value & 0x0F;
+                    Trace($"PSG DATA V ch={latchedChannel} att={volumes[latchedChannel]}");
                 }
                 else if (latchedChannel == 3)
                 {
@@ -148,6 +168,7 @@ namespace BBC
                 else
                 {
                     tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x0F) | ((value & 0x3F) << 4);
+                    Trace($"PSG DATA T ch={latchedChannel} period={tonePeriods[latchedChannel]}");
                 }
             }
         }
@@ -166,6 +187,7 @@ namespace BBC
             lock (syncRoot)
             {
                 envelopes[envelopeNumber] = new SoundEnvelope(data[1], data[8], data[9], data[10], data[11], data[12], data[13]);
+                Trace($"ENVELOPE {envelopeNumber} step={data[1]} attackChange={unchecked((sbyte)data[8])} decayChange={unchecked((sbyte)data[9])} sustainChange={unchecked((sbyte)data[10])} releaseChange={unchecked((sbyte)data[11])} attackLevel={data[12]} decayLevel={data[13]}");
             }
         }
 
@@ -182,38 +204,55 @@ namespace BBC
 
             lock (syncRoot)
             {
-                bool usesEnvelope = amplitude > 0 && amplitude < envelopes.Length && envelopes[amplitude].Defined;
-                int attenuation = usesEnvelope ? 15 : GetAttenuation(amplitude);
+                if (channel < 0)
+                    soundQueues[chipChannel].Clear();
 
-                if ((!usesEnvelope && attenuation >= 15) || duration == 0)
+                if (durationRemainingSamples[chipChannel] > 0 || channelUsesEnvelope[chipChannel])
                 {
-                    volumes[chipChannel] = 15;
-                    durationRemainingSamples[chipChannel] = 0;
-                    StopEnvelope(chipChannel);
+                    soundQueues[chipChannel].Enqueue(new SoundNote(channel, amplitude, pitch, duration));
+                    Trace($"SOUND queued chipCh={chipChannel} channel={channel} amp={amplitude} pitch={pitch} dur={duration} depth={soundQueues[chipChannel].Count}");
                     return;
                 }
 
-                ConfigureEnvelope(chipChannel, amplitude, usesEnvelope, durationSamples);
-
-                if (chipChannel == 3)
-                {
-                    SetNoiseControl(GetNoiseControlForPitch(pitch));
-                    if (!usesEnvelope)
-                        volumes[3] = attenuation;
-
-                    durationRemainingSamples[3] = durationSamples;
-                    return;
-                }
-
-                int period = PitchToTonePeriod(pitch);
-                tonePeriods[chipChannel] = period;
-                toneCounters[chipChannel] = 0;
-                tonePolarity[chipChannel] = 1;
-                if (!usesEnvelope)
-                    volumes[chipChannel] = attenuation;
-
-                durationRemainingSamples[chipChannel] = durationSamples;
+                StartSoundCommand(chipChannel, bbcChannel, amplitude, pitch, duration, durationSamples);
             }
+        }
+
+        private void StartSoundCommand(int chipChannel, int bbcChannel, short amplitude, short pitch, short duration, int durationSamples)
+        {
+            bool usesEnvelope = amplitude > 0 && amplitude < envelopes.Length && envelopes[amplitude].Defined;
+            int attenuation = usesEnvelope ? 15 : GetAttenuation(amplitude);
+
+            if ((!usesEnvelope && attenuation >= 15) || duration == 0)
+            {
+                volumes[chipChannel] = 15;
+                durationRemainingSamples[chipChannel] = 0;
+                StopEnvelope(chipChannel);
+                return;
+            }
+
+            ConfigureEnvelope(chipChannel, amplitude, usesEnvelope, durationSamples);
+
+            if (chipChannel == 3)
+            {
+                SetNoiseControl(GetNoiseControlForPitch(pitch));
+                if (!usesEnvelope)
+                    volumes[3] = attenuation;
+
+                durationRemainingSamples[3] = durationSamples;
+                Trace($"SOUND noise bbcCh={bbcChannel} amp={amplitude} pitch={pitch} dur={duration} env={usesEnvelope} att={attenuation}");
+                return;
+            }
+
+            int period = PitchToTonePeriod(pitch);
+            tonePeriods[chipChannel] = period;
+            toneCounters[chipChannel] = 0;
+            tonePolarity[chipChannel] = 1;
+            if (!usesEnvelope)
+                volumes[chipChannel] = attenuation;
+
+            durationRemainingSamples[chipChannel] = durationSamples;
+            Trace($"SOUND tone chipCh={chipChannel} amp={amplitude} pitch={pitch} dur={duration} env={usesEnvelope} att={attenuation} period={period}");
         }
 
         /// <summary>Releases the SDL audio device.</summary>
@@ -348,10 +387,21 @@ namespace BBC
                 if (durationRemainingSamples[channel] <= 0)
                 {
                     durationRemainingSamples[channel] = 0;
-                    if (channelUsesEnvelope[channel])
+                    if (soundQueues[channel].Count > 0)
+                    {
+                        SoundNote next = soundQueues[channel].Dequeue();
+                        int bbcChannel = next.Channel & 0x03;
+                        int durationSamples = next.Duration < 0 ? 0 : Math.Max(1, (int)next.Duration) * SampleRate / 20;
+                        StartSoundCommand(channel, bbcChannel, next.Amplitude, next.Pitch, next.Duration, durationSamples);
+                    }
+                    else if (channelUsesEnvelope[channel])
+                    {
                         channelEnvelopePhases[channel] = EnvelopePhase.Release;
+                    }
                     else
+                    {
                         volumes[channel] = 15;
+                    }
                 }
             }
         }
@@ -554,6 +604,15 @@ namespace BBC
             return table;
         }
 
+        private void Trace(string message)
+        {
+            if (!traceEnabled)
+                return;
+
+            lock (traceLock)
+                File.AppendAllText(tracePath, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+        }
+
         private readonly struct SoundEnvelope
         {
             public SoundEnvelope(byte stepDuration, byte attackChange, byte decayChange, byte sustainChange, byte releaseChange, byte attackLevel, byte decayLevel)
@@ -593,6 +652,8 @@ namespace BBC
             Sustain,
             Release
         }
+
+        private readonly record struct SoundNote(short Channel, short Amplitude, short Pitch, short Duration);
 
         private static void ThrowIfSdlFailed(int result, string operation)
         {
