@@ -325,7 +325,7 @@ namespace BBC
                     else
                     {
                         bool doubleHeightBottom = state.DoubleHeight && IsDoubleHeightBottomRow(row, column, character);
-                        Saa5050Font.Draw(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, state.ForegroundColour, state.DoubleHeight, doubleHeightBottom);
+                        DrawMode7AlphaCharacter(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, state.ForegroundColour, state.DoubleHeight, doubleHeightBottom);
                     }
                 }
             }
@@ -412,6 +412,52 @@ namespace BBC
             }
 
             return previousState.DoubleHeight && (previousCharacter & 0x7F) == (character & 0x7F);
+        }
+
+        private void DrawMode7AlphaCharacter(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool doubleHeight, bool doubleHeightBottom)
+        {
+            const int glyphWidth = 8;
+            const int glyphHeight = 8;
+            const int xScale = 2;
+            int yScale = doubleHeight ? 4 : 2;
+            const int glyphXOffset = 0;
+            const int glyphYOffset = 2;
+            int sourceYOffset = doubleHeightBottom ? cellHeight : 0;
+
+            character = (byte)(character & 0x7F);
+            if (character < 32)
+                character = 32;
+
+            int glyphAddress = osRomStart + ((character - 32) * glyphHeight);
+
+            for (int glyphY = 0; glyphY < glyphHeight; glyphY++)
+            {
+                byte bits = activeMemory[glyphAddress + glyphY];
+
+                for (int glyphX = 0; glyphX < glyphWidth; glyphX++)
+                {
+                    if ((bits & (0x80 >> glyphX)) == 0)
+                        continue;
+
+                    int pixelX = cellX + glyphXOffset + (glyphX * xScale);
+                    int pixelY = cellY + glyphYOffset + (glyphY * yScale) - sourceYOffset;
+
+                    for (int yy = 0; yy < yScale; yy++)
+                    {
+                        int y = pixelY + yy;
+                        if (y >= cellY + cellHeight || (uint)y >= (uint)height)
+                            continue;
+
+                        int offset = y * width;
+                        for (int xx = 0; xx < xScale; xx++)
+                        {
+                            int x = pixelX + xx;
+                            if ((uint)x < (uint)width)
+                                pixels[offset + x] = colour;
+                        }
+                    }
+                }
+            }
         }
 
         private static void DrawTeletextMosaic(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool separated)
