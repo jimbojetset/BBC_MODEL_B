@@ -156,6 +156,7 @@ namespace BBC
         private const ushort KeyboardBufferStartIndex = 0x02D8;
         private const ushort KeyboardBufferEndIndex = 0x02E1;
         private const ushort EscapeFlag = 0x00FF;
+        private const ushort OscliEntry = 0xFFF7;
         private const byte KeyboardBufferEmptyFlag = 0x80;
         private const byte EscapePendingFlag = 0x80;
 
@@ -424,10 +425,29 @@ namespace BBC
 
         private bool HandleHostFirmwareHooks()
         {
-            return hostFilingSystem.TryHandleOsfile(Cpu)
+            return TryHandleOscli()
+                || hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
                 || hostFilingSystem.TryHandleFscv(Cpu)
                 || TryHandleOsbyte();
+        }
+
+        private bool TryHandleOscli()
+        {
+            if ((Cpu.registers.PC & 0xFFFF) != OscliEntry)
+                return false;
+
+            ushort commandAddress = (ushort)(Cpu.registers.X | (Cpu.registers.Y << 8));
+            string command = ReadOsString(commandAddress).Trim();
+            if (command.StartsWith('*'))
+                command = command[1..].TrimStart();
+
+            if (!string.Equals(command, "BASIC", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            selectedSidewaysRom = BasicRomBank;
+            ReturnFromFirmwareSubroutine();
+            return true;
         }
 
         private bool TryHandleOsbyte()
@@ -586,6 +606,22 @@ namespace BBC
             byte hi = Memory.Memory[0x0100 + ((Cpu.registers.S + 2) & 0xFF)];
             Cpu.registers.S += 2;
             Cpu.registers.PC = (ushort)(((hi << 8) | lo) + 1);
+        }
+
+        private string ReadOsString(ushort address)
+        {
+            StringBuilder builder = new StringBuilder();
+
+            for (int i = 0; i < 255; i++)
+            {
+                byte value = Memory.Memory[(address + i) & 0xFFFF];
+                if (value == 0x0D)
+                    break;
+
+                builder.Append((char)value);
+            }
+
+            return builder.ToString();
         }
 
         private void DrainHostDiscLoads(Display display)
