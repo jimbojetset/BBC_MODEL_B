@@ -157,6 +157,7 @@ namespace BBC
         private const ushort KeyboardBufferEndIndex = 0x02E1;
         private const ushort EscapeFlag = 0x00FF;
         private const ushort CliVector = 0x0208;
+        private const ushort FscVector = 0x021E;
         private const ushort OscliEntry = 0xFFF7;
         private const byte KeyboardBufferEmptyFlag = 0x80;
         private const byte EscapePendingFlag = 0x80;
@@ -183,6 +184,7 @@ namespace BBC
         private readonly bool traceOsbyte = Environment.GetEnvironmentVariable("BBC_OSBYTE_TRACE") == "1";
         private readonly string osbyteTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-osbyte-trace.log");
         private readonly bool traceOscli = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
+        private readonly bool traceBoot;
         private readonly string oscliTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-oscli-trace.log");
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
@@ -223,9 +225,12 @@ namespace BBC
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
+            traceBoot = traceOscli || Environment.GetEnvironmentVariable("BBC_BOOT_TRACE") == "1";
 
             if (traceOscli)
                 Console.WriteLine($"OSCLI trace: {oscliTracePath}");
+            if (traceBoot)
+                Console.WriteLine("Boot trace: console enabled");
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
@@ -471,6 +476,46 @@ namespace BBC
         private bool IsCliEntryPoint(ushort pc)
         {
             return pc == OscliEntry || pc == ReadWord(CliVector);
+        }
+
+        private void TraceBoot(string message)
+        {
+            if (!traceBoot)
+                return;
+
+            Console.WriteLine($"{DateTimeOffset.Now:O} BOOT {message}");
+        }
+
+        private void TraceBootMemoryRead(ushort address, byte value)
+        {
+            if (!traceBoot)
+                return;
+
+            bool dfsBadText = selectedSidewaysRom == DfsRomBank
+                && ((address >= 0x8025 && address <= 0x8028)
+                    || (address >= 0x8802 && address <= 0x8808)
+                    || (address >= 0xA025 && address <= 0xA028)
+                    || (address >= 0xA802 && address <= 0xA808));
+            bool osBadCommandText = address >= 0xE312 && address <= 0xE31C;
+
+            if (!dfsBadText && !osBadCommandText)
+                return;
+
+            string source = dfsBadText ? "DFS text" : "OS text";
+            TraceBoot($"{source} read addr=${address:X4} value=${value:X2} pc=${Cpu.registers.PC & 0xFFFF:X4} bank={selectedSidewaysRom} A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} CLIV=${ReadWord(CliVector):X4} FSCV=${ReadWord(FscVector):X4}");
+        }
+
+        private void TraceBootVectorWrite(ushort address, byte value)
+        {
+            if (!traceBoot)
+                return;
+
+            if ((address < CliVector || address > CliVector + 1)
+                && (address < FscVector || address > FscVector + 1))
+                return;
+
+            string vectorName = address < FscVector ? "CLIV" : "FSCV";
+            TraceBoot($"{vectorName} write addr=${address:X4} value=${value:X2} pc=${Cpu.registers.PC & 0xFFFF:X4} bank={selectedSidewaysRom}");
         }
 
         private bool TryHandleOsbyte()
@@ -946,27 +991,33 @@ namespace BBC
                 ushort addr = (ushort)(address & 0xFFFF);
 
                 if (addr >= SidewaysRomStart && addr <= SidewaysRomEnd)
-                    return ReadSidewaysRom(addr);
+                {
+                    byte romValue = ReadSidewaysRom(addr);
+                    TraceBootMemoryRead(addr, romValue);
+                    return romValue;
+                }
 
                 if (addr >= IoStart && addr <= IoEnd)
                     return ReadSheila(addr);
 
+                TraceBootMemoryRead(addr, value);
                 return value;
             };
 
-            Memory.OnWrite = (address, _) =>
+            Memory.OnWrite = (address, value) =>
             {
                 ushort addr = (ushort)(address & 0xFFFF);
 
                 if (addr >= IoStart && addr <= IoEnd)
                 {
-                    WriteSheila(addr, _);
+                    WriteSheila(addr, value);
                     return true;
                 }
 
                 if (addr >= SidewaysRomStart)
                     return true;
 
+                TraceBootVectorWrite(addr, value);
                 return false;
             };
         }
@@ -1039,6 +1090,7 @@ namespace BBC
             switch (address)
             {
                 case 0xFE30:
+                    TraceBoot($"ROMSEL write value=${value:X2} old={selectedSidewaysRom} new={value & 0x0F} pc=${Cpu.registers.PC & 0xFFFF:X4}");
                     selectedSidewaysRom = value & 0x0F;
                     break;
             }
