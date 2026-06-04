@@ -186,6 +186,7 @@ namespace BBC
         private readonly bool traceOscli = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
         private readonly bool traceBoot;
         private readonly string oscliTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-oscli-trace.log");
+        private ushort lastBadCommandTracePc = 0xFFFF;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -503,6 +504,8 @@ namespace BBC
 
             string source = dfsBadText ? "DFS text" : "OS text";
             TraceBoot($"{source} read addr=${address:X4} value=${value:X2} pc=${Cpu.registers.PC & 0xFFFF:X4} bank={selectedSidewaysRom} A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} CLIV=${ReadWord(CliVector):X4} FSCV=${ReadWord(FscVector):X4}");
+            if (osBadCommandText && address == 0xE312)
+                TraceBootBadCommandContext();
         }
 
         private void TraceBootVectorWrite(ushort address, byte value)
@@ -516,6 +519,91 @@ namespace BBC
 
             string vectorName = address < FscVector ? "CLIV" : "FSCV";
             TraceBoot($"{vectorName} write addr=${address:X4} value=${value:X2} pc=${Cpu.registers.PC & 0xFFFF:X4} bank={selectedSidewaysRom}");
+        }
+
+        private void TraceBootBadCommandContext()
+        {
+            ushort pc = (ushort)(Cpu.registers.PC & 0xFFFF);
+            if (lastBadCommandTracePc == pc)
+                return;
+
+            lastBadCommandTracePc = pc;
+            ushort xy = (ushort)(Cpu.registers.X | (Cpu.registers.Y << 8));
+            TraceBoot($"Bad command context xy=${xy:X4} xy-string=\"{ReadPrintableLine(xy)}\" stack=\"{ReadPrintableSpan(0x0100, 0x0100)}\"");
+
+            foreach ((ushort address, string text) in FindPrintableRamStrings(0x0000, 0x1000))
+                TraceBoot($"RAM text ${address:X4}: \"{text}\"");
+        }
+
+        private string ReadPrintableLine(ushort address)
+        {
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < 96; i++)
+            {
+                byte value = Memory.Memory[(address + i) & 0xFFFF];
+                if (value == 0x0D || value == 0)
+                    break;
+
+                builder.Append(value >= 32 && value <= 126 ? (char)value : '.');
+            }
+
+            return builder.ToString();
+        }
+
+        private string ReadPrintableSpan(int address, int length)
+        {
+            StringBuilder builder = new StringBuilder(length);
+            for (int i = 0; i < length; i++)
+            {
+                byte value = Memory.Memory[(address + i) & 0xFFFF];
+                builder.Append(value >= 32 && value <= 126 ? (char)value : '.');
+            }
+
+            return builder.ToString();
+        }
+
+        private IEnumerable<(ushort Address, string Text)> FindPrintableRamStrings(int start, int end)
+        {
+            int runStart = -1;
+            StringBuilder run = new StringBuilder();
+
+            for (int address = start; address < end; address++)
+            {
+                byte value = Memory.Memory[address & 0xFFFF];
+                bool printable = value is >= 32 and <= 126;
+                if (printable)
+                {
+                    if (runStart < 0)
+                        runStart = address;
+                    run.Append((char)value);
+                    continue;
+                }
+
+                foreach ((ushort Address, string Text) match in FlushPrintableRun())
+                    yield return match;
+            }
+
+            foreach ((ushort Address, string Text) match in FlushPrintableRun())
+                yield return match;
+
+            IEnumerable<(ushort Address, string Text)> FlushPrintableRun()
+            {
+                if (runStart >= 0 && run.Length >= 4)
+                {
+                    string text = run.ToString();
+                    if (text.Contains("BASIC", StringComparison.OrdinalIgnoreCase)
+                        || text.Contains("BOOT", StringComparison.OrdinalIgnoreCase)
+                        || text.Contains("ELITE", StringComparison.OrdinalIgnoreCase)
+                        || text.Contains("LOAD", StringComparison.OrdinalIgnoreCase)
+                        || text.Contains("PAGE", StringComparison.OrdinalIgnoreCase)
+                        || text.Contains("CHAIN", StringComparison.OrdinalIgnoreCase)
+                        || text.Contains("FX21", StringComparison.OrdinalIgnoreCase))
+                        yield return ((ushort)runStart, text);
+                }
+
+                runStart = -1;
+                run.Clear();
+            }
         }
 
         private bool TryHandleOsbyte()
