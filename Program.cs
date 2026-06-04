@@ -158,6 +158,10 @@ namespace BBC
         private const ushort EscapeFlag = 0x00FF;
         private const ushort CliVector = 0x0208;
         private const ushort FscVector = 0x021E;
+        private const ushort CurrentInputBuffer = 0x0241;
+        private const ushort ExecFileHandle = 0x0256;
+        private const ushort StringInputBufferAddressLow = 0x00F2;
+        private const ushort StringInputBufferAddressHigh = 0x00F3;
         private const ushort OscliEntry = 0xFFF7;
         private const byte KeyboardBufferEmptyFlag = 0x80;
         private const byte EscapePendingFlag = 0x80;
@@ -187,6 +191,10 @@ namespace BBC
         private readonly bool traceBoot;
         private readonly string oscliTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-oscli-trace.log");
         private ushort lastBadCommandTracePc = 0xFFFF;
+        private ushort lastBootTracePc = 0xFFFF;
+        private byte lastBootTraceA;
+        private byte lastBootTraceX;
+        private byte lastBootTraceY;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -437,6 +445,8 @@ namespace BBC
 
         private bool HandleHostFirmwareHooks()
         {
+            TraceBootFirmwareEntry();
+
             return TryHandleSidewaysRomLanguageCommand()
                 || hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
@@ -519,6 +529,42 @@ namespace BBC
 
             string vectorName = address < FscVector ? "CLIV" : "FSCV";
             TraceBoot($"{vectorName} write addr=${address:X4} value=${value:X2} pc=${Cpu.registers.PC & 0xFFFF:X4} bank={selectedSidewaysRom}");
+        }
+
+        private void TraceBootFirmwareEntry()
+        {
+            if (!traceBoot)
+                return;
+
+            ushort pc = (ushort)(Cpu.registers.PC & 0xFFFF);
+            if (pc != 0xDEC5 && pc != 0xDEE6 && pc != 0xDF89 && pc != 0xDFBE
+                && pc != 0xE021 && pc != 0xE031 && pc != 0xFFD7 && pc != 0xFFCE)
+                return;
+
+            if (lastBootTracePc == pc && lastBootTraceA == Cpu.registers.A
+                && lastBootTraceX == Cpu.registers.X && lastBootTraceY == Cpu.registers.Y)
+                return;
+
+            lastBootTracePc = pc;
+            lastBootTraceA = Cpu.registers.A;
+            lastBootTraceX = Cpu.registers.X;
+            lastBootTraceY = Cpu.registers.Y;
+
+            ushort stringInput = (ushort)(Memory.Memory[StringInputBufferAddressLow] | (Memory.Memory[StringInputBufferAddressHigh] << 8));
+            string label = pc switch
+            {
+                0xDEC5 => "OSRDCH entry",
+                0xDEE6 => "OSRDCH input-buffer path",
+                0xDF89 => "OSCLI internal entry",
+                0xDFBE => "OSCLI lookup",
+                0xE021 => "OSCLI pass-to-ROMs",
+                0xE031 => "FSCV call",
+                0xFFD7 => "OSBGET entry",
+                0xFFCE => "OSFIND entry",
+                _ => "firmware"
+            };
+
+            TraceBoot($"{label} pc=${pc:X4} A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} exec=${Memory.Memory[ExecFileHandle]:X2} input=${Memory.Memory[CurrentInputBuffer]:X2} str=${stringInput:X4} str-text=\"{ReadPrintableLine(stringInput)}\" CLIV=${ReadWord(CliVector):X4} FSCV=${ReadWord(FscVector):X4} bank={selectedSidewaysRom}");
         }
 
         private void TraceBootBadCommandContext()
