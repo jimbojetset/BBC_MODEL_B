@@ -1006,6 +1006,8 @@ namespace BBC
             {
                 if (ch == '\r' || ch == '\n')
                     pendingKeyboardInput.Enqueue(13);
+                else if (ch == '#')
+                    pendingKeyboardInput.Enqueue(0x5F);
                 else if (ch >= 32 && ch <= 126)
                     pendingKeyboardInput.Enqueue((byte)char.ToUpperInvariant(ch));
             }
