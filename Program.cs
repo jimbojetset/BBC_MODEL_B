@@ -180,8 +180,6 @@ namespace BBC
         private byte fileMessageOption = 1;
         private readonly bool traceOsbyte = Environment.GetEnvironmentVariable("BBC_OSBYTE_TRACE") == "1";
         private readonly string osbyteTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-osbyte-trace.log");
-        private readonly bool traceOsword = Environment.GetEnvironmentVariable("BBC_OSWORD_TRACE") == "1";
-        private readonly string oswordTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-osword-trace.log");
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -428,44 +426,7 @@ namespace BBC
             return hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
                 || hostFilingSystem.TryHandleFscv(Cpu)
-                || TryHandleOsword()
                 || TryHandleOsbyte();
-        }
-
-        private bool TryHandleOsword()
-        {
-            if ((Cpu.registers.PC & 0xFFFF) != 0xFFF1)
-                return false;
-
-            ushort blockAddress = (ushort)(Cpu.registers.X | (Cpu.registers.Y << 8));
-
-            if (Cpu.registers.A == 0x07)
-            {
-                short channel = ReadSignedWord(blockAddress);
-                short amplitude = ReadSignedWord((ushort)(blockAddress + 2));
-                short pitch = ReadSignedWord((ushort)(blockAddress + 4));
-                short duration = ReadSignedWord((ushort)(blockAddress + 6));
-
-                Sound.PlaySoundCommand(channel, amplitude, pitch, duration);
-                TraceOsword($"SOUND block=${blockAddress:X4} channel={channel} amplitude={amplitude} pitch={pitch} duration={duration}");
-                ReturnFromFirmwareSubroutine();
-                return true;
-            }
-
-            if (Cpu.registers.A == 0x08)
-            {
-                Span<byte> envelope = stackalloc byte[14];
-                for (int i = 0; i < envelope.Length; i++)
-                    envelope[i] = Memory.Memory[(blockAddress + i) & 0xFFFF];
-
-                Sound.SetEnvelope(envelope);
-                TraceOsword($"ENVELOPE block=${blockAddress:X4} number={envelope[0] & 0x0F}");
-                ReturnFromFirmwareSubroutine();
-                return true;
-            }
-
-            TraceOsword($"passed through A=${Cpu.registers.A:X2} block=${blockAddress:X4}");
-            return false;
         }
 
         private bool TryHandleOsbyte()
@@ -530,21 +491,6 @@ namespace BBC
                 return;
 
             File.AppendAllText(osbyteTracePath, $"{DateTimeOffset.Now:O} OSBYTE A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} -> {outcome}{Environment.NewLine}");
-        }
-
-        private void TraceOsword(string outcome)
-        {
-            if (!traceOsword)
-                return;
-
-            File.AppendAllText(oswordTracePath, $"{DateTimeOffset.Now:O} OSWORD A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} -> {outcome}{Environment.NewLine}");
-        }
-
-        private short ReadSignedWord(ushort address)
-        {
-            int lo = Memory.Memory[address & 0xFFFF];
-            int hi = Memory.Memory[(address + 1) & 0xFFFF];
-            return unchecked((short)(lo | (hi << 8)));
         }
 
         private void ReadAdval(byte channel, out byte x, out byte y)
