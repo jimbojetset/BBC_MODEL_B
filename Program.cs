@@ -906,7 +906,10 @@ namespace BBC
         private void LoadSidewaysRomBank(string path, int bank)
         {
             byte[] rom = File.ReadAllBytes(path);
-            rom.CopyTo(sidewaysRoms, bank * RomSize);
+            int bankOffset = bank * RomSize;
+
+            for (int i = 0; i < RomSize; i++)
+                sidewaysRoms[bankOffset + i] = rom[i % rom.Length];
         }
 
         private static void ValidateRom(string path, string marker, int exactSize)
