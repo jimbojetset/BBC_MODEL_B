@@ -1,7 +1,7 @@
 // ============================================================================
 // Project:     BBC
 // File:        DiscController8271.cs
-// Description: Minimal Intel 8271-compatible controller backed by DFS SSD images.
+// Description: Intel 8271-compatible controller backed by DFS SSD/DSD images.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -15,17 +15,27 @@ using System.Text;
 namespace BBC
 {
     /// <summary>
-    /// Provides a small 8271 FDC surface for Acorn DFS ROM access to SSD images.
+    /// Provides an 8271 FDC surface for Acorn DFS ROM access to SSD/DSD images.
     /// </summary>
     public sealed class DiscController8271
     {
         private const int SectorSize = 256;
         private const int SectorsPerTrack = 10;
+        private const int SingleSidedTracks = 80;
+        private const int SingleSidedImageBytes = SingleSidedTracks * SectorsPerTrack * SectorSize;
+        private const byte StatusBusy = 0x80;
+        private const byte StatusCommandFull = 0x40;
+        private const byte StatusParameterFull = 0x20;
         private const byte StatusDataRequest = 0x04;
         private const byte StatusInterrupt = 0x08;
         private const byte StatusResultFull = 0x10;
+        private const byte ResultOk = 0x00;
+        private const byte ResultCommandError = 0x10;
+        private const byte ResultDriveNotReady = 0x12;
+        private const byte ResultSectorNotFound = 0x18;
         private const int NmiReassertDelayCycles = 96;
         private readonly byte[][] drives = [[], [], [], []];
+        private readonly bool[] driveMounted = new bool[4];
         private readonly byte[] specialRegisters = new byte[0x40];
         private readonly Queue<byte> readData = new Queue<byte>();
         private readonly List<byte> writeData = new List<byte>();
@@ -41,6 +51,9 @@ namespace BBC
         private string? mountedPath;
         private bool nmiPending;
         private int nmiDelayCycles;
+        private bool busy;
+        private bool commandRegisterFull;
+        private bool parameterRegisterFull;
         private long traceSequence;
         private int currentReadBytesProvided;
         private int currentReadBytesConsumed;
@@ -61,7 +74,7 @@ namespace BBC
         public event Action? NmiRequested;
 
         /// <summary>Gets whether a disc image is mounted in drive 0.</summary>
-        public bool HasMountedDisc => drives[0].Length > 0;
+        public bool HasMountedDisc => driveMounted[0];
 
         /// <summary>Gets the currently mounted host image path.</summary>
         public string? MountedPath => mountedPath;
@@ -74,13 +87,13 @@ namespace BBC
 
         /// <summary>Returns whether an address belongs to the 8271 FDC.</summary>
         /// <param name="address">The CPU-visible address.</param>
-        /// <returns>True for &amp;FE80-&amp;FE84.</returns>
+        /// <returns>True for the BBC 8271 mirror window at &amp;FE80-&amp;FE9F.</returns>
         public static bool IsAddress(ushort address)
         {
-            return address is >= 0xFE80 and <= 0xFE84;
+            return address is >= 0xFE80 and <= 0xFE9F;
         }
 
-        /// <summary>Mounts an SSD/DSD image in drive 0.</summary>
+        /// <summary>Mounts an SSD/DSD image in drive 0/2.</summary>
         /// <param name="path">The host image path.</param>
         public void Mount(string path)
         {
@@ -90,7 +103,27 @@ namespace BBC
             if (image.Length < 512 || image.Length % SectorSize != 0)
                 throw new InvalidOperationException($"'{fullPath}' is not a sector-aligned DFS image.");
 
-            drives[0] = image;
+            if (image.Length >= SingleSidedImageBytes * 2)
+            {
+                drives[0] = new byte[SingleSidedImageBytes];
+                drives[2] = new byte[image.Length - SingleSidedImageBytes];
+                Array.Copy(image, 0, drives[0], 0, drives[0].Length);
+                Array.Copy(image, SingleSidedImageBytes, drives[2], 0, drives[2].Length);
+                driveMounted[0] = true;
+                driveMounted[2] = drives[2].Length > 0;
+            }
+            else
+            {
+                drives[0] = image;
+                driveMounted[0] = true;
+                drives[2] = [];
+                driveMounted[2] = false;
+            }
+
+            drives[1] = [];
+            drives[3] = [];
+            driveMounted[1] = false;
+            driveMounted[3] = false;
             mountedPath = fullPath;
             Reset();
         }
@@ -109,6 +142,9 @@ namespace BBC
             Array.Clear(specialRegisters);
             nmiPending = false;
             nmiDelayCycles = 0;
+            busy = false;
+            commandRegisterFull = false;
+            parameterRegisterFull = false;
             currentReadBytesProvided = 0;
             currentReadBytesConsumed = 0;
         }
@@ -135,9 +171,9 @@ namespace BBC
         {
             return address switch
             {
-                0xFE80 => ReadStatus(),
-                0xFE81 => ReadResult(),
-                0xFE84 => ReadData(),
+                _ when (address & 0x07) == 0 => ReadStatus(),
+                _ when (address & 0x07) == 1 => ReadResult(),
+                _ when (address & 0x07) == 4 => ReadData(),
                 _ => 0x00
             };
         }
@@ -147,21 +183,21 @@ namespace BBC
         /// <param name="value">The value written by the CPU.</param>
         public void Write(ushort address, byte value)
         {
-            switch (address)
+            switch (address & 0x07)
             {
-                case 0xFE80:
+                case 0:
                     BeginCommand(value);
                     break;
 
-                case 0xFE81:
+                case 1:
                     WriteParameter(value);
                     break;
 
-                case 0xFE82:
+                case 2:
                     Reset();
                     break;
 
-                case 0xFE84:
+                case 4:
                     WriteData(value);
                     break;
             }
@@ -169,8 +205,16 @@ namespace BBC
 
         private byte ReadStatus()
         {
-            nmiPending = false;
             byte status = 0;
+
+            if (busy)
+                status |= StatusBusy;
+
+            if (commandRegisterFull)
+                status |= StatusCommandFull;
+
+            if (parameterRegisterFull)
+                status |= StatusParameterFull;
 
             if (readData.Count > 0 || pendingWrite is not null)
                 status |= StatusDataRequest;
@@ -185,6 +229,7 @@ namespace BBC
         {
             resultAvailable = false;
             nmiPending = false;
+            busy = readData.Count > 0 || pendingWrite is not null;
             return result;
         }
 
@@ -198,7 +243,7 @@ namespace BBC
             byte value = readData.Dequeue();
             currentReadBytesConsumed++;
             if (readData.Count == 0)
-                SetResult(0, NmiReassertDelayCycles);
+                SetResult(ResultOk, NmiReassertDelayCycles);
             else
                 RequestNmi(NmiReassertDelayCycles);
 
@@ -218,11 +263,15 @@ namespace BBC
             nmiPending = false;
             nmiDelayCycles = 0;
             command = value;
+            selectedDrive = GetDriveFromCommand(value);
             parameters.Clear();
             resultAvailable = false;
+            busy = true;
+            commandRegisterFull = true;
+            parameterRegisterFull = false;
             currentReadBytesProvided = 0;
             currentReadBytesConsumed = 0;
-            Trace($"COMMAND {command:X2}");
+            Trace($"COMMAND {command:X2} op={(command & 0x3F):X2} drive={selectedDrive}");
 
             if (GetParameterCount(command) == 0)
                 ExecuteCommand();
@@ -230,7 +279,11 @@ namespace BBC
 
         private void WriteParameter(byte value)
         {
+            if (!busy && command == 0)
+                return;
+
             parameters.Add(value);
+            parameterRegisterFull = true;
             Trace($"PARAM {parameters.Count}/{GetParameterCount(command)} {value:X2}");
 
             if (parameters.Count >= GetParameterCount(command))
@@ -242,6 +295,7 @@ namespace BBC
             if (pendingWrite is null)
                 return;
 
+            parameterRegisterFull = false;
             writeData.Add(value);
 
             if (writeData.Count >= pendingWrite.Value.Length)
@@ -249,16 +303,27 @@ namespace BBC
                 WriteSectors(pendingWrite.Value, writeData);
                 pendingWrite = null;
                 writeData.Clear();
-                SetResult(0);
+                SetResult(ResultOk);
+            }
+            else
+            {
+                RequestNmi(NmiReassertDelayCycles);
             }
         }
 
         private void ExecuteCommand()
         {
             byte opcode = (byte)(command & 0x3F);
+            commandRegisterFull = false;
+            parameterRegisterFull = false;
 
             switch (opcode)
             {
+                case 0x00:
+                case 0x04:
+                    ScanSectors(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
+                    break;
+
                 case 0x0A:
                 case 0x0E:
                     PrepareWrite(parameters[1], parameters[0], 128, 1);
@@ -267,6 +332,10 @@ namespace BBC
                 case 0x0B:
                 case 0x0F:
                     PrepareWrite(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
+                    break;
+
+                case 0x07:
+                    ReadSectors(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
                 case 0x12:
@@ -284,98 +353,188 @@ namespace BBC
                     break;
 
                 case 0x1E:
-                    SetResult(HasSector(parameters[1], parameters[0]) ? (byte)0 : (byte)0x18);
+                    SetResult(HasSector(parameters[1], parameters[0]) ? ResultOk : ResultSectorNotFound);
                     break;
 
                 case 0x1F:
-                    SetResult(HasSector(parameters[1], parameters[0]) ? (byte)0 : (byte)0x18);
+                    SetResult(HasSector(parameters[1], parameters[0]) ? ResultOk : ResultSectorNotFound);
+                    break;
+
+                case 0x23:
+                    // Format track. Games/loaders generally only use this to probe
+                    // controller capability; accept the command without modifying SSDs.
+                    Trace($"FORMAT T{parameters[1]:D2}");
+                    SetResult(IsDriveReady(selectedDrive) ? ResultOk : ResultDriveNotReady);
+                    break;
+
+                case 0x2B:
+                    result = IsDriveReady(selectedDrive) ? (byte)0x00 : ResultDriveNotReady;
+                    resultAvailable = true;
+                    busy = false;
+                    RequestNmi();
                     break;
 
                 case 0x29:
                     specialRegisters[0x12] = parameters[0];
                     specialRegisters[0x1A] = parameters[0];
-                    SetResult(0);
+                    SetResult(ResultOk);
                     break;
 
                 case 0x2C:
-                    result = HasMountedDisc ? (byte)0x45 : (byte)0x00;
+                    result = IsDriveReady(selectedDrive) ? (byte)0x45 : (byte)0x00;
                     resultAvailable = true;
+                    busy = false;
                     RequestNmi();
                     break;
 
                 case 0x35:
-                    SetResult(0);
+                    SetResult(ResultOk);
                     break;
 
                 case 0x3A:
                     specialRegisters[parameters[0] & 0x3F] = parameters[1];
-                    SetResult(0);
+                    SetResult(ResultOk);
                     break;
 
                 case 0x3D:
                     result = specialRegisters[parameters[0] & 0x3F];
                     resultAvailable = true;
+                    busy = false;
                     RequestNmi();
                     break;
 
                 default:
-                    SetResult(0x18);
+                    Trace($"UNKNOWN COMMAND {command:X2}");
+                    SetResult(ResultCommandError);
                     break;
             }
         }
 
         private void ReadSectors(int track, int sector, int sectorSize, int count)
         {
-            Trace($"READ T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
+            Trace($"READ D{selectedDrive} T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
 
-            if (!TryGetOffset(track, sector, out int offset))
+            if (!IsDriveReady(selectedDrive))
             {
-                Trace($"READ MISS T{track:D2}/S{sector:D2}");
-                SetResult(0x18);
+                Trace($"READ DRIVE NOT READY D{selectedDrive}");
+                SetResult(ResultDriveNotReady);
                 return;
             }
 
-            int length = sectorSize * count;
             byte[] image = drives[selectedDrive];
+            List<int> offsets = new List<int>();
+            int currentTrack = track;
+            int currentSector = sector;
 
-            for (int i = 0; i < length; i++)
+            for (int sectorIndex = 0; sectorIndex < count; sectorIndex++)
             {
-                int source = offset + i;
-                readData.Enqueue(source < image.Length ? image[source] : (byte)0x00);
+                if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > image.Length)
+                {
+                    Trace($"READ MISS D{selectedDrive} T{currentTrack:D2}/S{currentSector:D2}");
+                    SetResult(ResultSectorNotFound);
+                    return;
+                }
+
+                offsets.Add(offset);
+                AdvanceSector(ref currentTrack, ref currentSector);
             }
 
-            currentReadBytesProvided = length;
+            foreach (int offset in offsets)
+            {
+                for (int i = 0; i < sectorSize; i++)
+                    readData.Enqueue(image[offset + i]);
+            }
+
+            currentReadBytesProvided = sectorSize * count;
             currentReadBytesConsumed = 0;
             RequestNmi();
         }
 
-        private void PrepareWrite(int track, int sector, int sectorSize, int count)
+        private void ScanSectors(int track, int sector, int sectorSize, int count)
         {
-            Trace($"WRITE T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
+            Trace($"SCAN D{selectedDrive} T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
 
-            if (!TryGetOffset(track, sector, out int offset) || offset + (sectorSize * count) > drives[selectedDrive].Length)
+            if (!IsDriveReady(selectedDrive))
             {
-                Trace($"WRITE MISS T{track:D2}/S{sector:D2}");
-                SetResult(0x18);
+                Trace($"SCAN DRIVE NOT READY D{selectedDrive}");
+                SetResult(ResultDriveNotReady);
                 return;
             }
 
-            pendingWrite = new PendingWrite(offset, sectorSize * count);
+            int currentTrack = track;
+            int currentSector = sector;
+            for (int sectorIndex = 0; sectorIndex < count; sectorIndex++)
+            {
+                if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > drives[selectedDrive].Length)
+                {
+                    Trace($"SCAN MISS D{selectedDrive} T{currentTrack:D2}/S{currentSector:D2}");
+                    SetResult(ResultSectorNotFound);
+                    return;
+                }
+
+                AdvanceSector(ref currentTrack, ref currentSector);
+            }
+
+            SetResult(ResultOk);
+        }
+
+        private void PrepareWrite(int track, int sector, int sectorSize, int count)
+        {
+            Trace($"WRITE D{selectedDrive} T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
+
+            if (!IsDriveReady(selectedDrive))
+            {
+                Trace($"WRITE DRIVE NOT READY D{selectedDrive}");
+                SetResult(ResultDriveNotReady);
+                return;
+            }
+
+            byte[] image = drives[selectedDrive];
+            List<int> offsets = new List<int>();
+            int currentTrack = track;
+            int currentSector = sector;
+
+            for (int sectorIndex = 0; sectorIndex < count; sectorIndex++)
+            {
+                if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > image.Length)
+                {
+                    Trace($"WRITE MISS D{selectedDrive} T{currentTrack:D2}/S{currentSector:D2}");
+                    SetResult(ResultSectorNotFound);
+                    return;
+                }
+
+                offsets.Add(offset);
+                AdvanceSector(ref currentTrack, ref currentSector);
+            }
+
+            pendingWrite = new PendingWrite(selectedDrive, offsets.ToArray(), sectorSize, sectorSize * count);
             writeData.Clear();
             RequestNmi();
         }
 
         private void WriteSectors(PendingWrite write, List<byte> bytes)
         {
-            byte[] image = drives[selectedDrive];
+            byte[] image = drives[write.Drive];
+            int source = 0;
 
-            for (int i = 0; i < write.Length; i++)
-                image[write.Offset + i] = bytes[i];
+            foreach (int offset in write.Offsets)
+            {
+                for (int i = 0; i < write.SectorSize; i++)
+                    image[offset + i] = bytes[source++];
+            }
         }
 
         private void ReadSectorIds(int track, int count)
         {
-            Trace($"READ IDS T{track:D2} count={count}");
+            Trace($"READ IDS D{selectedDrive} T{track:D2} count={count}");
+
+            if (!IsDriveReady(selectedDrive))
+            {
+                Trace($"READ IDS DRIVE NOT READY D{selectedDrive}");
+                SetResult(ResultDriveNotReady);
+                return;
+            }
+
             int sectorCount = count == 0 ? SectorsPerTrack : Math.Min(count, SectorsPerTrack);
 
             for (int sector = 0; sector < sectorCount; sector++)
@@ -391,12 +550,12 @@ namespace BBC
 
         private bool HasSector(int track, int sector)
         {
-            return TryGetOffset(track, sector, out int offset) && offset + SectorSize <= drives[selectedDrive].Length;
+            return TryGetOffset(selectedDrive, track, sector, out int offset) && offset + SectorSize <= drives[selectedDrive].Length;
         }
 
-        private bool TryGetOffset(int track, int sector, out int offset)
+        private bool TryGetOffset(int drive, int track, int sector, out int offset)
         {
-            if (!HasMountedDisc || track < 0 || sector < 0)
+            if (!IsDriveReady(drive) || track < 0 || sector < 0 || sector >= SectorsPerTrack)
             {
                 offset = 0;
                 return false;
@@ -404,7 +563,7 @@ namespace BBC
 
             int logicalSector = (track * SectorsPerTrack) + sector;
             offset = logicalSector * SectorSize;
-            return offset >= 0;
+            return offset >= 0 && offset < drives[drive].Length;
         }
 
         private void SetResult(byte value, int nmiDelayCycles = 0)
@@ -412,6 +571,9 @@ namespace BBC
             Trace($"RESULT {value:X2}");
             result = value;
             resultAvailable = true;
+            busy = false;
+            commandRegisterFull = false;
+            parameterRegisterFull = false;
             RequestNmi(nmiDelayCycles);
         }
 
@@ -437,6 +599,33 @@ namespace BBC
             }
 
             nmiDelayCycles = delayCycles;
+        }
+
+        private bool IsDriveReady(int drive)
+        {
+            return drive >= 0 && drive < drives.Length && driveMounted[drive] && drives[drive].Length > 0;
+        }
+
+        private static int GetDriveFromCommand(byte command)
+        {
+            int encoded = (command >> 6) & 0x03;
+            return encoded switch
+            {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                _ => 3
+            };
+        }
+
+        private static void AdvanceSector(ref int track, ref int sector)
+        {
+            sector++;
+            if (sector < SectorsPerTrack)
+                return;
+
+            sector = 0;
+            track++;
         }
 
         private bool TryGetAutoLoadCommand(out string? command)
@@ -515,8 +704,11 @@ namespace BBC
         {
             return (command & 0x3F) switch
             {
+                0x00 or 0x04 => 3,
+                0x07 => 3,
                 0x0A or 0x0E or 0x12 or 0x16 or 0x1E => 2,
                 0x0B or 0x0F or 0x13 or 0x17 or 0x1B or 0x1F => 3,
+                0x2B => 0,
                 0x23 => 5,
                 0x29 or 0x3D => 1,
                 0x2C => 0,
@@ -553,7 +745,7 @@ namespace BBC
                 : leaf;
         }
 
-        private readonly record struct PendingWrite(int Offset, int Length);
+        private readonly record struct PendingWrite(int Drive, int[] Offsets, int SectorSize, int Length);
 
         private sealed record DfsFile(string Name, int LoadAddress, int ExecutionAddress, int Length, int StartSector);
     }
