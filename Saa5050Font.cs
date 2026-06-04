@@ -7,7 +7,7 @@
 // License:     MIT License - See LICENSE file in the project root
 // Copyright:   (c) 2024-2026 James Booth
 // Notice:      BBC Micro ROMs are property of their respective rights holders.
-//              SAA5050 glyph data adapted from textmodes/font, MIT licensed.
+//              SAA5050 glyph data adapted from Bedstead/Teletext50, CC0.
 // ============================================================================
 
 namespace BBC
@@ -26,7 +26,23 @@ namespace BBC
         private const int GlyphXOffset = 2;
         private const int GlyphYOffset = 0;
 
-        private static readonly byte[] GlyphRows =
+        private const string GlyphRowsEncoded =
+            "AAAAAAAAAAEEEEEAEAAAKKKAAAAAAAGJIcIIfAAAOVUOFVOAAAYZCEITDAAAIUUIVSNAAAEEEAAAAAAA" +
+            "CEIIIECAAAIECCCEIAAAEVOEOVEAAAAEEfEEAAAAAAAAAEEIAAAAAOAAAAAAAAAAAAEAAAABCEIQAAAA" +
+            "EKRRRKEAAAEMEEEEOAAAORBGIQfAAAfBCGBROAAACGKSfCCAAAfQeBBROAAAGIQeRROAAAfBCEIIIAAA" +
+            "ORRORROAAAORRPBCMAAAAAEAAAEAAAAAEAAEEIAACEIQIECAAAAAfAfAAAAAIECBCEIAAAORCEEAEAAA" +
+            "ORXVXQOAAAEKRRfRRAAAeRReRReAAAORQQQROAAAeRRRRReAAAfQQeQQfAAAfQQeQQQAAAORQQTRPAAA" +
+            "RRRfRRRAAAOEEEEEOAAABBBBBROAAARSUYUSRAAAQQQQQQfAAARbVVRRRAAARRZVTRRAAAORRRRROAAA" +
+            "eRReQQQAAAORRRVSNAAAeRReUSRAAAORQOBROAAAfEEEEEEAAARRRRRROAAARRRKKEEAAARRRVVVKAAA" +
+            "RRKEKRRAAARRKEEEEAAAfBCEIQfAAAAEIfIEAAAAQQQQWBCEHAAECfCEAAAAAEOVEEAAAAKKfKfKKAAA" +
+            "AAAfAAAAAAAAOBPRPAAAQQeRRReAAAAAPQQQPAAABBPRRRPAAAAAORfQOAAACEEOEEEAAAAAPRRRPBOA" +
+            "QQeRRRRAAAEAMEEEOAAAEAEEEEEEIAIIJKMKJAAAMEEEEEOAAAAAaVVVVAAAAAeRRRRAAAAAORRROAAA" +
+            "AAeRRReQQAAAPRRRPBBAAALMIIIAAAAAPQOBeAAAEEOEEECAAAAARRRRPAAAAARRKKEAAAAARRVVKAAA" +
+            "AARKEKRAAAAARRRRPBOAAAfCEIfAAAIIIIJDFHBAKKKKKKKAAAYEYEZDFHBAAEAfAEAAAAfffffffAAA";
+
+        private static readonly byte[] GlyphRows = BuildGlyphRows();
+
+        private static readonly byte[] UnusedMisalignedGlyphRows =
         [
             0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
             0x00,0x04,0x04,0x04,0x04,0x04,0x00,0x04,0x00,0x00,
@@ -126,6 +142,29 @@ namespace BBC
             0x00,0x00,0x00,0x1F,0x1F,0x1F,0x1F,0x1F,0x1F,0x1F,
             0x00,0x00
         ];
+
+        private static byte[] BuildGlyphRows()
+        {
+            if (GlyphRowsEncoded.Length != 96 * GlyphRowsPerCharacter)
+                throw new InvalidOperationException("SAA5050 glyph table must contain 96 ten-row characters.");
+
+            byte[] rows = new byte[GlyphRowsEncoded.Length];
+            for (int i = 0; i < rows.Length; i++)
+                rows[i] = DecodeGlyphRow(GlyphRowsEncoded[i]);
+
+            return rows;
+        }
+
+        private static byte DecodeGlyphRow(char value)
+        {
+            if (value is >= 'A' and <= 'Z')
+                return (byte)(value - 'A');
+
+            if (value is >= 'a' and <= 'f')
+                return (byte)(26 + value - 'a');
+
+            throw new InvalidOperationException("SAA5050 glyph table contains an invalid row code.");
+        }
 
         public static void Draw(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool doubleHeight, bool doubleHeightBottom)
         {
