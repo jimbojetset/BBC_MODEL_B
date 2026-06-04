@@ -175,10 +175,12 @@ namespace BBC
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly List<string> discLoadScratch = new List<string>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
+        private readonly Queue<string> pendingBootScriptLines = new Queue<string>();
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
         private string? pendingBootExecScript;
+        private long nextBootScriptLineAtTicks;
         private readonly SystemVia systemVia;
         private readonly UserVia userVia = new UserVia();
         private readonly HostFilingSystem hostFilingSystem;
@@ -285,6 +287,7 @@ namespace BBC
                 DrainHostKeyMatrixInput(Display);
                 DrainHostJoystickInput(Display);
                 DrainHostKeyboardInput(Display);
+                QueuePendingBootScriptLine();
                 Video.Render(Display);
                 DrainHostScreenshotRequests(Display);
                 Display.Present();
@@ -314,7 +317,10 @@ namespace BBC
             while (Stopwatch.GetTimestamp() < deadline)
             {
                 if (Stopwatch.GetTimestamp() >= keyboardInputEnabledAtTicks)
+                {
+                    QueuePendingBootScriptLine();
                     DrainQueuedKeyboardInput();
+                }
 
                 Thread.Sleep(FrameMilliseconds);
             }
@@ -414,7 +420,7 @@ namespace BBC
 
             if (!string.IsNullOrEmpty(pendingBootExecScript))
             {
-                QueueKeyboardText(pendingBootExecScript);
+                QueueBootScript(pendingBootExecScript);
                 pendingBootExecScript = null;
             }
         }
@@ -1005,6 +1011,32 @@ namespace BBC
             }
         }
 
+        private void QueueBootScript(string script)
+        {
+            pendingBootScriptLines.Clear();
+            foreach (string line in script.Replace('\n', '\r').Split('\r'))
+            {
+                string trimmed = line.Trim();
+                if (trimmed.Length > 0)
+                    pendingBootScriptLines.Enqueue(trimmed);
+            }
+
+            nextBootScriptLineAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+        }
+
+        private void QueuePendingBootScriptLine()
+        {
+            if (pendingBootScriptLines.Count == 0 || pendingKeyboardInput.Count > 0)
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (now < keyboardInputEnabledAtTicks || now < nextBootScriptLineAtTicks || !IsKeyboardBufferEmpty())
+                return;
+
+            QueueKeyboardText(pendingBootScriptLines.Dequeue() + "\r");
+            nextBootScriptLineAtTicks = now + (Stopwatch.Frequency / 3);
+        }
+
         private bool DrainQueuedKeyboardInput()
         {
             bool inserted = false;
@@ -1019,6 +1051,11 @@ namespace BBC
             }
 
             return inserted;
+        }
+
+        private bool IsKeyboardBufferEmpty()
+        {
+            return Memory.Memory[KeyboardBufferStartIndex] == Memory.Memory[KeyboardBufferEndIndex];
         }
 
         private bool TryInsertKeyboardBufferCharacter(byte character)
