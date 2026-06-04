@@ -178,6 +178,7 @@ namespace BBC
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
+        private string? pendingBootExecScript;
         private readonly SystemVia systemVia;
         private readonly UserVia userVia = new UserVia();
         private readonly HostFilingSystem hostFilingSystem;
@@ -410,6 +411,12 @@ namespace BBC
                 systemVia.SetKeyState(0x00, true);
             Memory.Memory[EscapeFlag] = 0;
             fileMessageOption = 1;
+
+            if (!string.IsNullOrEmpty(pendingBootExecScript))
+            {
+                QueueKeyboardText(pendingBootExecScript);
+                pendingBootExecScript = null;
+            }
         }
 
         private void AdvanceDeviceCycles(int cycles)
@@ -973,6 +980,12 @@ namespace BBC
                 return;
 
             pendingBreak = breakScratch[count - 1];
+            if (pendingBreak.Shift && discController.TryGetBootExecScript(out string? bootScript))
+            {
+                pendingBootExecScript = bootScript;
+                pendingBreak = new BreakKeyPress(false, pendingBreak.Control);
+            }
+
             Cpu.RequestReset();
         }
 

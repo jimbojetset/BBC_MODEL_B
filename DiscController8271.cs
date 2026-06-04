@@ -82,6 +82,29 @@ namespace BBC
         /// <summary>Gets the command that should be typed at BASIC after mounting.</summary>
         public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
 
+        /// <summary>Tries to read a DFS option-3 !BOOT script from the mounted disc.</summary>
+        /// <param name="script">The script text when present.</param>
+        /// <returns>True when the mounted disc requests an EXEC boot script.</returns>
+        public bool TryGetBootExecScript(out string? script)
+        {
+            script = null;
+
+            if (!TryReadCatalogue(out List<DfsFile> files) || GetBootOption() != 3)
+                return false;
+
+            DfsFile? bootFile = files.FirstOrDefault(file => string.Equals(file.Name, "!BOOT", StringComparison.OrdinalIgnoreCase));
+            if (bootFile is null || bootFile.Length <= 0)
+                return false;
+
+            int offset = bootFile.StartSector * SectorSize;
+            if (offset < 0 || offset >= drives[0].Length)
+                return false;
+
+            int length = Math.Min(bootFile.Length, drives[0].Length - offset);
+            script = Encoding.ASCII.GetString(drives[0], offset, length).Replace('\0', '\r');
+            return script.Length > 0;
+        }
+
         /// <summary>Returns whether an address belongs to the 8271 FDC.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <returns>True for the BBC 8271 mirror window at &amp;FE80-&amp;FE9F.</returns>
@@ -686,6 +709,14 @@ namespace BBC
             }
 
             return files.Count > 0;
+        }
+
+        private int GetBootOption()
+        {
+            if (!HasMountedDisc || drives[0].Length <= 0x106)
+                return 0;
+
+            return (drives[0][0x106] >> 4) & 0x03;
         }
 
         private bool LooksLikeBasicFile(DfsFile file)
