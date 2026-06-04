@@ -349,49 +349,49 @@ namespace BBC
             {
                 case 0x00:
                 case 0x04:
-                    ScanSectors(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
+                    ScanSectors(parameters[0], parameters[1], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
                 case 0x0A:
                 case 0x0E:
-                    PrepareWrite(parameters[1], parameters[0], 128, 1);
+                    PrepareWrite(parameters[0], parameters[1], 128, 1);
                     break;
 
                 case 0x0B:
                 case 0x0F:
-                    PrepareWrite(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
+                    PrepareWrite(parameters[0], parameters[1], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
                 case 0x07:
-                    ReadSectors(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
+                    ReadSectors(parameters[0], parameters[1], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
                 case 0x12:
                 case 0x16:
-                    ReadSectors(parameters[1], parameters[0], 128, 1);
+                    ReadSectors(parameters[0], parameters[1], 128, 1);
                     break;
 
                 case 0x13:
                 case 0x17:
-                    ReadSectors(parameters[1], parameters[0], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
+                    ReadSectors(parameters[0], parameters[1], GetSectorSize(parameters[2]), GetSectorCount(parameters[2]));
                     break;
 
                 case 0x1B:
-                    ReadSectorIds(parameters[1], parameters[2]);
+                    ReadSectorIds(parameters[0], parameters[2]);
                     break;
 
                 case 0x1E:
-                    SetResult(HasSector(parameters[1], parameters[0]) ? ResultOk : ResultSectorNotFound);
+                    SetResult(HasSector(parameters[0], parameters[1]) ? ResultOk : ResultSectorNotFound);
                     break;
 
                 case 0x1F:
-                    SetResult(HasSector(parameters[1], parameters[0]) ? ResultOk : ResultSectorNotFound);
+                    SetResult(HasSector(parameters[0], parameters[1]) ? ResultOk : ResultSectorNotFound);
                     break;
 
                 case 0x23:
                     // Format track. Games/loaders generally only use this to probe
                     // controller capability; accept the command without modifying SSDs.
-                    Trace($"FORMAT T{parameters[1]:D2}");
+                    Trace($"FORMAT T{parameters[0]:D2}");
                     SetResult(IsDriveReady(selectedDrive) ? ResultOk : ResultDriveNotReady);
                     break;
 

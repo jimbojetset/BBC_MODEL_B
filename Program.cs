@@ -43,6 +43,9 @@ namespace BBC
             foreach (string path in options.MountPaths)
                 emulator.MountHostFile(path, queueLoadCommand: false);
 
+            if (options.BootDisc)
+                emulator.QueueMountedDiscBoot();
+
             if (options.HeadlessMilliseconds > 0)
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
             else
@@ -55,6 +58,7 @@ namespace BBC
             List<string> mountPaths = new List<string>();
             string? printAutoLoadPath = null;
             double speedScale = 1.0;
+            bool bootDisc = false;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -85,6 +89,12 @@ namespace BBC
                     continue;
                 }
 
+                if (string.Equals(args[i], "--boot-disc", StringComparison.OrdinalIgnoreCase))
+                {
+                    bootDisc = true;
+                    continue;
+                }
+
                 if (string.Equals(args[i], "--disc", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(args[i], "--disk", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(args[i], "--file", StringComparison.OrdinalIgnoreCase))
@@ -100,7 +110,7 @@ namespace BBC
                     mountPaths.Add(args[i]);
             }
 
-            return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath, speedScale);
+            return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath, speedScale, bootDisc);
         }
 
         private static bool TryParseSpeedScale(string value, out double speedScale)
@@ -119,7 +129,7 @@ namespace BBC
             return speedScale is >= 0.01 and <= 4.0;
         }
 
-        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath, double SpeedScale);
+        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath, double SpeedScale, bool BootDisc);
     }
 
     /// <summary>
@@ -357,6 +367,12 @@ namespace BBC
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedPath}");
         }
 
+        public void QueueMountedDiscBoot()
+        {
+            if (discController.TryGetBootExecScript(out string? bootScript) && bootScript is not null)
+                QueueBootScript(bootScript);
+        }
+
         /// <summary>Releases emulator-owned resources.</summary>
         public void Dispose()
         {
@@ -453,6 +469,11 @@ namespace BBC
             Console.Write("Zero page:   ");
             for (int i = 0; i < 16; i++)
                 Console.Write($"{Memory.Memory[i]:X2} ");
+            Console.WriteLine();
+
+            Console.Write("RAM $1900:   ");
+            for (int i = 0; i < 32; i++)
+                Console.Write($"{Memory.Memory[0x1900 + i]:X2} ");
             Console.WriteLine();
         }
 
