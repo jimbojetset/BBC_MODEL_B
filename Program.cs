@@ -318,8 +318,7 @@ namespace BBC
             if (IsDiscImagePath(path))
             {
                 discController.Mount(path);
-                hostFilingSystem.Mount(path);
-                hostFilingSystem.RunCommandInterceptionEnabled = true;
+                hostFilingSystem.Unmount();
 
                 Console.WriteLine($"Mounted DFS: {discController.MountedPath}");
                 return;
