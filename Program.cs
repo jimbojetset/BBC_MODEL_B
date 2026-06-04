@@ -879,7 +879,7 @@ namespace BBC
             }
 
             if (DiscController8271.IsAddress(address))
-                return discController.Read(address);
+                return discController.Read(address, (ushort)Cpu.registers.PC);
 
             return address switch
             {
@@ -913,7 +913,7 @@ namespace BBC
 
             if (DiscController8271.IsAddress(address))
             {
-                discController.Write(address, value);
+                discController.Write(address, value, (ushort)Cpu.registers.PC);
                 return;
             }
 

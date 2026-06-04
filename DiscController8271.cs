@@ -53,6 +53,7 @@ namespace BBC
         private long traceSequence;
         private int currentReadBytesProvided;
         private int currentReadBytesConsumed;
+        private int lastStatusTrace = -1;
 
         /// <summary>Initializes a new 8271-compatible disc controller.</summary>
         public DiscController8271()
@@ -141,6 +142,7 @@ namespace BBC
             busy = false;
             currentReadBytesProvided = 0;
             currentReadBytesConsumed = 0;
+            lastStatusTrace = -1;
         }
 
         /// <summary>Advances delayed FDC NMI events by the supplied number of CPU cycles.</summary>
@@ -161,13 +163,13 @@ namespace BBC
         /// <summary>Reads an 8271 register.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <returns>The register value.</returns>
-        public byte Read(ushort address)
+        public byte Read(ushort address, ushort pc = 0)
         {
             return address switch
             {
-                _ when (address & 0x07) == 0 => ReadStatus(),
-                _ when (address & 0x07) == 1 => ReadResult(),
-                _ when (address & 0x07) == 4 => ReadData(),
+                _ when (address & 0x07) == 0 => ReadStatus(address, pc),
+                _ when (address & 0x07) == 1 => ReadResult(address, pc),
+                _ when (address & 0x07) == 4 => ReadData(address, pc),
                 _ => 0x00
             };
         }
@@ -175,29 +177,30 @@ namespace BBC
         /// <summary>Writes an 8271 register.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <param name="value">The value written by the CPU.</param>
-        public void Write(ushort address, byte value)
+        public void Write(ushort address, byte value, ushort pc = 0)
         {
             switch (address & 0x07)
             {
                 case 0:
-                    BeginCommand(value);
+                    BeginCommand(value, address, pc);
                     break;
 
                 case 1:
-                    WriteParameter(value);
+                    WriteParameter(value, address, pc);
                     break;
 
                 case 2:
+                    TraceAccess("WRITE RESET", address, value, pc);
                     Reset();
                     break;
 
                 case 4:
-                    WriteData(value);
+                    WriteData(value, address, pc);
                     break;
             }
         }
 
-        private byte ReadStatus()
+        private byte ReadStatus(ushort address, ushort pc)
         {
             byte status = 0;
 
@@ -210,26 +213,39 @@ namespace BBC
             if (resultAvailable)
                 status |= StatusInterrupt | StatusResultFull;
 
+            if (traceEnabled && status != lastStatusTrace)
+            {
+                lastStatusTrace = status;
+                TraceAccess("READ STATUS", address, status, pc);
+            }
+
             return status;
         }
 
-        private byte ReadResult()
+        private byte ReadResult(ushort address, ushort pc)
         {
             resultAvailable = false;
             nmiPending = false;
             busy = readData.Count > 0 || pendingWrite is not null;
+            TraceAccess("READ RESULT", address, result, pc);
             return result;
         }
 
-        private byte ReadData()
+        private byte ReadData(ushort address, ushort pc)
         {
             nmiPending = false;
 
             if (readData.Count == 0)
+            {
+                TraceAccess("READ DATA EMPTY", address, 0, pc);
                 return 0x00;
+            }
 
             byte value = readData.Dequeue();
             currentReadBytesConsumed++;
+            if (currentReadBytesConsumed == 1 || readData.Count == 0 || (currentReadBytesConsumed % SectorSize) == 0)
+                Trace($"READ DATA pc=${pc:X4} value=${value:X2} consumed={currentReadBytesConsumed}/{currentReadBytesProvided} remaining={readData.Count}");
+
             if (readData.Count == 0)
                 SetResult(ResultOk, NmiReassertDelayCycles);
             else
@@ -238,8 +254,10 @@ namespace BBC
             return value;
         }
 
-        private void BeginCommand(byte value)
+        private void BeginCommand(byte value, ushort address, ushort pc)
         {
+            TraceAccess("WRITE COMMAND", address, value, pc);
+
             if (readData.Count > 0)
             {
                 Trace($"COMMAND WITH STALE DATA remaining={readData.Count} consumed={currentReadBytesConsumed}/{currentReadBytesProvided}");
@@ -263,24 +281,29 @@ namespace BBC
                 ExecuteCommand();
         }
 
-        private void WriteParameter(byte value)
+        private void WriteParameter(byte value, ushort address, ushort pc)
         {
             if (!busy && command == 0)
                 return;
 
             parameters.Add(value);
-            Trace($"PARAM {parameters.Count}/{GetParameterCount(command)} {value:X2}");
+            Trace($"PARAM pc=${pc:X4} addr=${address:X4} {parameters.Count}/{GetParameterCount(command)} {value:X2}");
 
             if (parameters.Count >= GetParameterCount(command))
                 ExecuteCommand();
         }
 
-        private void WriteData(byte value)
+        private void WriteData(byte value, ushort address, ushort pc)
         {
             if (pendingWrite is null)
+            {
+                TraceAccess("WRITE DATA IGNORED", address, value, pc);
                 return;
+            }
 
             writeData.Add(value);
+            if (writeData.Count == 1 || writeData.Count == pendingWrite.Value.Length || (writeData.Count % SectorSize) == 0)
+                Trace($"WRITE DATA pc=${pc:X4} value=${value:X2} consumed={writeData.Count}/{pendingWrite.Value.Length}");
 
             if (writeData.Count >= pendingWrite.Value.Length)
             {
@@ -564,6 +587,11 @@ namespace BBC
 
             lock (traceLock)
                 File.AppendAllText(tracePath, $"{++traceSequence:D8} 8271 {message}{Environment.NewLine}");
+        }
+
+        private void TraceAccess(string operation, ushort address, byte value, ushort pc)
+        {
+            Trace($"{operation} pc=${pc:X4} addr=${address:X4} value=${value:X2}");
         }
 
         private void RequestNmi(int delayCycles = 0)
