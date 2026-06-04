@@ -24,8 +24,6 @@ namespace BBC
         private const int SingleSidedTracks = 80;
         private const int SingleSidedImageBytes = SingleSidedTracks * SectorsPerTrack * SectorSize;
         private const byte StatusBusy = 0x80;
-        private const byte StatusCommandFull = 0x40;
-        private const byte StatusParameterFull = 0x20;
         private const byte StatusDataRequest = 0x04;
         private const byte StatusInterrupt = 0x08;
         private const byte StatusResultFull = 0x10;
@@ -52,8 +50,6 @@ namespace BBC
         private bool nmiPending;
         private int nmiDelayCycles;
         private bool busy;
-        private bool commandRegisterFull;
-        private bool parameterRegisterFull;
         private long traceSequence;
         private int currentReadBytesProvided;
         private int currentReadBytesConsumed;
@@ -143,8 +139,6 @@ namespace BBC
             nmiPending = false;
             nmiDelayCycles = 0;
             busy = false;
-            commandRegisterFull = false;
-            parameterRegisterFull = false;
             currentReadBytesProvided = 0;
             currentReadBytesConsumed = 0;
         }
@@ -210,12 +204,6 @@ namespace BBC
             if (busy)
                 status |= StatusBusy;
 
-            if (commandRegisterFull)
-                status |= StatusCommandFull;
-
-            if (parameterRegisterFull)
-                status |= StatusParameterFull;
-
             if (readData.Count > 0 || pendingWrite is not null)
                 status |= StatusDataRequest;
 
@@ -267,8 +255,6 @@ namespace BBC
             parameters.Clear();
             resultAvailable = false;
             busy = true;
-            commandRegisterFull = true;
-            parameterRegisterFull = false;
             currentReadBytesProvided = 0;
             currentReadBytesConsumed = 0;
             Trace($"COMMAND {command:X2} op={(command & 0x3F):X2} drive={selectedDrive}");
@@ -283,7 +269,6 @@ namespace BBC
                 return;
 
             parameters.Add(value);
-            parameterRegisterFull = true;
             Trace($"PARAM {parameters.Count}/{GetParameterCount(command)} {value:X2}");
 
             if (parameters.Count >= GetParameterCount(command))
@@ -295,7 +280,6 @@ namespace BBC
             if (pendingWrite is null)
                 return;
 
-            parameterRegisterFull = false;
             writeData.Add(value);
 
             if (writeData.Count >= pendingWrite.Value.Length)
@@ -314,8 +298,6 @@ namespace BBC
         private void ExecuteCommand()
         {
             byte opcode = (byte)(command & 0x3F);
-            commandRegisterFull = false;
-            parameterRegisterFull = false;
 
             switch (opcode)
             {
@@ -572,8 +554,6 @@ namespace BBC
             result = value;
             resultAvailable = true;
             busy = false;
-            commandRegisterFull = false;
-            parameterRegisterFull = false;
             RequestNmi(nmiDelayCycles);
         }
 
