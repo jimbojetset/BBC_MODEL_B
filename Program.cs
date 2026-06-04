@@ -384,7 +384,9 @@ namespace BBC
             joystickState = default;
             Cpu.SetIrqLine(false);
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
-            selectedSidewaysRom = pendingBreak.Shift ? 0 : BasicRomBank;
+            selectedSidewaysRom = BasicRomBank;
+            if (pendingBreak.Shift)
+                systemVia.SetKeyState(0x00, true);
             Memory.Memory[EscapeFlag] = 0;
             fileMessageOption = 1;
         }
