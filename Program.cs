@@ -356,7 +356,7 @@ namespace BBC
             if (IsDiscImagePath(path))
             {
                 discController.Mount(path);
-                hostFilingSystem.Unmount();
+                hostFilingSystem.Mount(path);
 
                 Console.WriteLine($"Mounted DFS: {discController.MountedPath}");
                 return;
@@ -1270,7 +1270,7 @@ namespace BBC
         {
             if (Video.IsSheilaAddress(address))
             {
-                Video.WriteSheila(address, value);
+                Video.WriteSheila(address, value, systemVia.FrameCpuCycle);
                 return;
             }
 

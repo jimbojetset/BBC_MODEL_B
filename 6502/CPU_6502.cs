@@ -83,6 +83,7 @@ namespace BBC.CPU
 
         private int cyclesThisOperation = 0;
         private long totalCycles;
+        public long TotalCycles => Interlocked.Read(ref totalCycles);
         public Action<int>? OnCyclesExecuted;
         public Func<bool>? OnBeforeInstruction;
         private int externalStallCycles;

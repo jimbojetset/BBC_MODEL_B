@@ -27,6 +27,10 @@ namespace BBC
         private const uint Background = 0xFF000000;
         private const uint Foreground = 0xFFFFFFFF;
         private const int BitmapHeight = 256;
+        private const int VideoFrameCpuCycles = 40_000;
+        private const int VideoFrameScanlines = 312;
+        private const int VisibleStartScanline = 36;
+        private const int RasterTraceFrameLimit = 240;
         private const int BitmapBytesPerRow10K = 40;
         private const int BitmapBytesPerRow20K = 80;
         private const int CrtcRegisterCount = 32;
@@ -43,11 +47,6 @@ namespace BBC
         private const byte UlaTeletext = 0x02;
         private const byte UlaCharactersPerLineMask = 0x0C;
         private const byte UlaClockHigh = 0x10;
-        private const byte UlaCursorWidthMask = 0xE0;
-        private const byte UlaCursorMode0Group = 0x80;
-        private const byte UlaCursorMode1Group = 0xC0;
-        private const byte UlaCursorMode2 = 0xE0;
-        private const byte UlaCursorMode7 = 0x40;
         private static readonly uint[] BbcColours =
         [
             0xFF000000, // black
@@ -64,13 +63,23 @@ namespace BBC
         private readonly ushort osRomStart;
         private readonly byte[] crtcRegisters = new byte[CrtcRegisterCount];
         private readonly byte[] paletteRegisters = new byte[PaletteRegisterCount];
+        private readonly byte[] mode4PaletteRegisters = new byte[PaletteRegisterCount];
+        private readonly byte[] mode5PaletteRegisters = new byte[PaletteRegisterCount];
         private readonly object frameSnapshotLock = new object();
         private readonly byte[] frameMemory = new byte[0x10000];
         private readonly byte[] frameCrtcRegisters = new byte[CrtcRegisterCount];
         private readonly byte[] framePaletteRegisters = new byte[PaletteRegisterCount];
+        private readonly byte[] frameMode4PaletteRegisters = new byte[PaletteRegisterCount];
+        private readonly byte[] frameMode5PaletteRegisters = new byte[PaletteRegisterCount];
+        private readonly List<VideoRasterEvent> rasterEvents = new List<VideoRasterEvent>();
+        private readonly List<VideoRasterEvent> frameRasterEvents = new List<VideoRasterEvent>();
+        private readonly List<VideoRasterEvent> activeRasterEvents = new List<VideoRasterEvent>();
+        private readonly string rasterTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-video-raster-trace.log");
         private byte[] activeMemory;
         private byte[] activeCrtcRegisters;
         private byte[] activePaletteRegisters;
+        private byte[] activeMode4PaletteRegisters;
+        private byte[] activeMode5PaletteRegisters;
         private int screenMemoryStart = 0x3000;
         private int screenMemorySize = 0x5000;
         private int frameScreenMemoryStart = 0x3000;
@@ -87,6 +96,16 @@ namespace BBC
         private byte activeUlaControl;
         private BbcScreenMode activeMode;
         private bool activeCrtcCursorAddressWritten;
+        private bool sawMode4ThisFrame;
+        private bool sawMode5ThisFrame;
+        private bool frameSawMode4;
+        private bool frameSawMode5;
+        private bool activeSawMode4;
+        private bool activeSawMode5;
+        private int frameSnapshotSequence;
+        private int rasterTraceFramesWritten;
+        private int lastMode4Mode5SplitLine = 192;
+        private bool hasLastMode4Mode5SplitLine;
 
         /// <summary>Gets the currently selected BBC screen mode.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
@@ -113,8 +132,15 @@ namespace BBC
             activeMemory = memory;
             activeCrtcRegisters = crtcRegisters;
             activePaletteRegisters = paletteRegisters;
+            activeMode4PaletteRegisters = mode4PaletteRegisters;
+            activeMode5PaletteRegisters = mode5PaletteRegisters;
             activeUlaControl = UlaControl;
             activeMode = CurrentMode;
+            ResetPaletteArray(mode4PaletteRegisters);
+            ResetPaletteArray(mode5PaletteRegisters);
+            AddRasterEvent(0);
+            File.WriteAllText(rasterTracePath, $"BBC video raster trace started {DateTimeOffset.Now:O}{Environment.NewLine}");
+            Console.WriteLine($"Video raster trace: {rasterTracePath}");
         }
 
         /// <summary>Resets video device state.</summary>
@@ -126,6 +152,17 @@ namespace BBC
             crtcCursorAddressWritten = false;
             frameCrtcCursorAddressWritten = false;
             hasFrameSnapshot = false;
+            sawMode4ThisFrame = false;
+            sawMode5ThisFrame = false;
+            frameSawMode4 = false;
+            frameSawMode5 = false;
+            rasterEvents.Clear();
+            frameRasterEvents.Clear();
+            activeRasterEvents.Clear();
+            frameSnapshotSequence = 0;
+            rasterTraceFramesWritten = 0;
+            lastMode4Mode5SplitLine = 192;
+            hasLastMode4Mode5SplitLine = false;
             CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
             screenMemoryStart = 0x3000;
@@ -134,6 +171,7 @@ namespace BBC
             frameScreenMemorySize = screenMemorySize;
             frameUlaControl = UlaControl;
             frameMode = CurrentMode;
+            AddRasterEvent(0);
         }
 
         /// <summary>Sets the BBC video RAM window used by hardware scrolling wraparound.</summary>
@@ -159,11 +197,23 @@ namespace BBC
                 memory.CopyTo(frameMemory, 0);
                 crtcRegisters.CopyTo(frameCrtcRegisters, 0);
                 paletteRegisters.CopyTo(framePaletteRegisters, 0);
+                mode4PaletteRegisters.CopyTo(frameMode4PaletteRegisters, 0);
+                mode5PaletteRegisters.CopyTo(frameMode5PaletteRegisters, 0);
                 frameCrtcCursorAddressWritten = crtcCursorAddressWritten;
                 frameUlaControl = UlaControl;
                 frameMode = CurrentMode;
                 frameScreenMemoryStart = screenMemoryStart;
                 frameScreenMemorySize = screenMemorySize;
+                frameSawMode4 = sawMode4ThisFrame;
+                frameSawMode5 = sawMode5ThisFrame;
+                frameSnapshotSequence++;
+                frameRasterEvents.Clear();
+                frameRasterEvents.AddRange(rasterEvents);
+                TraceRasterFrameSnapshot();
+                rasterEvents.Clear();
+                AddRasterEvent(0);
+                sawMode4ThisFrame = CurrentMode == BbcScreenMode.Mode4;
+                sawMode5ThisFrame = CurrentMode == BbcScreenMode.Mode5;
                 hasFrameSnapshot = true;
             }
         }
@@ -186,7 +236,7 @@ namespace BBC
         /// <summary>Writes a byte to the CRTC or Video ULA register area.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <param name="value">The value to write.</param>
-        public void WriteSheila(ushort address, byte value)
+        public void WriteSheila(ushort address, byte value, int frameCpuCycle = 0)
         {
             switch (address)
             {
@@ -204,12 +254,24 @@ namespace BBC
                 case 0xFE22:
                     UlaControl = value;
                     CurrentMode = DecodeModeFromUlaControl(value);
+                    if (CurrentMode == BbcScreenMode.Mode4)
+                        sawMode4ThisFrame = true;
+                    else if (CurrentMode == BbcScreenMode.Mode5)
+                        sawMode5ThisFrame = true;
+                    AddRasterEvent(frameCpuCycle);
                     break;
 
                 case 0xFE21:
                 case 0xFE23:
                     lastPaletteWrite = value;
-                    paletteRegisters[(value >> 4) & 0x0F] = DecodePhysicalColour(value);
+                    int paletteIndex = (value >> 4) & 0x0F;
+                    byte physicalColour = DecodePhysicalColour(value);
+                    paletteRegisters[paletteIndex] = physicalColour;
+                    if (CurrentMode == BbcScreenMode.Mode4)
+                        mode4PaletteRegisters[paletteIndex] = physicalColour;
+                    else if (CurrentMode == BbcScreenMode.Mode5)
+                        mode5PaletteRegisters[paletteIndex] = physicalColour;
+                    AddRasterEvent(frameCpuCycle);
                     break;
             }
         }
@@ -225,22 +287,40 @@ namespace BBC
                     activeMemory = frameMemory;
                     activeCrtcRegisters = frameCrtcRegisters;
                     activePaletteRegisters = framePaletteRegisters;
+                    activeMode4PaletteRegisters = frameMode4PaletteRegisters;
+                    activeMode5PaletteRegisters = frameMode5PaletteRegisters;
                     activeCrtcCursorAddressWritten = frameCrtcCursorAddressWritten;
                     activeUlaControl = frameUlaControl;
                     activeMode = frameMode;
                     activeScreenMemoryStart = frameScreenMemoryStart;
                     activeScreenMemorySize = frameScreenMemorySize;
+                    activeSawMode4 = frameSawMode4;
+                    activeSawMode5 = frameSawMode5;
+                    activeRasterEvents.Clear();
+                    activeRasterEvents.AddRange(frameRasterEvents);
                 }
                 else
                 {
                     activeMemory = memory;
                     activeCrtcRegisters = crtcRegisters;
                     activePaletteRegisters = paletteRegisters;
+                    activeMode4PaletteRegisters = mode4PaletteRegisters;
+                    activeMode5PaletteRegisters = mode5PaletteRegisters;
                     activeCrtcCursorAddressWritten = crtcCursorAddressWritten;
                     activeUlaControl = UlaControl;
                     activeMode = CurrentMode;
                     activeScreenMemoryStart = screenMemoryStart;
                     activeScreenMemorySize = screenMemorySize;
+                    activeSawMode4 = sawMode4ThisFrame;
+                    activeSawMode5 = sawMode5ThisFrame;
+                    activeRasterEvents.Clear();
+                    activeRasterEvents.AddRange(rasterEvents);
+                }
+
+                if (ShouldRenderMode4Mode5Split())
+                {
+                    RenderMode4Mode5Split(display);
+                    return;
                 }
 
                 switch (activeMode)
@@ -587,6 +667,142 @@ namespace BBC
             }
         }
 
+        private bool ShouldRenderMode4Mode5Split()
+        {
+            if (activeRasterEvents.Count == 0)
+                return activeSawMode4 && activeSawMode5;
+
+            bool hasMode4 = false;
+            bool hasMode5 = false;
+
+            foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
+            {
+                hasMode4 |= rasterEvent.Mode == BbcScreenMode.Mode4;
+                hasMode5 |= rasterEvent.Mode == BbcScreenMode.Mode5;
+
+                if (hasMode4 && hasMode5)
+                    return true;
+            }
+
+            return IsCarriedOverMode5SplitFrame();
+        }
+
+        private void RenderMode4Mode5Split(Display display)
+        {
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, Background);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
+            int height = GetBitmapHeight();
+            int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
+
+            if (TryRenderCarriedOverMode5Split(display, height, bytesPerRow, xOffset))
+                return;
+
+            int eventIndex = 0;
+            VideoRasterEvent state = activeRasterEvents.Count > 0
+                ? activeRasterEvents[0]
+                : new VideoRasterEvent(0, 0, 0, activeMode, activeUlaControl, activePaletteRegisters);
+
+            for (int y = 0; y < height; y++)
+            {
+                while (eventIndex < activeRasterEvents.Count && activeRasterEvents[eventIndex].VisibleLine <= y)
+                    state = activeRasterEvents[eventIndex++];
+
+                if (state.Mode == BbcScreenMode.Mode5)
+                    RenderMode5BitmapRow(display, y, bytesPerRow, xOffset, state.Palette);
+                else
+                    RenderMode4BitmapRow(display, y, bytesPerRow, xOffset, state.Palette);
+            }
+
+            if (TryGetFirstVisibleMode5Line(out int splitLine))
+            {
+                lastMode4Mode5SplitLine = splitLine;
+                hasLastMode4Mode5SplitLine = true;
+            }
+        }
+
+        private bool TryRenderCarriedOverMode5Split(Display display, int height, int bytesPerRow, int xOffset)
+        {
+            if (!IsCarriedOverMode5SplitFrame())
+                return false;
+
+            int splitLine = Math.Clamp(lastMode4Mode5SplitLine, 1, height - 1);
+            for (int y = 0; y < height; y++)
+            {
+                if (y < splitLine)
+                    RenderMode4BitmapRow(display, y, bytesPerRow, xOffset, activeMode4PaletteRegisters);
+                else
+                    RenderMode5BitmapRow(display, y, bytesPerRow, xOffset, activeMode5PaletteRegisters);
+            }
+
+            return true;
+        }
+
+        private bool IsCarriedOverMode5SplitFrame()
+        {
+            if (!hasLastMode4Mode5SplitLine || !activeSawMode5 || activeSawMode4 || activeMode != BbcScreenMode.Mode5)
+                return false;
+
+            return activeCrtcRegisters[CrtcHorizontalDisplayedRegister] == 32
+                && GetBitmapDisplayStart() == 0x0C00;
+        }
+
+        private bool TryGetFirstVisibleMode5Line(out int splitLine)
+        {
+            splitLine = 0;
+
+            foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
+            {
+                if (rasterEvent.Mode != BbcScreenMode.Mode5 || rasterEvent.VisibleLine < 0)
+                    continue;
+
+                splitLine = rasterEvent.VisibleLine;
+                return true;
+            }
+
+            return false;
+        }
+
+        private void RenderMode4BitmapRow(Display display, int y, int bytesPerRow, int xOffset, byte[] palette)
+        {
+            uint[] pixels = display.FrameBuffer;
+            int targetY = y * 2;
+
+            for (int byteX = 0; byteX < bytesPerRow; byteX++)
+            {
+                byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    int logicalColour = (value >> (7 - bit)) & 0x01;
+                    uint colour = GetPaletteColour(BbcScreenMode.Mode4, palette, logicalColour);
+                    int targetX = xOffset + (((byteX * 8) + bit) * 2);
+
+                    WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                }
+            }
+        }
+
+        private void RenderMode5BitmapRow(Display display, int y, int bytesPerRow, int xOffset, byte[] palette)
+        {
+            uint[] pixels = display.FrameBuffer;
+            int targetY = y * 2;
+
+            for (int byteX = 0; byteX < bytesPerRow; byteX++)
+            {
+                byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+
+                for (int pixel = 0; pixel < 4; pixel++)
+                {
+                    int logicalColour = DecodeTwoBitPixel(value, pixel);
+                    uint colour = GetPaletteColour(BbcScreenMode.Mode5, palette, logicalColour);
+                    int targetX = xOffset + (((byteX * 4) + pixel) * 4);
+
+                    WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                }
+            }
+        }
+
         private void RenderMode7Cursor(Display display)
         {
             if (!IsCursorVisible())
@@ -674,12 +890,17 @@ namespace BBC
 
         private int GetBitmapAddress(int y, int byteX, int bytesPerRow)
         {
-            int crtcStart = ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
-                | activeCrtcRegisters[CrtcDisplayStartLowRegister];
+            int crtcStart = GetBitmapDisplayStart();
             int characterRow = y >> 3;
             int rasterLine = y & 0x07;
             int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
             return WrapBitmapAddress(memoryAddress);
+        }
+
+        private int GetBitmapDisplayStart()
+        {
+            return ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
+                | activeCrtcRegisters[CrtcDisplayStartLowRegister];
         }
 
         private int WrapBitmapAddress(int address)
@@ -743,12 +964,32 @@ namespace BBC
             return ResolvePhysicalColour(activePaletteRegisters[paletteIndex]);
         }
 
+        private uint GetPaletteColour(BbcScreenMode mode, byte[] palette, int logicalColour)
+        {
+            int paletteIndex = mode switch
+            {
+                BbcScreenMode.Mode4 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
+                BbcScreenMode.Mode5 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
+                    | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
+                _ => logicalColour & 0x0F
+            };
+
+            return ResolvePhysicalColour(palette[paletteIndex]);
+        }
+
         private void ResetPalette()
         {
-            for (int i = 0; i < paletteRegisters.Length; i++)
-                paletteRegisters[i] = (byte)(i & 0x07);
+            ResetPaletteArray(paletteRegisters);
+            ResetPaletteArray(mode4PaletteRegisters);
+            ResetPaletteArray(mode5PaletteRegisters);
 
             lastPaletteWrite = 0;
+        }
+
+        private static void ResetPaletteArray(byte[] palette)
+        {
+            for (int i = 0; i < palette.Length; i++)
+                palette[i] = (byte)(i & 0x07);
         }
 
         private uint ResolvePhysicalColour(byte physicalColour)
@@ -841,28 +1082,87 @@ namespace BBC
 
         private static BbcScreenMode DecodeModeFromUlaControl(byte control)
         {
-            byte cursorWidth = (byte)(control & UlaCursorWidthMask);
-
-            if ((control & UlaTeletext) != 0 || cursorWidth == UlaCursorMode7)
+            if ((control & UlaTeletext) != 0)
                 return BbcScreenMode.Mode7;
 
-            if (cursorWidth == UlaCursorMode2)
-                return BbcScreenMode.Mode2;
-
-            if (cursorWidth == UlaCursorMode1Group)
-                return (control & UlaClockHigh) != 0 ? BbcScreenMode.Mode1 : BbcScreenMode.Mode5;
-
-            if (cursorWidth == UlaCursorMode0Group)
+            byte modeBits = (byte)(control & (UlaClockHigh | UlaCharactersPerLineMask));
+            return modeBits switch
             {
-                byte columns = (byte)(control & UlaCharactersPerLineMask);
+                0x00 => BbcScreenMode.Mode2,
+                0x04 => BbcScreenMode.Mode5,
+                0x08 => BbcScreenMode.Mode4,
+                0x0C => BbcScreenMode.Mode0,
+                0x10 => BbcScreenMode.Mode2,
+                0x14 => BbcScreenMode.Mode1,
+                0x18 => BbcScreenMode.Mode4,
+                0x1C => BbcScreenMode.Mode0,
+                _ => BbcScreenMode.Unknown
+            };
+        }
 
-                if ((control & UlaClockHigh) != 0 || columns == 0x0C)
-                    return BbcScreenMode.Mode0;
+        private void AddRasterEvent(int frameCpuCycle)
+        {
+            int scanline = Math.Clamp(frameCpuCycle, 0, VideoFrameCpuCycles - 1) * VideoFrameScanlines / VideoFrameCpuCycles;
+            int visibleLine = scanline - VisibleStartScanline;
+            rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters));
+        }
 
-                return BbcScreenMode.Mode4;
+        private void TraceRasterFrameSnapshot()
+        {
+            if (rasterTraceFramesWritten >= RasterTraceFrameLimit)
+                return;
+
+            bool hasMode4 = false;
+            bool hasMode5 = false;
+            foreach (VideoRasterEvent rasterEvent in frameRasterEvents)
+            {
+                hasMode4 |= rasterEvent.Mode == BbcScreenMode.Mode4;
+                hasMode5 |= rasterEvent.Mode == BbcScreenMode.Mode5;
             }
 
-            return BbcScreenMode.Unknown;
+            if (!hasMode4 && !hasMode5)
+                return;
+
+            using StreamWriter writer = new StreamWriter(File.Open(rasterTracePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
+            writer.WriteLine($"FRAME {frameSnapshotSequence} mode={frameMode} ula=${frameUlaControl:X2} saw4={frameSawMode4} saw5={frameSawMode5} crtc-h={frameCrtcRegisters[CrtcHorizontalDisplayedRegister]} crtc-v={frameCrtcRegisters[CrtcVerticalDisplayedRegister]} crtc-r9={frameCrtcRegisters[CrtcScanLinesPerCharacterRegister]} start=${(((frameCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8) | frameCrtcRegisters[CrtcDisplayStartLowRegister]):X4} events={frameRasterEvents.Count}");
+
+            int eventLimit = Math.Min(frameRasterEvents.Count, 80);
+            for (int i = 0; i < eventLimit; i++)
+            {
+                VideoRasterEvent rasterEvent = frameRasterEvents[i];
+                writer.WriteLine($"  {i:D2}: cpu={rasterEvent.FrameCpuCycle:D5} scan={rasterEvent.Scanline:D3} visible={rasterEvent.VisibleLine:D4} mode={rasterEvent.Mode} ula=${rasterEvent.UlaControl:X2} p0={rasterEvent.Palette[0]:X1} p2={rasterEvent.Palette[2]:X1} p8={rasterEvent.Palette[8]:X1} pA={rasterEvent.Palette[0x0A]:X1}");
+            }
+
+            if (frameRasterEvents.Count > eventLimit)
+                writer.WriteLine($"  ... {frameRasterEvents.Count - eventLimit} more events");
+
+            rasterTraceFramesWritten++;
+        }
+
+        private readonly struct VideoRasterEvent
+        {
+            public VideoRasterEvent(int frameCpuCycle, int scanline, int visibleLine, BbcScreenMode mode, byte ulaControl, byte[] palette)
+            {
+                FrameCpuCycle = frameCpuCycle;
+                Scanline = scanline;
+                VisibleLine = visibleLine;
+                Mode = mode;
+                UlaControl = ulaControl;
+                Palette = new byte[PaletteRegisterCount];
+                Array.Copy(palette, Palette, Palette.Length);
+            }
+
+            public int FrameCpuCycle { get; }
+
+            public int Scanline { get; }
+
+            public int VisibleLine { get; }
+
+            public BbcScreenMode Mode { get; }
+
+            public byte UlaControl { get; }
+
+            public byte[] Palette { get; }
         }
 
         private sealed class TeletextState

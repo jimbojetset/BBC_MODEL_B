@@ -93,6 +93,9 @@ namespace BBC
         /// <summary>Gets the number of emulated 50 Hz video frames since reset.</summary>
         public int FrameCounter => Volatile.Read(ref frameCounter);
 
+        /// <summary>Gets the approximate CPU cycles elapsed since the current 50 Hz frame started.</summary>
+        public int FrameCpuCycle => Math.Clamp((vsyncCycleCounter * 2) + peripheralCycleRemainder, 0, (VsyncPeripheralCycles * 2) - 1);
+
         /// <summary>Gets the currently selected video RAM start address.</summary>
         public int ScreenMemoryStart => GetScreenMemoryWindow(addressableLatch).Start;
 
@@ -159,7 +162,7 @@ namespace BBC
             return register switch
             {
                 0x0 => ReadPort(portB, dataDirectionB),
-                0x1 or 0xF => ReadPortA(),
+                0x1 or 0xF => ReadPortAWithHandshake(),
                 0x2 => dataDirectionB,
                 0x3 => dataDirectionA,
                 0x4 => ReadTimerLow(timer1Counter, InterruptFlagTimer1),
@@ -192,6 +195,7 @@ namespace BBC
                 case 0x1:
                 case 0xF:
                     portA = value;
+                    ClearInterrupt(InterruptFlagVsync);
                     if (dataDirectionA == 0x7F && !IsKeyboardAutoScanEnabled())
                         UpdateKeyboardColumnInterrupt();
                     break;
@@ -380,8 +384,10 @@ namespace BBC
             return (byte)((output & direction) | (0xFF & ~direction));
         }
 
-        private byte ReadPortA()
+        private byte ReadPortAWithHandshake()
         {
+            ClearInterrupt(InterruptFlagVsync);
+
             if (dataDirectionA == 0x7F)
                 return ReadKeyboardPortA();
 

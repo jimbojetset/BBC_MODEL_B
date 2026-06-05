@@ -35,6 +35,7 @@ namespace BBC
         private readonly Queue<HostJoystickChange> pendingJoystickChanges = new Queue<HostJoystickChange>();
         private readonly Queue<string> pendingDiscLoads = new Queue<string>();
         private int pendingScreenshotRequests;
+        private int pendingCpuTraceRequests;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
 
@@ -199,6 +200,15 @@ namespace BBC
             return count;
         }
 
+        /// <summary>Returns and clears the number of pending CPU trace start requests.</summary>
+        /// <returns>The number of requested CPU trace starts.</returns>
+        public int DrainCpuTraceRequests()
+        {
+            int count = pendingCpuTraceRequests;
+            pendingCpuTraceRequests = 0;
+            return count;
+        }
+
         /// <summary>Fills the framebuffer with an ARGB8888 colour.</summary>
         /// <param name="argb">The colour to write.</param>
         public void Clear(uint argb = Black)
@@ -320,6 +330,12 @@ namespace BBC
             if (keySym == SDLK_L && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
             {
                 EnqueueSelectedFile();
+                return;
+            }
+
+            if (keySym == SDLK_L && (modifiers & KMOD_ALT) != 0)
+            {
+                pendingCpuTraceRequests++;
                 return;
             }
 
