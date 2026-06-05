@@ -46,8 +46,13 @@ namespace BBC
         /// <summary>Gets or sets whether host-backed *RUN/FSCV execution shortcuts are enabled.</summary>
         public bool RunCommandInterceptionEnabled { get; set; } = true;
 
+        /// <summary>Queues text into the emulated keyboard buffer for soft-key expansion.</summary>
+        public Action<string>? QueueKeyboardText { get; set; }
+
         /// <summary>Gets the command that should be typed at BASIC after mounting.</summary>
         public string? AutoLoadCommand => files.Length == 0 ? null : $"LOAD \"{files[0].Name}\"";
+
+        private readonly string[] softKeyStrings = new string[16];
 
         /// <summary>Clears any mounted host-backed files.</summary>
         public void Unmount()
@@ -144,6 +149,20 @@ namespace BBC
             if (IsBareExecCommand(command))
             {
                 TraceOscli(command, "handled bare EXEC");
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (TryHandleFxCommand(command))
+            {
+                TraceOscli(command, "handled FX");
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (TryHandleKeyCommand(command))
+            {
+                TraceOscli(command, "handled KEY");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
@@ -247,6 +266,133 @@ namespace BBC
             string trimmed = command.Trim();
             return trimmed.Length == 4
                 && string.Equals(trimmed, "TAPE", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool TryHandleFxCommand(string command)
+        {
+            string trimmed = command.TrimStart();
+            if (trimmed.Length < 2 || !string.Equals(trimmed[..2], "FX", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            string arguments = trimmed.Length == 2 ? string.Empty : trimmed[2..].Trim();
+            if (!TryParseFxArguments(arguments, out int a, out _, out int y))
+                return false;
+
+            if ((a & 0xFF) == 0x8A)
+                InsertSoftKey((byte)y);
+
+            return true;
+        }
+
+        private bool TryHandleKeyCommand(string command)
+        {
+            string trimmed = command.TrimStart();
+            int indexStart;
+            if (trimmed.StartsWith("KEY", StringComparison.OrdinalIgnoreCase))
+            {
+                indexStart = 3;
+            }
+            else if (trimmed.Length >= 2
+                && char.ToUpperInvariant(trimmed[0]) == 'K'
+                && trimmed[1] == '.')
+            {
+                indexStart = 2;
+            }
+            else
+            {
+                return false;
+            }
+
+            while (indexStart < trimmed.Length && char.IsWhiteSpace(trimmed[indexStart]))
+                indexStart++;
+
+            int indexEnd = indexStart;
+            while (indexEnd < trimmed.Length && char.IsDigit(trimmed[indexEnd]))
+                indexEnd++;
+
+            if (indexEnd == indexStart
+                || !int.TryParse(trimmed[indexStart..indexEnd], out int key)
+                || key < 0
+                || key >= softKeyStrings.Length)
+                return false;
+
+            string value = indexEnd < trimmed.Length ? trimmed[indexEnd..].TrimStart() : string.Empty;
+            softKeyStrings[key] = DecodeSoftKeyString(value);
+            return true;
+        }
+
+        private void InsertSoftKey(byte keyCode)
+        {
+            int key = keyCode >= 0x80 ? keyCode - 0x80 : keyCode;
+            if (key < 0 || key >= softKeyStrings.Length || QueueKeyboardText is null)
+                return;
+
+            QueueKeyboardText(softKeyStrings[key]);
+        }
+
+        private static string DecodeSoftKeyString(string value)
+        {
+            StringBuilder builder = new StringBuilder(value.Length);
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (value[i] != '|' || i + 1 >= value.Length)
+                {
+                    builder.Append(value[i]);
+                    continue;
+                }
+
+                char code = char.ToUpperInvariant(value[++i]);
+                builder.Append(code switch
+                {
+                    'M' => '\r',
+                    'A' => '\n',
+                    '[' => (char)27,
+                    '|' => '|',
+                    _ => code
+                });
+            }
+
+            return builder.ToString();
+        }
+
+        private static bool TryParseFxArguments(string text, out int a, out int x, out int y)
+        {
+            a = 0;
+            x = 0;
+            y = 0;
+
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+
+            string[] parts = text.Split(',', StringSplitOptions.TrimEntries);
+            if (parts.Length is < 1 or > 3)
+                return false;
+
+            if (!TryParseFxNumber(parts[0], out a))
+                return false;
+
+            if (parts.Length > 1 && parts[1].Length > 0 && !TryParseFxNumber(parts[1], out x))
+                return false;
+
+            if (parts.Length > 2 && parts[2].Length > 0 && !TryParseFxNumber(parts[2], out y))
+                return false;
+
+            return true;
+        }
+
+        private static bool TryParseFxNumber(string text, out int value)
+        {
+            string trimmed = text.Trim();
+            if (trimmed.Length == 0)
+            {
+                value = 0;
+                return false;
+            }
+
+            if (trimmed.StartsWith('&'))
+                return int.TryParse(trimmed[1..], System.Globalization.NumberStyles.HexNumber, null, out value);
+
+            return int.TryParse(trimmed, out value);
         }
 
         private HostFile? FindFile(string requestedName)

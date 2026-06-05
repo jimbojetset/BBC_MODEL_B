@@ -239,6 +239,7 @@ namespace BBC
             Sound = new Sound();
             systemVia = new SystemVia(Sound);
             hostFilingSystem = new HostFilingSystem(Memory);
+            hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
             discController = new DiscController8271();
             Video = new Video(Memory.Memory, OsRomStart);
             systemVia.ScreenMemoryWindowChanged += Video.SetScreenMemoryWindow;
