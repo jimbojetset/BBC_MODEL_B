@@ -198,17 +198,7 @@ namespace BBC
         private JoystickState joystickState;
         private long keyboardInputEnabledAtTicks;
         private byte fileMessageOption = 1;
-        private readonly bool traceOsbyte = Environment.GetEnvironmentVariable("BBC_OSBYTE_TRACE") == "1";
-        private readonly string osbyteTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-osbyte-trace.log");
-        private readonly bool traceOscli = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
-        private readonly bool traceBoot;
-        private readonly string oscliTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-oscli-trace.log");
-        private ushort lastBadCommandTracePc = 0xFFFF;
-        private ushort lastBootTracePc = 0xFFFF;
-        private byte lastBootTraceA;
-        private byte lastBootTraceX;
-        private byte lastBootTraceY;
-
+ 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
 
@@ -248,12 +238,6 @@ namespace BBC
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
-            traceBoot = traceOscli || Environment.GetEnvironmentVariable("BBC_BOOT_TRACE") == "1";
-
-            if (traceOscli)
-                Console.WriteLine($"OSCLI trace: {oscliTracePath}");
-            if (traceBoot)
-                Console.WriteLine("Boot trace: console enabled");
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
@@ -481,8 +465,6 @@ namespace BBC
 
         private bool HandleHostFirmwareHooks()
         {
-            TraceBootFirmwareEntry();
-
             return TryHandleSidewaysRomLanguageCommand()
                 || hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
@@ -501,7 +483,6 @@ namespace BBC
                 command = command[1..].TrimStart();
 
             string commandName = GetCommandName(command);
-            TraceOscli(command, "sideways language command check");
             for (int bank = SidewaysRomBanks - 1; bank >= 0; bank--)
             {
                 string title = ReadSidewaysRomTitle(bank);
@@ -512,12 +493,9 @@ namespace BBC
                 Cpu.registers.A = 1;
                 Cpu.registers.X = (byte)bank;
                 Cpu.registers.PC = SidewaysRomStart;
-                TraceOscli(command, $"enter language ROM bank={bank} title={title}");
                 return true;
             }
-
-            TraceOscli(command, "no language ROM match");
-            return false;
+           return false;
         }
 
         private bool IsCliEntryPoint(ushort pc)
@@ -525,182 +503,16 @@ namespace BBC
             return pc == OscliEntry || pc == ReadWord(CliVector);
         }
 
-        private void TraceBoot(string message)
-        {
-            if (!traceBoot)
-                return;
-
-            Console.WriteLine($"{DateTimeOffset.Now:O} BOOT {message}");
-        }
-
-        private void TraceBootMemoryRead(ushort address, byte value)
-        {
-            if (!traceBoot)
-                return;
-
-            bool dfsBadText = selectedSidewaysRom == DfsRomBank
-                && ((address >= 0x8025 && address <= 0x8028)
-                    || (address >= 0x8802 && address <= 0x8808)
-                    || (address >= 0xA025 && address <= 0xA028)
-                    || (address >= 0xA802 && address <= 0xA808));
-            bool osBadCommandText = address >= 0xE312 && address <= 0xE31C;
-
-            if (!dfsBadText && !osBadCommandText)
-                return;
-
-            string source = dfsBadText ? "DFS text" : "OS text";
-            TraceBoot($"{source} read addr=${address:X4} value=${value:X2} pc=${Cpu.registers.PC & 0xFFFF:X4} bank={selectedSidewaysRom} A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} CLIV=${ReadWord(CliVector):X4} FSCV=${ReadWord(FscVector):X4}");
-            if (osBadCommandText && address == 0xE312)
-                TraceBootBadCommandContext();
-        }
-
-        private void TraceBootVectorWrite(ushort address, byte value)
-        {
-            if (!traceBoot)
-                return;
-
-            if ((address < CliVector || address > CliVector + 1)
-                && (address < FscVector || address > FscVector + 1))
-                return;
-
-            string vectorName = address < FscVector ? "CLIV" : "FSCV";
-            TraceBoot($"{vectorName} write addr=${address:X4} value=${value:X2} pc=${Cpu.registers.PC & 0xFFFF:X4} bank={selectedSidewaysRom}");
-        }
-
-        private void TraceBootFirmwareEntry()
-        {
-            if (!traceBoot)
-                return;
-
-            ushort pc = (ushort)(Cpu.registers.PC & 0xFFFF);
-            if (pc != 0xDEC5 && pc != 0xDEE6 && pc != 0xDF89 && pc != 0xDFBE
-                && pc != 0xE021 && pc != 0xE031 && pc != 0xFFD7 && pc != 0xFFCE)
-                return;
-
-            if (lastBootTracePc == pc && lastBootTraceA == Cpu.registers.A
-                && lastBootTraceX == Cpu.registers.X && lastBootTraceY == Cpu.registers.Y)
-                return;
-
-            lastBootTracePc = pc;
-            lastBootTraceA = Cpu.registers.A;
-            lastBootTraceX = Cpu.registers.X;
-            lastBootTraceY = Cpu.registers.Y;
-
-            ushort stringInput = (ushort)(Memory.Memory[StringInputBufferAddressLow] | (Memory.Memory[StringInputBufferAddressHigh] << 8));
-            string label = pc switch
-            {
-                0xDEC5 => "OSRDCH entry",
-                0xDEE6 => "OSRDCH input-buffer path",
-                0xDF89 => "OSCLI internal entry",
-                0xDFBE => "OSCLI lookup",
-                0xE021 => "OSCLI pass-to-ROMs",
-                0xE031 => "FSCV call",
-                0xFFD7 => "OSBGET entry",
-                0xFFCE => "OSFIND entry",
-                _ => "firmware"
-            };
-
-            TraceBoot($"{label} pc=${pc:X4} A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} exec=${Memory.Memory[ExecFileHandle]:X2} input=${Memory.Memory[CurrentInputBuffer]:X2} str=${stringInput:X4} str-text=\"{ReadPrintableLine(stringInput)}\" CLIV=${ReadWord(CliVector):X4} FSCV=${ReadWord(FscVector):X4} bank={selectedSidewaysRom}");
-        }
-
-        private void TraceBootBadCommandContext()
-        {
-            ushort pc = (ushort)(Cpu.registers.PC & 0xFFFF);
-            if (lastBadCommandTracePc == pc)
-                return;
-
-            lastBadCommandTracePc = pc;
-            ushort xy = (ushort)(Cpu.registers.X | (Cpu.registers.Y << 8));
-            TraceBoot($"Bad command context xy=${xy:X4} xy-string=\"{ReadPrintableLine(xy)}\" stack=\"{ReadPrintableSpan(0x0100, 0x0100)}\"");
-
-            foreach ((ushort address, string text) in FindPrintableRamStrings(0x0000, 0x1000))
-                TraceBoot($"RAM text ${address:X4}: \"{text}\"");
-        }
-
-        private string ReadPrintableLine(ushort address)
-        {
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < 96; i++)
-            {
-                byte value = Memory.Memory[(address + i) & 0xFFFF];
-                if (value == 0x0D || value == 0)
-                    break;
-
-                builder.Append(value >= 32 && value <= 126 ? (char)value : '.');
-            }
-
-            return builder.ToString();
-        }
-
-        private string ReadPrintableSpan(int address, int length)
-        {
-            StringBuilder builder = new StringBuilder(length);
-            for (int i = 0; i < length; i++)
-            {
-                byte value = Memory.Memory[(address + i) & 0xFFFF];
-                builder.Append(value >= 32 && value <= 126 ? (char)value : '.');
-            }
-
-            return builder.ToString();
-        }
-
-        private IEnumerable<(ushort Address, string Text)> FindPrintableRamStrings(int start, int end)
-        {
-            int runStart = -1;
-            StringBuilder run = new StringBuilder();
-
-            for (int address = start; address < end; address++)
-            {
-                byte value = Memory.Memory[address & 0xFFFF];
-                bool printable = value is >= 32 and <= 126;
-                if (printable)
-                {
-                    if (runStart < 0)
-                        runStart = address;
-                    run.Append((char)value);
-                    continue;
-                }
-
-                foreach ((ushort Address, string Text) match in FlushPrintableRun())
-                    yield return match;
-            }
-
-            foreach ((ushort Address, string Text) match in FlushPrintableRun())
-                yield return match;
-
-            IEnumerable<(ushort Address, string Text)> FlushPrintableRun()
-            {
-                if (runStart >= 0 && run.Length >= 4)
-                {
-                    string text = run.ToString();
-                    if (text.Contains("BASIC", StringComparison.OrdinalIgnoreCase)
-                        || text.Contains("BOOT", StringComparison.OrdinalIgnoreCase)
-                        || text.Contains("ELITE", StringComparison.OrdinalIgnoreCase)
-                        || text.Contains("LOAD", StringComparison.OrdinalIgnoreCase)
-                        || text.Contains("PAGE", StringComparison.OrdinalIgnoreCase)
-                        || text.Contains("CHAIN", StringComparison.OrdinalIgnoreCase)
-                        || text.Contains("FX21", StringComparison.OrdinalIgnoreCase))
-                        yield return ((ushort)runStart, text);
-                }
-
-                runStart = -1;
-                run.Clear();
-            }
-        }
-
         private bool TryHandleOsbyte()
         {
             if ((Cpu.registers.PC & 0xFFFF) != 0xFFF4)
                 return false;
-
-            TraceOsbyte("entry");
 
             if (Cpu.registers.A == 0x80)
             {
                 ReadAdval(Cpu.registers.X, out byte x, out byte y);
                 Cpu.registers.X = x;
                 Cpu.registers.Y = y;
-                TraceOsbyte("handled ADVAL");
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
@@ -710,7 +522,6 @@ namespace BBC
                 if (Cpu.registers.X == 1)
                     fileMessageOption = Cpu.registers.Y;
 
-                TraceOsbyte("handled OPT");
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
@@ -719,47 +530,20 @@ namespace BBC
             {
                 // The disc image remains mounted even when tape-oriented loaders
                 // issue the cassette-speed OSBYTE.
-                TraceOsbyte("handled TAPE speed");
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
 
-            if (Cpu.registers.A != 0x81 || Cpu.registers.Y != 0xFF)
-            {
-                TraceOsbyte("passed through");
-                return false;
-            }
-
             if (!TryMapNegativeInkeyCode(Cpu.registers.X, out byte internalKey))
             {
-                TraceOsbyte("unmapped negative INKEY");
                 return false;
             }
 
             byte result = systemVia.IsKeyPressed(internalKey) ? (byte)0xFF : (byte)0x00;
             Cpu.registers.X = result;
             Cpu.registers.Y = result;
-            TraceOsbyte($"handled negative INKEY key=${internalKey:X2} result=${result:X2}");
             ReturnFromFirmwareSubroutine();
             return true;
-        }
-
-        private void TraceOsbyte(string outcome)
-        {
-            if (!traceOsbyte)
-                return;
-
-            File.AppendAllText(osbyteTracePath, $"{DateTimeOffset.Now:O} OSBYTE A=${Cpu.registers.A:X2} X=${Cpu.registers.X:X2} Y=${Cpu.registers.Y:X2} -> {outcome}{Environment.NewLine}");
-        }
-
-        private void TraceOscli(string command, string outcome)
-        {
-            if (!traceOscli)
-                return;
-
-            string message = $"{DateTimeOffset.Now:O} OSCLI \"{command}\" -> {outcome}";
-            Console.WriteLine(message);
-            File.AppendAllText(oscliTracePath, message + Environment.NewLine);
         }
 
         private void ReadAdval(byte channel, out byte x, out byte y)
@@ -1202,14 +986,12 @@ namespace BBC
                 if (addr >= SidewaysRomStart && addr <= SidewaysRomEnd)
                 {
                     byte romValue = ReadSidewaysRom(addr);
-                    TraceBootMemoryRead(addr, romValue);
                     return romValue;
                 }
 
                 if (addr >= IoStart && addr <= IoEnd)
                     return ReadSheila(addr);
 
-                TraceBootMemoryRead(addr, value);
                 return value;
             };
 
@@ -1226,7 +1008,6 @@ namespace BBC
                 if (addr >= SidewaysRomStart)
                     return true;
 
-                TraceBootVectorWrite(addr, value);
                 return false;
             };
         }
@@ -1299,7 +1080,6 @@ namespace BBC
             switch (address)
             {
                 case 0xFE30:
-                    TraceBoot($"ROMSEL write value=${value:X2} old={selectedSidewaysRom} new={value & 0x0F} pc=${Cpu.registers.PC & 0xFFFF:X4}");
                     selectedSidewaysRom = value & 0x0F;
                     break;
             }

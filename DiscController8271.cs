@@ -38,9 +38,6 @@ namespace BBC
         private readonly Queue<byte> readData = new Queue<byte>();
         private readonly List<byte> writeData = new List<byte>();
         private readonly List<byte> parameters = new List<byte>();
-        private readonly bool traceEnabled = Environment.GetEnvironmentVariable("BBC_8271_TRACE") == "1";
-        private readonly object traceLock = new object();
-        private readonly string tracePath;
         private byte command;
         private byte result;
         private bool resultAvailable = true;
@@ -50,21 +47,12 @@ namespace BBC
         private bool nmiPending;
         private int nmiDelayCycles;
         private bool busy;
-        private long traceSequence;
         private int currentReadBytesProvided;
         private int currentReadBytesConsumed;
-        private int lastStatusTrace = -1;
 
         /// <summary>Initializes a new 8271-compatible disc controller.</summary>
         public DiscController8271()
         {
-            tracePath = Path.Combine(Environment.CurrentDirectory, "bbc-8271-trace.log");
-
-            if (traceEnabled)
-            {
-                File.WriteAllText(tracePath, $"BBC 8271 trace started {DateTimeOffset.Now:O}{Environment.NewLine}");
-                Console.WriteLine($"8271 trace:  {tracePath}");
-            }
         }
 
         /// <summary>Raised when the controller would assert the BBC disc NMI line.</summary>
@@ -165,7 +153,6 @@ namespace BBC
             busy = false;
             currentReadBytesProvided = 0;
             currentReadBytesConsumed = 0;
-            lastStatusTrace = -1;
         }
 
         /// <summary>Advances delayed FDC NMI events by the supplied number of CPU cycles.</summary>
@@ -213,7 +200,6 @@ namespace BBC
                     break;
 
                 case 2:
-                    TraceAccess("WRITE RESET", address, value, pc);
                     Reset();
                     break;
 
@@ -236,12 +222,6 @@ namespace BBC
             if (resultAvailable)
                 status |= StatusInterrupt | StatusResultFull;
 
-            if (traceEnabled && status != lastStatusTrace)
-            {
-                lastStatusTrace = status;
-                TraceAccess("READ STATUS", address, status, pc);
-            }
-
             return status;
         }
 
@@ -250,7 +230,6 @@ namespace BBC
             resultAvailable = false;
             nmiPending = false;
             busy = readData.Count > 0 || pendingWrite is not null;
-            TraceAccess("READ RESULT", address, result, pc);
             return result;
         }
 
@@ -260,14 +239,11 @@ namespace BBC
 
             if (readData.Count == 0)
             {
-                TraceAccess("READ DATA EMPTY", address, 0, pc);
                 return 0x00;
             }
 
             byte value = readData.Dequeue();
             currentReadBytesConsumed++;
-            if (currentReadBytesConsumed == 1 || readData.Count == 0 || (currentReadBytesConsumed % SectorSize) == 0)
-                Trace($"READ DATA pc=${pc:X4} value=${value:X2} consumed={currentReadBytesConsumed}/{currentReadBytesProvided} remaining={readData.Count}");
 
             if (readData.Count == 0)
                 SetResult(ResultOk, NmiReassertDelayCycles);
@@ -279,12 +255,10 @@ namespace BBC
 
         private void BeginCommand(byte value, ushort address, ushort pc)
         {
-            TraceAccess("WRITE COMMAND", address, value, pc);
 
             if (readData.Count > 0)
             {
-                Trace($"COMMAND WITH STALE DATA remaining={readData.Count} consumed={currentReadBytesConsumed}/{currentReadBytesProvided}");
-                readData.Clear();
+               readData.Clear();
                 currentReadBytesProvided = 0;
                 currentReadBytesConsumed = 0;
             }
@@ -298,7 +272,6 @@ namespace BBC
             busy = true;
             currentReadBytesProvided = 0;
             currentReadBytesConsumed = 0;
-            Trace($"COMMAND {command:X2} op={(command & 0x3F):X2} drive={selectedDrive}");
 
             if (GetParameterCount(command) == 0)
                 ExecuteCommand();
@@ -310,7 +283,6 @@ namespace BBC
                 return;
 
             parameters.Add(value);
-            Trace($"PARAM pc=${pc:X4} addr=${address:X4} {parameters.Count}/{GetParameterCount(command)} {value:X2}");
 
             if (parameters.Count >= GetParameterCount(command))
                 ExecuteCommand();
@@ -320,13 +292,10 @@ namespace BBC
         {
             if (pendingWrite is null)
             {
-                TraceAccess("WRITE DATA IGNORED", address, value, pc);
                 return;
             }
 
             writeData.Add(value);
-            if (writeData.Count == 1 || writeData.Count == pendingWrite.Value.Length || (writeData.Count % SectorSize) == 0)
-                Trace($"WRITE DATA pc=${pc:X4} value=${value:X2} consumed={writeData.Count}/{pendingWrite.Value.Length}");
 
             if (writeData.Count >= pendingWrite.Value.Length)
             {
@@ -391,7 +360,6 @@ namespace BBC
                 case 0x23:
                     // Format track. Games/loaders generally only use this to probe
                     // controller capability; accept the command without modifying SSDs.
-                    Trace($"FORMAT T{parameters[0]:D2}");
                     SetResult(IsDriveReady(selectedDrive) ? ResultOk : ResultDriveNotReady);
                     break;
 
@@ -432,7 +400,6 @@ namespace BBC
                     break;
 
                 default:
-                    Trace($"UNKNOWN COMMAND {command:X2}");
                     SetResult(ResultCommandError);
                     break;
             }
@@ -440,11 +407,8 @@ namespace BBC
 
         private void ReadSectors(int track, int sector, int sectorSize, int count)
         {
-            Trace($"READ D{selectedDrive} T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
-
             if (!IsDriveReady(selectedDrive))
             {
-                Trace($"READ DRIVE NOT READY D{selectedDrive}");
                 SetResult(ResultDriveNotReady);
                 return;
             }
@@ -458,7 +422,6 @@ namespace BBC
             {
                 if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > image.Length)
                 {
-                    Trace($"READ MISS D{selectedDrive} T{currentTrack:D2}/S{currentSector:D2}");
                     SetResult(ResultSectorNotFound);
                     return;
                 }
@@ -480,11 +443,9 @@ namespace BBC
 
         private void ScanSectors(int track, int sector, int sectorSize, int count)
         {
-            Trace($"SCAN D{selectedDrive} T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
 
             if (!IsDriveReady(selectedDrive))
             {
-                Trace($"SCAN DRIVE NOT READY D{selectedDrive}");
                 SetResult(ResultDriveNotReady);
                 return;
             }
@@ -495,7 +456,6 @@ namespace BBC
             {
                 if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > drives[selectedDrive].Length)
                 {
-                    Trace($"SCAN MISS D{selectedDrive} T{currentTrack:D2}/S{currentSector:D2}");
                     SetResult(ResultSectorNotFound);
                     return;
                 }
@@ -508,11 +468,9 @@ namespace BBC
 
         private void PrepareWrite(int track, int sector, int sectorSize, int count)
         {
-            Trace($"WRITE D{selectedDrive} T{track:D2}/S{sector:D2} size={sectorSize} count={count}");
 
             if (!IsDriveReady(selectedDrive))
             {
-                Trace($"WRITE DRIVE NOT READY D{selectedDrive}");
                 SetResult(ResultDriveNotReady);
                 return;
             }
@@ -526,7 +484,6 @@ namespace BBC
             {
                 if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > image.Length)
                 {
-                    Trace($"WRITE MISS D{selectedDrive} T{currentTrack:D2}/S{currentSector:D2}");
                     SetResult(ResultSectorNotFound);
                     return;
                 }
@@ -554,11 +511,9 @@ namespace BBC
 
         private void ReadSectorIds(int track, int count)
         {
-            Trace($"READ IDS D{selectedDrive} T{track:D2} count={count}");
 
             if (!IsDriveReady(selectedDrive))
             {
-                Trace($"READ IDS DRIVE NOT READY D{selectedDrive}");
                 SetResult(ResultDriveNotReady);
                 return;
             }
@@ -596,25 +551,10 @@ namespace BBC
 
         private void SetResult(byte value, int nmiDelayCycles = 0)
         {
-            Trace($"RESULT {value:X2}");
             result = value;
             resultAvailable = true;
             busy = false;
             RequestNmi(nmiDelayCycles);
-        }
-
-        private void Trace(string message)
-        {
-            if (!traceEnabled)
-                return;
-
-            lock (traceLock)
-                File.AppendAllText(tracePath, $"{++traceSequence:D8} 8271 {message}{Environment.NewLine}");
-        }
-
-        private void TraceAccess(string operation, ushort address, byte value, ushort pc)
-        {
-            Trace($"{operation} pc=${pc:X4} addr=${address:X4} value=${value:X2}");
         }
 
         private void RequestNmi(int delayCycles = 0)

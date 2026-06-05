@@ -25,10 +25,6 @@ namespace BBC
         private const ushort FscvVector = 0x021E;
         private const ushort DefaultBasicLoadAddress = 0x1900;
         private readonly FlatMemoryBus memory;
-        private readonly bool traceFile = Environment.GetEnvironmentVariable("BBC_FILE_TRACE") == "1";
-        private readonly string fileTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-file-trace.log");
-        private readonly bool traceOscli = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
-        private readonly string oscliTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-oscli-trace.log");
         private HostFile[] files = [];
         private string? mountedPath;
 
@@ -105,7 +101,6 @@ namespace BBC
 
             if (!matchedFile.HasValue)
             {
-                TraceFile($"OSFILE action=${action:X2} request=\"{requestedName}\" MISS cb=${controlBlock:X4}");
                 cpu.registers.A = 0;
                 ReturnFromSubroutine(cpu);
                 return true;
@@ -121,14 +116,8 @@ namespace BBC
                     ? (ushort)requestedAddress
                     : file.LoadAddress;
 
-                TraceFile($"OSFILE LOAD action=${action:X2} request=\"{requestedName}\" match=\"{file.Name}\" target=${targetAddress:X4} load=${file.LoadAddress:X4} exec=${file.ExecutionAddress:X4} len=${file.Data.Length:X4} cb=${controlBlock:X4} requested=${requestedAddress:X8} cb6=${loadAddressFlag:X2}");
-
                 for (int i = 0; i < file.Data.Length; i++)
                     memory.Memory[(targetAddress + i) & 0xFFFF] = file.Data[i];
-            }
-            else
-            {
-                TraceFile($"OSFILE INFO action=${action:X2} request=\"{requestedName}\" match=\"{file.Name}\" load=${file.LoadAddress:X4} exec=${file.ExecutionAddress:X4} len=${file.Data.Length:X4} cb=${controlBlock:X4}");
             }
 
             WriteCatalogueInfo(controlBlock, file);
@@ -152,69 +141,59 @@ namespace BBC
 
             if (command.Length == 0)
             {
-                TraceOscli(command, "handled empty command");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             if (IsBareExecCommand(command))
             {
-                TraceOscli(command, "handled bare EXEC");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             if (TryHandleFxCommand(command))
             {
-                TraceOscli(command, "handled FX");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             if (TryHandleKeyCommand(command))
             {
-                TraceOscli(command, "handled KEY");
-                ReturnFromSubroutine(cpu);
+                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             if (IsTvCommand(command))
             {
-                TraceOscli(command, "handled TV");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             if (IsOptCommand(command))
             {
-                TraceOscli(command, "handled OPT");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             if (IsTapeCommand(command))
             {
-                TraceOscli(command, "handled TAPE");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             if (!RunCommandInterceptionEnabled)
             {
-                TraceOscli(command, "passed through: run interception disabled");
-                return false;
+               return false;
             }
 
             if (!TryParseRunCommand(command, out string requestedName))
             {
-                TraceOscli(command, "passed through");
                 return false;
             }
 
             HostFile? matchedFile = FindFile(requestedName);
             if (!matchedFile.HasValue)
             {
-                TraceOscli(command, $"RUN target not found: {requestedName}");
                 return false;
             }
 
@@ -222,7 +201,6 @@ namespace BBC
             for (int i = 0; i < file.Data.Length; i++)
                 memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
 
-            TraceOscli(command, $"handled RUN {file.Name} load=${file.LoadAddress:X4} exec=${file.ExecutionAddress:X4} length=${file.Data.Length:X4}");
             cpu.registers.PC = file.ExecutionAddress;
             return true;
         }
@@ -242,7 +220,6 @@ namespace BBC
             HostFile? matchedFile = FindFile(requestedName);
             if (!matchedFile.HasValue)
             {
-                TraceOscli($"FSCV RUN {requestedName}", "target not found");
                 return false;
             }
 
@@ -250,25 +227,8 @@ namespace BBC
             for (int i = 0; i < file.Data.Length; i++)
                 memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
 
-            TraceOscli($"FSCV RUN {requestedName}", $"handled RUN {file.Name} load=${file.LoadAddress:X4} exec=${file.ExecutionAddress:X4} length=${file.Data.Length:X4}");
             cpu.registers.PC = file.ExecutionAddress;
             return true;
-        }
-
-        private void TraceOscli(string command, string outcome)
-        {
-            if (!traceOscli)
-                return;
-
-            File.AppendAllText(oscliTracePath, $"{DateTimeOffset.Now:O} OSCLI \"{command}\" -> {outcome}{Environment.NewLine}");
-        }
-
-        private void TraceFile(string message)
-        {
-            if (!traceFile)
-                return;
-
-            File.AppendAllText(fileTracePath, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
         }
 
         private static bool IsBareExecCommand(string command)
