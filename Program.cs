@@ -325,12 +325,39 @@ namespace BBC
 
             long deadline = Stopwatch.GetTimestamp() + (long)(duration.TotalSeconds * Stopwatch.Frequency);
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+
+            string? pngDir = Environment.GetEnvironmentVariable("BBC_HEADLESS_PNGDIR");
+            using Display? capture = string.IsNullOrEmpty(pngDir) ? null : new Display(scanlines: false);
+            long nextCaptureAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            int captureIndex = 0;
+
+            string headlessKeys = Environment.GetEnvironmentVariable("BBC_HEADLESS_KEYS") ?? string.Empty;
+            int headlessKeyIndex = 0;
+            long nextHeadlessKeyAtTicks = Stopwatch.GetTimestamp() + (Stopwatch.Frequency * 3);
+
             while (Stopwatch.GetTimestamp() < deadline)
             {
                 if (Stopwatch.GetTimestamp() >= keyboardInputEnabledAtTicks)
                 {
                     QueuePendingBootScriptLine();
+
+                    if (headlessKeyIndex < headlessKeys.Length && Stopwatch.GetTimestamp() >= nextHeadlessKeyAtTicks)
+                    {
+                        pendingKeyboardInput.Enqueue((byte)char.ToUpperInvariant(headlessKeys[headlessKeyIndex++]));
+                        nextHeadlessKeyAtTicks = Stopwatch.GetTimestamp() + (Stopwatch.Frequency * 3 / 2);
+                    }
+
                     DrainQueuedKeyboardInput();
+                }
+
+                if (capture is not null && Stopwatch.GetTimestamp() >= nextCaptureAtTicks)
+                {
+                    Video.Render(capture);
+                    string p = System.IO.Path.Combine(pngDir!, $"cap-{captureIndex:D3}.png");
+                    capture.SavePng(p);
+                    Console.WriteLine($"CAP {captureIndex:D3} {Video.DebugPaletteState}");
+                    captureIndex++;
+                    nextCaptureAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
                 }
 
                 Thread.Sleep(FrameMilliseconds);
@@ -347,6 +374,19 @@ namespace BBC
 
             Console.WriteLine($"Mode 7 non-blank cells: {Video.CountMode7NonBlankCells()}");
             Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
+
+            byte[] illegalOpcodes =
+            [
+                0xA3,0xA7,0xAF,0xB3,0xB7,0xBF,0x83,0x87,0x8F,0x97,
+                0xC3,0xC7,0xCF,0xD3,0xD7,0xDB,0xDF,0xE3,0xE7,0xEF,0xF3,0xF7,0xFB,0xFF,
+                0x03,0x07,0x0F,0x13,0x17,0x1B,0x1F,0x43,0x47,0x4F,0x53,0x57,0x5B,0x5F,
+                0x23,0x27,0x2F,0x33,0x37,0x3B,0x3F,0x63,0x67,0x6F,0x73,0x77,0x7B,0x7F,
+                0x0B,0x2B,0x4B,0x6B,0x8B,0xAB,0xBB,0xCB,0xEB,0x93,0x9B,0x9C,0x9E,0x9F
+            ];
+            Console.WriteLine("ILLEGAL OPCODE USAGE:");
+            foreach (byte op in illegalOpcodes)
+                if (Cpu.OpcodeCounts[op] > 0)
+                    Console.WriteLine($"  ${op:X2} = {Cpu.OpcodeCounts[op]}");
         }
 
         /// <summary>Mounts a host file or disc image.</summary>

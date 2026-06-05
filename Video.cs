@@ -110,6 +110,19 @@ namespace BBC
         /// <summary>Gets the currently selected BBC screen mode.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
 
+        /// <summary>Temporary diagnostic palette/mode snapshot.</summary>
+        public string DebugPaletteState
+        {
+            get
+            {
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                sb.Append($"mode={activeMode} ula=${activeUlaControl:X2} pal:");
+                for (int p = 0; p < 16; p++)
+                    sb.Append($"{activePaletteRegisters[p]:X1}");
+                return sb.ToString();
+            }
+        }
+
         /// <summary>Gets the current Video ULA control register value.</summary>
         public byte UlaControl { get; private set; }
 
@@ -1024,10 +1037,10 @@ namespace BBC
         private static int DecodeFourBitPixel(byte value, int pixel)
         {
             int offset = pixel == 0 ? 0 : 1;
-            return ((value >> (7 - offset)) & 0x01)
+            return ((value >> (1 - offset)) & 0x01)
                 | (((value >> (3 - offset)) & 0x01) << 1)
                 | (((value >> (5 - offset)) & 0x01) << 2)
-                | (((value >> (1 - offset)) & 0x01) << 3);
+                | (((value >> (7 - offset)) & 0x01) << 3);
         }
 
         private static void WriteScaledPixel1x2(uint[] pixels, int width, int height, int x, int y, uint colour)
@@ -1093,8 +1106,8 @@ namespace BBC
                 0x08 => BbcScreenMode.Mode4,
                 0x0C => BbcScreenMode.Mode0,
                 0x10 => BbcScreenMode.Mode2,
-                0x14 => BbcScreenMode.Mode1,
-                0x18 => BbcScreenMode.Mode4,
+                0x14 => BbcScreenMode.Mode2,
+                0x18 => BbcScreenMode.Mode1,
                 0x1C => BbcScreenMode.Mode0,
                 _ => BbcScreenMode.Unknown
             };

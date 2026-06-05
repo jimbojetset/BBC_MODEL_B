@@ -342,10 +342,10 @@ namespace BBC
 
             return code switch
             {
-                0 => (0x3000, 0x5000), // Modes 0, 1, 2: 20K.
-                1 => (0x6000, 0x2000), // Mode 6/custom 8K windows.
-                2 => (0x5800, 0x2800), // Modes 4, 5: 10K.
-                _ => (0x4000, 0x4000)  // Mode 3: 16K.
+                0 => (0x4000, 0x4000), // Mode 3: 16K.
+                1 => (0x6000, 0x2000), // Mode 6: 8K.
+                2 => (0x3000, 0x5000), // Modes 0, 1, 2: 20K.
+                _ => (0x5800, 0x2800)  // Modes 4, 5: 10K.
             };
         }
 
