@@ -33,11 +33,7 @@ namespace BBC
         private readonly int[] tonePolarity = [1, 1, 1];
         private readonly double[] smoothedChannelGains = new double[4];
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
-        private readonly bool traceEnabled = Environment.GetEnvironmentVariable("BBC_SOUND_TRACE") == "1";
-        private readonly object traceLock = new object();
-        private readonly string tracePath = Path.Combine(Environment.CurrentDirectory, "bbc-sound-trace.log");
         private static readonly double[] VolumeTable = CreateVolumeTable();
-
         private byte noiseControl;
         private double noiseCounter;
         private int noisePolarity = 1;
@@ -52,11 +48,7 @@ namespace BBC
         /// <summary>Initializes a new sound generator.</summary>
         public Sound()
         {
-            if (traceEnabled)
-            {
-                File.WriteAllText(tracePath, $"BBC sound trace started {DateTimeOffset.Now:O}{Environment.NewLine}");
-                Console.WriteLine($"Sound trace: {tracePath}");
-            }
+            Reset();
         }
 
         /// <summary>Resets all tone/noise registers to silence.</summary>
@@ -116,8 +108,6 @@ namespace BBC
         {
             lock (syncRoot)
             {
-                Trace($"PSG WRITE {value:X2}");
-
                 if ((value & 0x80) != 0)
                 {
                     latchedChannel = (value >> 5) & 0x03;
@@ -126,7 +116,6 @@ namespace BBC
                     if (latchedVolume)
                     {
                         volumes[latchedChannel] = value & 0x0F;
-                        Trace($"PSG LATCH V ch={latchedChannel} att={volumes[latchedChannel]}");
                     }
                     else if (latchedChannel == 3)
                     {
@@ -135,7 +124,6 @@ namespace BBC
                     else
                     {
                         tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x3F0) | (value & 0x0F);
-                        Trace($"PSG LATCH T ch={latchedChannel} period={tonePeriods[latchedChannel]}");
                     }
 
                     return;
@@ -144,7 +132,6 @@ namespace BBC
                 if (latchedVolume)
                 {
                     volumes[latchedChannel] = value & 0x0F;
-                    Trace($"PSG DATA V ch={latchedChannel} att={volumes[latchedChannel]}");
                 }
                 else if (latchedChannel == 3)
                 {
@@ -153,7 +140,6 @@ namespace BBC
                 else
                 {
                     tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x0F) | ((value & 0x3F) << 4);
-                    Trace($"PSG DATA T ch={latchedChannel} period={tonePeriods[latchedChannel]}");
                 }
             }
         }
@@ -274,7 +260,6 @@ namespace BBC
             noiseCounter = 0;
             noisePolarity = 1;
             noiseShiftRegister = 0x4000;
-            Trace($"PSG NOISE control={control:X1}");
         }
 
         private double SlewChannelGain(int channel, double targetGain)
@@ -314,15 +299,6 @@ namespace BBC
 
             table[15] = 0;
             return table;
-        }
-
-        private void Trace(string message)
-        {
-            if (!traceEnabled)
-                return;
-
-            lock (traceLock)
-                File.AppendAllText(tracePath, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
         }
 
         private static void ThrowIfSdlFailed(int result, string operation)
