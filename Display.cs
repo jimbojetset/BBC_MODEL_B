@@ -27,6 +27,7 @@ namespace BBC
 
         private const byte BbcShiftKey = 0x00;
         private const uint Black = 0xFF000000;
+        private const uint ScanlineColour = 0x60000000;
 
         private readonly uint[] frameBuffer;
         private readonly Queue<byte> pendingInput = new Queue<byte>();
@@ -42,6 +43,8 @@ namespace BBC
         private IntPtr window;
         private IntPtr renderer;
         private IntPtr texture;
+        private IntPtr scanlineTexture;
+        private bool scanlinesEnabled;
         private bool disposed;
 
         static Display()
@@ -66,7 +69,8 @@ namespace BBC
         /// <param name="width">Framebuffer width in pixels.</param>
         /// <param name="height">Framebuffer height in pixels.</param>
         /// <param name="scale">Initial integer window scale.</param>
-        public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, int scale = DefaultScale)
+        /// <param name="scanlines">Whether to draw a CRT-style scanline overlay.</param>
+        public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, int scale = DefaultScale, bool scanlines = true)
         {
             if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
             if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
@@ -74,6 +78,7 @@ namespace BBC
 
             Width = width;
             Height = height;
+            scanlinesEnabled = scanlines;
             pitchBytes = width * sizeof(uint);
             frameBuffer = new uint[width * height];
             Array.Fill(frameBuffer, Black);
@@ -99,6 +104,8 @@ namespace BBC
 
             texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
             ThrowIfNull(texture, "SDL_CreateTexture");
+
+            scanlineTexture = CreateScanlineTexture(width, height);
 
             SDL_StartTextInput();
             Present();
@@ -255,7 +262,42 @@ namespace BBC
 
             ThrowIfSdlFailed(SDL_RenderClear(renderer), "SDL_RenderClear");
             ThrowIfSdlFailed(SDL_RenderCopy(renderer, texture, IntPtr.Zero, IntPtr.Zero), "SDL_RenderCopy");
+
+            if (scanlinesEnabled && scanlineTexture != IntPtr.Zero)
+                _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, IntPtr.Zero);
+
             SDL_RenderPresent(renderer);
+        }
+
+        /// <summary>Builds a static overlay texture that darkens every other row for a CRT scanline look.</summary>
+        private IntPtr CreateScanlineTexture(int width, int height)
+        {
+            IntPtr overlay = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
+            if (overlay == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            _ = SDL_SetTextureBlendMode(overlay, SDL_BLENDMODE_BLEND);
+
+            uint[] pixels = new uint[width * height];
+            for (int y = 0; y < height; y++)
+            {
+                uint rowColour = (y & 1) == 1 ? ScanlineColour : 0x00000000u;
+                int offset = y * width;
+                for (int x = 0; x < width; x++)
+                    pixels[offset + x] = rowColour;
+            }
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                _ = SDL_UpdateTexture(overlay, IntPtr.Zero, handle.AddrOfPinnedObject(), pitchBytes);
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return overlay;
         }
 
         /// <summary>Copies and displays a complete ARGB8888 frame.</summary>
@@ -279,6 +321,12 @@ namespace BBC
         {
             if (disposed)
                 return;
+
+            if (scanlineTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(scanlineTexture);
+                scanlineTexture = IntPtr.Zero;
+            }
 
             if (texture != IntPtr.Zero)
             {
@@ -324,6 +372,12 @@ namespace BBC
             if (keySym == SDLK_S && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
             {
                 pendingScreenshotRequests++;
+                return;
+            }
+
+            if (keySym == SDLK_F11)
+            {
+                scanlinesEnabled = !scanlinesEnabled;
                 return;
             }
 
@@ -802,7 +856,9 @@ namespace BBC
         private const uint SDL_RENDERER_ACCELERATED = 0x00000002;
         private const uint SDL_RENDERER_PRESENTVSYNC = 0x00000004;
         private const uint SDL_PIXELFORMAT_ARGB8888 = 0x16362004;
+        private const int SDL_TEXTUREACCESS_STATIC = 0;
         private const int SDL_TEXTUREACCESS_STREAMING = 1;
+        private const int SDL_BLENDMODE_BLEND = 0x00000001;
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const int SDL_TRUE = 1;
         private const uint SDL_QUIT = 0x100;
@@ -884,6 +940,7 @@ namespace BBC
         private const int SDLK_F8 = 1073741889;
         private const int SDLK_F9 = 1073741890;
         private const int SDLK_F10 = 1073741891;
+        private const int SDLK_F11 = 1073741892;
         private const int SDLK_KP_MULTIPLY = 1073741909;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDLK_LCTRL = 1073742048;
@@ -974,6 +1031,9 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_DestroyTexture(IntPtr texture);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_SetTextureBlendMode(IntPtr texture, int blendMode);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_UpdateTexture(IntPtr texture, IntPtr rect, IntPtr pixels, int pitch);

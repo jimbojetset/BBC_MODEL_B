@@ -25,6 +25,8 @@ namespace BBC
         private const ushort FscvVector = 0x021E;
         private const ushort DefaultBasicLoadAddress = 0x1900;
         private readonly FlatMemoryBus memory;
+        private readonly bool traceFile = Environment.GetEnvironmentVariable("BBC_FILE_TRACE") == "1";
+        private readonly string fileTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-file-trace.log");
         private readonly bool traceOscli = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
         private readonly string oscliTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-oscli-trace.log");
         private HostFile[] files = [];
@@ -103,24 +105,33 @@ namespace BBC
 
             if (!matchedFile.HasValue)
             {
+                TraceFile($"OSFILE action=${action:X2} request=\"{requestedName}\" MISS cb=${controlBlock:X4}");
                 cpu.registers.A = 0;
                 ReturnFromSubroutine(cpu);
                 return true;
             }
 
             HostFile file = matchedFile.Value;
-            WriteCatalogueInfo(controlBlock, file);
 
             if (action == 0xFF)
             {
+                uint requestedAddress = ReadDword(controlBlock + 2);
+                byte loadAddressFlag = memory.Memory[(controlBlock + 6) & 0xFFFF];
                 ushort targetAddress = memory.Memory[(controlBlock + 6) & 0xFFFF] == 0
-                    ? (ushort)ReadDword(controlBlock + 2)
+                    ? (ushort)requestedAddress
                     : file.LoadAddress;
+
+                TraceFile($"OSFILE LOAD action=${action:X2} request=\"{requestedName}\" match=\"{file.Name}\" target=${targetAddress:X4} load=${file.LoadAddress:X4} exec=${file.ExecutionAddress:X4} len=${file.Data.Length:X4} cb=${controlBlock:X4} requested=${requestedAddress:X8} cb6=${loadAddressFlag:X2}");
 
                 for (int i = 0; i < file.Data.Length; i++)
                     memory.Memory[(targetAddress + i) & 0xFFFF] = file.Data[i];
             }
+            else
+            {
+                TraceFile($"OSFILE INFO action=${action:X2} request=\"{requestedName}\" match=\"{file.Name}\" load=${file.LoadAddress:X4} exec=${file.ExecutionAddress:X4} len=${file.Data.Length:X4} cb=${controlBlock:X4}");
+            }
 
+            WriteCatalogueInfo(controlBlock, file);
             cpu.registers.A = 1;
             ReturnFromSubroutine(cpu);
             return true;
@@ -163,6 +174,13 @@ namespace BBC
             if (TryHandleKeyCommand(command))
             {
                 TraceOscli(command, "handled KEY");
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (IsTvCommand(command))
+            {
+                TraceOscli(command, "handled TV");
                 ReturnFromSubroutine(cpu);
                 return true;
             }
@@ -245,6 +263,14 @@ namespace BBC
             File.AppendAllText(oscliTracePath, $"{DateTimeOffset.Now:O} OSCLI \"{command}\" -> {outcome}{Environment.NewLine}");
         }
 
+        private void TraceFile(string message)
+        {
+            if (!traceFile)
+                return;
+
+            File.AppendAllText(fileTracePath, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+        }
+
         private static bool IsBareExecCommand(string command)
         {
             const string exec = "EXEC";
@@ -266,6 +292,15 @@ namespace BBC
             string trimmed = command.Trim();
             return trimmed.Length == 4
                 && string.Equals(trimmed, "TAPE", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTvCommand(string command)
+        {
+            string trimmed = command.TrimStart();
+            if (trimmed.StartsWith("TV", StringComparison.OrdinalIgnoreCase))
+                return trimmed.Length == 2 || char.IsWhiteSpace(trimmed[2]) || char.IsDigit(trimmed[2]) || trimmed[2] == ',';
+
+            return trimmed.StartsWith("T.", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool TryHandleFxCommand(string command)
