@@ -40,9 +40,6 @@ namespace BBC.CPU
 
         public Registers registers = new Registers();
 
-        /// <summary>Temporary diagnostic: per-opcode execution counts.</summary>
-        public readonly long[] OpcodeCounts = new long[256];
-
         /// <summary>
         /// Compatibility C64 memory bus used by the existing emulator host.
         /// Non-C64 hosts should provide their own ICpuBus via the Bus property or constructor.
@@ -334,7 +331,6 @@ namespace BBC.CPU
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public void Execute(byte opcode)
         {
-            OpcodeCounts[opcode]++;
             switch (opcode)
             {
                 #region Documented Opcodes

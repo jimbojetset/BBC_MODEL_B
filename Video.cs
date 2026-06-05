@@ -110,19 +110,6 @@ namespace BBC
         /// <summary>Gets the currently selected BBC screen mode.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
 
-        /// <summary>Temporary diagnostic palette/mode snapshot.</summary>
-        public string DebugPaletteState
-        {
-            get
-            {
-                System.Text.StringBuilder sb = new System.Text.StringBuilder();
-                sb.Append($"mode={activeMode} ula=${activeUlaControl:X2} pal:");
-                for (int p = 0; p < 16; p++)
-                    sb.Append($"{activePaletteRegisters[p]:X1}");
-                return sb.ToString();
-            }
-        }
-
         /// <summary>Gets the current Video ULA control register value.</summary>
         public byte UlaControl { get; private set; }
 
