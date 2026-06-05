@@ -44,6 +44,7 @@ namespace BBC
         private PendingWrite? pendingWrite;
         private int selectedDrive;
         private string? mountedPath;
+        private string? mountedFileName;
         private bool nmiPending;
         private int nmiDelayCycles;
         private bool busy;
@@ -63,6 +64,10 @@ namespace BBC
 
         /// <summary>Gets the currently mounted host image path.</summary>
         public string? MountedPath => mountedPath;
+
+        /// <summary>Gets the currently mounted host image filename.</summary>
+        public string? MountedFileName => mountedFileName;
+
 
         /// <summary>Gets whether the controller is actively transferring bytes to or from the CPU.</summary>
         public bool TransferActive => readData.Count > 0 || pendingWrite is not null;
@@ -106,6 +111,7 @@ namespace BBC
         public void Mount(string path)
         {
             string fullPath = Path.GetFullPath(path);
+            string fileName = Path.GetFileName(fullPath);
             byte[] image = File.ReadAllBytes(fullPath);
 
             if (image.Length < 512 || image.Length % SectorSize != 0)
@@ -133,6 +139,7 @@ namespace BBC
             driveMounted[1] = false;
             driveMounted[3] = false;
             mountedPath = fullPath;
+            mountedFileName = fileName;
             Reset();
         }
 

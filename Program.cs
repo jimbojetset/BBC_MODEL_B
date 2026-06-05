@@ -35,9 +35,9 @@ namespace BBC
             emulator.Cpu.SpeedScale = options.SpeedScale;
 
             Console.WriteLine("BBC Model B emulator initialised.");
-            Console.WriteLine($"OS ROM:     {emulator.OsRomPath} -> ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
-            Console.WriteLine($"BASIC ROM:  {emulator.BasicRomPath} -> ${Emulator.SidewaysRomStart:X4}-${Emulator.SidewaysRomEnd:X4}");
-            Console.WriteLine($"DFS ROM:    {emulator.DfsRomPath} -> bank {Emulator.DfsRomBank}");
+            Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
+            Console.WriteLine($"BASIC ROM:  ${Emulator.SidewaysRomStart:X4}-${Emulator.SidewaysRomEnd:X4}");
+            Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
             foreach (string path in options.MountPaths)
@@ -344,13 +344,13 @@ namespace BBC
                 discController.Mount(path);
                 hostFilingSystem.Mount(path);
 
-                Console.WriteLine($"Mounted DFS: {discController.MountedPath}");
+                Console.WriteLine($"Mounted DFS: {discController.MountedFileName}");
                 return;
             }
 
             hostFilingSystem.Mount(path);
 
-            Console.WriteLine($"Mounted:    {hostFilingSystem.MountedPath}");
+            Console.WriteLine($"Mounted:    {hostFilingSystem.MountedFileName}");
         }
 
         public void QueueMountedDiscBoot()

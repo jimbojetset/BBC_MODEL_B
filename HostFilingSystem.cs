@@ -28,6 +28,8 @@ namespace BBC
         private HostFile[] files = [];
         private string? mountedPath;
 
+        private string? mountedFileName;
+
         /// <summary>Initializes a host filing system shim.</summary>
         /// <param name="memory">The CPU-visible memory bus.</param>
         public HostFilingSystem(FlatMemoryBus memory)
@@ -37,6 +39,9 @@ namespace BBC
 
         /// <summary>Gets the currently mounted host path, if any.</summary>
         public string? MountedPath => mountedPath;
+
+        /// <summary>Gets the currently mounted host path, if any.</summary>
+        public string? MountedFileName => mountedFileName;
 
         /// <summary>Gets whether a host file or image is mounted.</summary>
         public bool HasMountedFile => files.Length > 0;
@@ -57,6 +62,7 @@ namespace BBC
         {
             files = [];
             mountedPath = null;
+            mountedFileName = null;
             RunCommandInterceptionEnabled = true;
         }
 
@@ -80,6 +86,7 @@ namespace BBC
                 throw new InvalidOperationException($"No loadable files found in '{fullPath}'.");
 
             mountedPath = fullPath;
+            mountedFileName = Path.GetFileName(fullPath);
             RunCommandInterceptionEnabled = true;
         }
 
