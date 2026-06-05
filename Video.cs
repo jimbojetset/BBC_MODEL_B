@@ -30,7 +30,6 @@ namespace BBC
         private const int VideoFrameCpuCycles = 40_000;
         private const int VideoFrameScanlines = 312;
         private const int VisibleStartScanline = 36;
-        private const int RasterTraceFrameLimit = 240;
         private const int BitmapBytesPerRow10K = 40;
         private const int BitmapBytesPerRow20K = 80;
         private const int CrtcRegisterCount = 32;
@@ -74,7 +73,6 @@ namespace BBC
         private readonly List<VideoRasterEvent> rasterEvents = new List<VideoRasterEvent>();
         private readonly List<VideoRasterEvent> frameRasterEvents = new List<VideoRasterEvent>();
         private readonly List<VideoRasterEvent> activeRasterEvents = new List<VideoRasterEvent>();
-        private readonly string rasterTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-video-raster-trace.log");
         private byte[] activeMemory;
         private byte[] activeCrtcRegisters;
         private byte[] activePaletteRegisters;
@@ -103,7 +101,6 @@ namespace BBC
         private bool activeSawMode4;
         private bool activeSawMode5;
         private int frameSnapshotSequence;
-        private int rasterTraceFramesWritten;
         private int lastMode4Mode5SplitLine = 192;
         private bool hasLastMode4Mode5SplitLine;
 
@@ -139,8 +136,6 @@ namespace BBC
             ResetPaletteArray(mode4PaletteRegisters);
             ResetPaletteArray(mode5PaletteRegisters);
             AddRasterEvent(0);
-            File.WriteAllText(rasterTracePath, $"BBC video raster trace started {DateTimeOffset.Now:O}{Environment.NewLine}");
-            Console.WriteLine($"Video raster trace: {rasterTracePath}");
         }
 
         /// <summary>Resets video device state.</summary>
@@ -160,7 +155,6 @@ namespace BBC
             frameRasterEvents.Clear();
             activeRasterEvents.Clear();
             frameSnapshotSequence = 0;
-            rasterTraceFramesWritten = 0;
             lastMode4Mode5SplitLine = 192;
             hasLastMode4Mode5SplitLine = false;
             CurrentMode = BbcScreenMode.Mode7;
@@ -209,7 +203,6 @@ namespace BBC
                 frameSnapshotSequence++;
                 frameRasterEvents.Clear();
                 frameRasterEvents.AddRange(rasterEvents);
-                TraceRasterFrameSnapshot();
                 rasterEvents.Clear();
                 AddRasterEvent(0);
                 sawMode4ThisFrame = CurrentMode == BbcScreenMode.Mode4;
@@ -1105,38 +1098,6 @@ namespace BBC
             int scanline = Math.Clamp(frameCpuCycle, 0, VideoFrameCpuCycles - 1) * VideoFrameScanlines / VideoFrameCpuCycles;
             int visibleLine = scanline - VisibleStartScanline;
             rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters));
-        }
-
-        private void TraceRasterFrameSnapshot()
-        {
-            if (rasterTraceFramesWritten >= RasterTraceFrameLimit)
-                return;
-
-            bool hasMode4 = false;
-            bool hasMode5 = false;
-            foreach (VideoRasterEvent rasterEvent in frameRasterEvents)
-            {
-                hasMode4 |= rasterEvent.Mode == BbcScreenMode.Mode4;
-                hasMode5 |= rasterEvent.Mode == BbcScreenMode.Mode5;
-            }
-
-            if (!hasMode4 && !hasMode5)
-                return;
-
-            using StreamWriter writer = new StreamWriter(File.Open(rasterTracePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
-            writer.WriteLine($"FRAME {frameSnapshotSequence} mode={frameMode} ula=${frameUlaControl:X2} saw4={frameSawMode4} saw5={frameSawMode5} crtc-h={frameCrtcRegisters[CrtcHorizontalDisplayedRegister]} crtc-v={frameCrtcRegisters[CrtcVerticalDisplayedRegister]} crtc-r9={frameCrtcRegisters[CrtcScanLinesPerCharacterRegister]} start=${(((frameCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8) | frameCrtcRegisters[CrtcDisplayStartLowRegister]):X4} events={frameRasterEvents.Count}");
-
-            int eventLimit = Math.Min(frameRasterEvents.Count, 80);
-            for (int i = 0; i < eventLimit; i++)
-            {
-                VideoRasterEvent rasterEvent = frameRasterEvents[i];
-                writer.WriteLine($"  {i:D2}: cpu={rasterEvent.FrameCpuCycle:D5} scan={rasterEvent.Scanline:D3} visible={rasterEvent.VisibleLine:D4} mode={rasterEvent.Mode} ula=${rasterEvent.UlaControl:X2} p0={rasterEvent.Palette[0]:X1} p2={rasterEvent.Palette[2]:X1} p8={rasterEvent.Palette[8]:X1} pA={rasterEvent.Palette[0x0A]:X1}");
-            }
-
-            if (frameRasterEvents.Count > eventLimit)
-                writer.WriteLine($"  ... {frameRasterEvents.Count - eventLimit} more events");
-
-            rasterTraceFramesWritten++;
         }
 
         private readonly struct VideoRasterEvent
