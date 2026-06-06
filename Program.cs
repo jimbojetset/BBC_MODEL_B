@@ -333,9 +333,6 @@ namespace BBC
                 throw new InvalidOperationException("CPU execution failed.", cpuException);
 
             Console.WriteLine($"Headless PC: ${Cpu.registers.PC:X4}");
-            if (Environment.GetEnvironmentVariable("BBC_HEADLESS_DUMP") == "1")
-                DumpHeadlessMemory((ushort)Cpu.registers.PC);
-
             Console.WriteLine($"Mode 7 non-blank cells: {Video.CountMode7NonBlankCells()}");
             Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
         }
@@ -474,24 +471,6 @@ namespace BBC
         private void UpdateCpuIrqLine()
         {
             Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted);
-        }
-
-        private void DumpHeadlessMemory(ushort pc)
-        {
-            Console.Write("PC bytes:    ");
-            for (int i = 0; i < 16; i++)
-                Console.Write($"{Memory.Memory[(pc + i) & 0xFFFF]:X2} ");
-            Console.WriteLine();
-
-            Console.Write("Zero page:   ");
-            for (int i = 0; i < 16; i++)
-                Console.Write($"{Memory.Memory[i]:X2} ");
-            Console.WriteLine();
-
-            Console.Write("RAM $1900:   ");
-            for (int i = 0; i < 32; i++)
-                Console.Write($"{Memory.Memory[0x1900 + i]:X2} ");
-            Console.WriteLine();
         }
 
         private bool HandleHostFirmwareHooks()
