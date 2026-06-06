@@ -38,6 +38,7 @@ namespace BBC
         private int pendingScreenshotRequests;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
+        private readonly bool inputTraceEnabled = Environment.GetEnvironmentVariable("BBC_INPUT_TRACE") == "1";
 
         private IntPtr window;
         private IntPtr renderer;
@@ -326,6 +327,7 @@ namespace BBC
         private void EnqueueKeyDown(int keySym)
         {
             int modifiers = SDL_GetModState();
+            TraceInput("down", keySym, modifiers);
 
             if (keySym == SDLK_F12)
             {
@@ -367,19 +369,24 @@ namespace BBC
                 bool shiftAdjusted = ApplyShiftAdjustment(chord.Value.ShiftAdjustment, (modifiers & KMOD_SHIFT) != 0);
                 activeHostKeys[keySym] = new ActiveHostKey(chord.Value.InternalKey, chord.Value.ShiftAdjustment, shiftAdjusted);
                 pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, true));
+                if (chord.Value.InternalKey == 0x49)
+                    pendingKeyChanges.Enqueue(new HostKeyChange(0x48, true));
             }
 
-            if (keySym == SDLK_ESCAPE)
+            if (keySym == SDLK_ESCAPE && (modifiers & KMOD_SHIFT) == 0)
                 pendingInput.Enqueue(27);
         }
 
         private void EnqueueKeyUp(int keySym)
         {
+            TraceInput("up", keySym, SDL_GetModState());
             EnqueueJoystickChange(keySym, false);
 
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
             {
                 pendingKeyChanges.Enqueue(new HostKeyChange(activeKey.InternalKey, false));
+                if (activeKey.InternalKey == 0x49)
+                    pendingKeyChanges.Enqueue(new HostKeyChange(0x48, false));
                 RestoreAdjustedShift(activeKey, (SDL_GetModState() & KMOD_SHIFT) != 0);
                 return;
             }
@@ -497,7 +504,7 @@ namespace BBC
                 SDLK_AT => Key(0x47),
                 SDLK_COLON => Key(0x48, ShiftAdjustment.Suppress),
                 SDLK_ASTERISK or SDLK_KP_MULTIPLY => Key(0x48, ShiftAdjustment.Force),
-                SDLK_RETURN or SDLK_KP_ENTER => Key(0x49),
+                SDLK_RETURN or SDLK_RETURN2 or SDLK_KP_ENTER => Key(0x49),
                 SDLK_S => Key(0x51),
                 SDLK_C => Key(0x52),
                 SDLK_G => Key(0x53),
@@ -561,6 +568,12 @@ namespace BBC
         private static BbcKeyChord Key(byte internalKey, ShiftAdjustment shiftAdjustment = ShiftAdjustment.Preserve)
         {
             return new BbcKeyChord(internalKey, shiftAdjustment);
+        }
+
+        private void TraceInput(string eventName, int keySym, int modifiers)
+        {
+            if (inputTraceEnabled)
+                Console.WriteLine($"INPUT {eventName} keySym={keySym} modifiers=0x{modifiers:X}");
         }
 
         private readonly record struct ActiveHostKey(byte InternalKey, ShiftAdjustment ShiftAdjustment, bool ShiftAdjusted);
@@ -909,6 +922,7 @@ namespace BBC
         private const int SDLK_F11 = 1073741892;
         private const int SDLK_KP_MULTIPLY = 1073741909;
         private const int SDLK_KP_ENTER = 1073741912;
+        private const int SDLK_RETURN2 = 1073741982;
         private const int SDLK_LCTRL = 1073742048;
         private const int SDLK_LSHIFT = 1073742049;
         private const int SDLK_RSHIFT = 1073742053;

@@ -199,6 +199,7 @@ namespace BBC
         private JoystickState joystickState;
         private long keyboardInputEnabledAtTicks;
         private byte fileMessageOption = 1;
+        private readonly bool keyScanTraceEnabled = Environment.GetEnvironmentVariable("BBC_KEYSCAN_TRACE") == "1";
  
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -535,16 +536,76 @@ namespace BBC
                 return true;
             }
 
-            if (!TryMapNegativeInkeyCode(Cpu.registers.X, out byte internalKey))
+            if (Cpu.registers.A == 0x79)
+            {
+                byte scanResult = ScanKeyboard(Cpu.registers.X);
+                TraceKeyScan("OSBYTE79", Cpu.registers.X, scanResult);
+                Cpu.registers.X = scanResult;
+                SetFirmwareResultFlags(scanResult);
+                ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            if (Cpu.registers.A == 0x7A)
+            {
+                byte scanResult = ScanKeyboard(0x10);
+                TraceKeyScan("OSBYTE7A", 0x10, scanResult);
+                Cpu.registers.X = scanResult;
+                SetFirmwareResultFlags(scanResult);
+                ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            if (Cpu.registers.A != 0x81)
             {
                 return false;
             }
 
+            if (!TryMapNegativeInkeyCode(Cpu.registers.X, out byte internalKey))
+            {
+                TraceKeyScan("OSBYTE81-unknown", Cpu.registers.X, 0);
+                return false;
+            }
+
             byte result = systemVia.IsKeyPressed(internalKey) ? (byte)0xFF : (byte)0x00;
+            TraceKeyScan($"OSBYTE81 key={internalKey:X2}", Cpu.registers.X, result);
             Cpu.registers.X = result;
             Cpu.registers.Y = result;
+            SetFirmwareResultFlags(result);
             ReturnFromFirmwareSubroutine();
             return true;
+        }
+
+        private byte ScanKeyboard(byte scanKey)
+        {
+            if ((scanKey & 0x80) != 0)
+            {
+                byte internalKey = (byte)(scanKey ^ 0x80);
+                return internalKey >= 0x10 && systemVia.IsKeyPressed(internalKey)
+                    ? scanKey
+                    : (byte)0x00;
+            }
+
+            int start = Math.Max(0x10, (int)scanKey);
+            for (int internalKey = start; internalKey < 0x80; internalKey++)
+            {
+                if (systemVia.IsKeyPressed((byte)internalKey))
+                    return (byte)internalKey;
+            }
+
+            return 0xFF;
+        }
+
+        private void SetFirmwareResultFlags(byte result)
+        {
+            Cpu.registers.Flags.Z = result == 0;
+            Cpu.registers.Flags.N = (result & 0x80) != 0;
+        }
+
+        private void TraceKeyScan(string source, byte requested, byte result)
+        {
+            if (keyScanTraceEnabled)
+                Console.WriteLine($"KEYSCAN {source} request=${requested:X2} result=${result:X2}");
         }
 
         private void ReadAdval(byte channel, out byte x, out byte y)
