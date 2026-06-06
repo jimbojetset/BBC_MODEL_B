@@ -8,7 +8,6 @@ obj/
 
 .DS_Store
 *.log
-Screenshots/
 
 ROMS/*.crdownload
 ROMS/*.rom
