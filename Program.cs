@@ -172,6 +172,7 @@ namespace BBC
         private const byte EscapePendingFlag = 0x80;
         private const byte BbcCapsLockKey = 0x40;
         private const int CapsLockTapPulseCycles = CpuClockHz / 20;
+        private const int MinimumMatrixKeyPressMilliseconds = 40;
 
         private bool initialised;
         private Thread? cpuThread;
@@ -183,6 +184,9 @@ namespace BBC
         private readonly List<string> discLoadScratch = new List<string>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
         private readonly Queue<string> pendingBootScriptLines = new Queue<string>();
+        private readonly long[] matrixKeyPressedAtTicks = new long[128];
+        private readonly long[] matrixKeyReleaseDueTicks = new long[128];
+        private readonly bool[] matrixKeyReleasePending = new bool[128];
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
@@ -421,6 +425,9 @@ namespace BBC
             bbcCapsLockState = true;
             capsLockTapPressed = false;
             capsLockTapPulseCycles = 0;
+            Array.Clear(matrixKeyPressedAtTicks);
+            Array.Clear(matrixKeyReleaseDueTicks);
+            Array.Clear(matrixKeyReleasePending);
             Memory.Memory[EscapeFlag] = 0;
             if (!string.IsNullOrEmpty(pendingBootExecScript))
             {
@@ -815,6 +822,8 @@ namespace BBC
 
         private void DrainHostKeyMatrixInput(Display display)
         {
+            DrainPendingMatrixKeyReleases();
+
             int count = display.DrainKeyChanges(keyChangeScratch);
 
             for (int i = 0; i < count; i++)
@@ -831,10 +840,61 @@ namespace BBC
                     continue;
                 }
 
-                systemVia.SetKeyState(keyChangeScratch[i].InternalKey, keyChangeScratch[i].Pressed);
+                ApplyHostKeyChange(keyChangeScratch[i]);
             }
 
             if (count > 0)
+                UpdateCpuIrqLine();
+        }
+
+        private void ApplyHostKeyChange(HostKeyChange change)
+        {
+            byte key = change.InternalKey;
+            if (key >= matrixKeyPressedAtTicks.Length)
+            {
+                systemVia.SetKeyState(key, change.Pressed);
+                return;
+            }
+
+            long now = Stopwatch.GetTimestamp();
+            if (change.Pressed)
+            {
+                matrixKeyReleasePending[key] = false;
+                matrixKeyPressedAtTicks[key] = now;
+                systemVia.SetKeyState(key, true);
+                return;
+            }
+
+            long pressedAt = matrixKeyPressedAtTicks[key];
+            long minimumTicks = Stopwatch.Frequency * MinimumMatrixKeyPressMilliseconds / 1000;
+            long releaseDue = pressedAt == 0 ? now : pressedAt + minimumTicks;
+            if (releaseDue <= now)
+            {
+                matrixKeyReleasePending[key] = false;
+                systemVia.SetKeyState(key, false);
+                return;
+            }
+
+            matrixKeyReleaseDueTicks[key] = releaseDue;
+            matrixKeyReleasePending[key] = true;
+        }
+
+        private void DrainPendingMatrixKeyReleases()
+        {
+            long now = Stopwatch.GetTimestamp();
+            bool released = false;
+
+            for (int key = 0; key < matrixKeyReleasePending.Length; key++)
+            {
+                if (!matrixKeyReleasePending[key] || matrixKeyReleaseDueTicks[key] > now)
+                    continue;
+
+                matrixKeyReleasePending[key] = false;
+                systemVia.SetKeyState((byte)key, false);
+                released = true;
+            }
+
+            if (released)
                 UpdateCpuIrqLine();
         }
 
