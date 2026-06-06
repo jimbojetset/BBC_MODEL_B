@@ -193,6 +193,23 @@ namespace BBC
                return false;
             }
 
+            if (TryParseLoadCommand(command, out string loadName, out ushort? loadAddress))
+            {
+                HostFile? matchedLoadFile = FindFile(loadName);
+                if (!matchedLoadFile.HasValue)
+                {
+                    return false;
+                }
+
+                HostFile loadFile = matchedLoadFile.Value;
+                ushort targetAddress = loadAddress ?? loadFile.LoadAddress;
+                for (int i = 0; i < loadFile.Data.Length; i++)
+                    memory.Memory[(targetAddress + i) & 0xFFFF] = loadFile.Data[i];
+
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
             if (!TryParseRunCommand(command, out string requestedName))
             {
                 return false;
@@ -421,12 +438,72 @@ namespace BBC
             fileName = string.Empty;
             const string run = "RUN";
 
-            if (!command.StartsWith(run, StringComparison.OrdinalIgnoreCase))
+            if (!TryMatchCommandName(command, run, out string rest))
                 return false;
 
-            string rest = command[run.Length..].TrimStart();
+            rest = rest.TrimStart();
             if (rest.Length == 0)
                 return false;
+
+            return TryReadCommandFileName(rest, out fileName, out _);
+        }
+
+        private static bool TryParseLoadCommand(string command, out string fileName, out ushort? loadAddress)
+        {
+            fileName = string.Empty;
+            loadAddress = null;
+
+            if (!TryMatchCommandName(command, "LOAD", out string rest))
+                return false;
+
+            rest = rest.TrimStart();
+            if (!TryReadCommandFileName(rest, out fileName, out int nextIndex))
+                return false;
+
+            string arguments = rest[nextIndex..].TrimStart();
+            if (arguments.Length == 0)
+                return true;
+
+            int end = 0;
+            while (end < arguments.Length && !char.IsWhiteSpace(arguments[end]))
+                end++;
+
+            if (!TryParseDfsAddress(arguments[..end], out ushort parsedAddress))
+                return false;
+
+            loadAddress = parsedAddress;
+            return true;
+        }
+
+        private static bool TryMatchCommandName(string command, string name, out string rest)
+        {
+            rest = string.Empty;
+            string trimmed = command.TrimStart();
+
+            if (trimmed.Length >= name.Length && string.Equals(trimmed[..name.Length], name, StringComparison.OrdinalIgnoreCase))
+            {
+                if (trimmed.Length == name.Length || char.IsWhiteSpace(trimmed[name.Length]))
+                {
+                    rest = trimmed[name.Length..];
+                    return true;
+                }
+            }
+
+            if (trimmed.Length >= 2
+                && char.ToUpperInvariant(trimmed[0]) == char.ToUpperInvariant(name[0])
+                && trimmed[1] == '.')
+            {
+                rest = trimmed[2..];
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryReadCommandFileName(string rest, out string fileName, out int nextIndex)
+        {
+            fileName = string.Empty;
+            nextIndex = 0;
 
             if (rest[0] == '"')
             {
@@ -435,12 +512,23 @@ namespace BBC
                     return false;
 
                 fileName = rest[1..endQuote];
+                nextIndex = endQuote + 1;
                 return fileName.Length > 0;
             }
 
             int separator = rest.IndexOfAny([' ', '\t', '\r']);
             fileName = separator < 0 ? rest : rest[..separator];
+            nextIndex = separator < 0 ? rest.Length : separator;
             return fileName.Length > 0;
+        }
+
+        private static bool TryParseDfsAddress(string text, out ushort address)
+        {
+            string trimmed = text.Trim();
+            if (trimmed.StartsWith('&'))
+                trimmed = trimmed[1..];
+
+            return ushort.TryParse(trimmed, System.Globalization.NumberStyles.HexNumber, null, out address);
         }
 
         private void WriteCatalogueInfo(ushort controlBlock, HostFile file)
