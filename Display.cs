@@ -21,14 +21,19 @@ namespace BBC
     /// </summary>
     public sealed class Display : IDisposable
     {
-        public const int DefaultWidth = 500;
-        public const int DefaultHeight = 400;
-        public const int DefaultScale = 2;
+        public const int DefaultWidth = 630;
+        public const int DefaultHeight = 537;
+        public const int DefaultScale = 1;
 
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
         private const uint ScanlineColour = 0x60000000;
+        private const string MonitorImageFileName = "cub-monitor.png";
+        private const int MonitorViewportWidth = 650;
+        private const int MonitorViewportHeight = 520;
+        private const int MonitorViewportX = 110;
+        private const int MonitorViewportY = 110;
 
         private readonly uint[] frameBuffer;
         private readonly Queue<byte> pendingInput = new Queue<byte>();
@@ -44,9 +49,13 @@ namespace BBC
         private IntPtr renderer;
         private IntPtr texture;
         private IntPtr scanlineTexture;
+        private IntPtr monitorTexture;
         private bool scanlinesEnabled;
         private bool disposed;
         private bool hostCapsLockEnabled;
+        private readonly int logicalWidth;
+        private readonly int logicalHeight;
+        private SdlRect viewportRect;
 
         static Display()
         {
@@ -88,13 +97,19 @@ namespace BBC
             Array.Fill(frameBuffer, Black);
 
             ThrowIfSdlFailed(SDL_InitSubSystem(SDL_INIT_VIDEO), "SDL_InitSubSystem");
+            uint[]? monitorPixels = TryLoadMonitorPixels(out int monitorWidth, out int monitorHeight);
+            logicalWidth = monitorPixels is null ? width : monitorWidth;
+            logicalHeight = monitorPixels is null ? height : monitorHeight;
+            viewportRect = monitorPixels is null
+                ? new SdlRect(0, 0, width, height)
+                : new SdlRect(MonitorViewportX, MonitorViewportY, MonitorViewportWidth, MonitorViewportHeight);
 
             window = SDL_CreateWindow(
                 title,
                 SDL_WINDOWPOS_CENTERED,
                 SDL_WINDOWPOS_CENTERED,
-                width * scale,
-                height * scale,
+                logicalWidth * scale,
+                logicalHeight * scale,
                 SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
             ThrowIfNull(window, "SDL_CreateWindow");
 
@@ -103,11 +118,14 @@ namespace BBC
                 renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
             ThrowIfNull(renderer, "SDL_CreateRenderer");
 
-            ThrowIfSdlFailed(SDL_RenderSetLogicalSize(renderer, width, height), "SDL_RenderSetLogicalSize");
+            ThrowIfSdlFailed(SDL_RenderSetLogicalSize(renderer, logicalWidth, logicalHeight), "SDL_RenderSetLogicalSize");
             _ = SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
 
             texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
             ThrowIfNull(texture, "SDL_CreateTexture");
+
+            if (monitorPixels is not null)
+                monitorTexture = CreateStaticTexture(monitorPixels, monitorWidth, monitorHeight);
 
             scanlineTexture = CreateScanlineTexture(width, height);
 
@@ -240,12 +258,33 @@ namespace BBC
             }
 
             ThrowIfSdlFailed(SDL_RenderClear(renderer), "SDL_RenderClear");
-            ThrowIfSdlFailed(SDL_RenderCopy(renderer, texture, IntPtr.Zero, IntPtr.Zero), "SDL_RenderCopy");
+            if (monitorTexture != IntPtr.Zero)
+                ThrowIfSdlFailed(SDL_RenderCopy(renderer, monitorTexture, IntPtr.Zero, IntPtr.Zero), "SDL_RenderCopy");
+
+            ThrowIfSdlFailed(SDL_RenderCopy(renderer, texture, IntPtr.Zero, ref viewportRect), "SDL_RenderCopy");
 
             if (scanlinesEnabled && scanlineTexture != IntPtr.Zero)
-                _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, IntPtr.Zero);
+                _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
             SDL_RenderPresent(renderer);
+        }
+
+        private IntPtr CreateStaticTexture(uint[] pixels, int width, int height)
+        {
+            IntPtr staticTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
+            ThrowIfNull(staticTexture, "SDL_CreateTexture");
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                ThrowIfSdlFailed(SDL_UpdateTexture(staticTexture, IntPtr.Zero, handle.AddrOfPinnedObject(), width * sizeof(uint)), "SDL_UpdateTexture");
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return staticTexture;
         }
 
         /// <summary>Builds a static overlay texture that darkens every other row for a CRT scanline look.</summary>
@@ -300,6 +339,12 @@ namespace BBC
         {
             if (disposed)
                 return;
+
+            if (monitorTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(monitorTexture);
+                monitorTexture = IntPtr.Zero;
+            }
 
             if (scanlineTexture != IntPtr.Zero)
             {
@@ -729,6 +774,144 @@ namespace BBC
                 throw new InvalidOperationException($"{operation} failed: {GetSdlError()}");
         }
 
+        private static uint[]? TryLoadMonitorPixels(out int width, out int height)
+        {
+            string path = Path.Combine(Environment.CurrentDirectory, MonitorImageFileName);
+            if (!File.Exists(path))
+            {
+                width = 0;
+                height = 0;
+                return null;
+            }
+
+            return LoadPngArgb8888(path, out width, out height);
+        }
+
+        private static uint[] LoadPngArgb8888(string path, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+            byte[] file = File.ReadAllBytes(path);
+            ReadOnlySpan<byte> signature = [0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            if (!file.AsSpan(0, 8).SequenceEqual(signature))
+                throw new InvalidOperationException($"{path} is not a PNG file.");
+
+            int offset = 8;
+            int colourType = -1;
+            int bitDepth = -1;
+            int interlace = -1;
+            using MemoryStream compressed = new MemoryStream();
+
+            while (offset + 12 <= file.Length)
+            {
+                int length = ReadBigEndian(file.AsSpan(offset, 4));
+                offset += 4;
+                string type = System.Text.Encoding.ASCII.GetString(file, offset, 4);
+                offset += 4;
+                ReadOnlySpan<byte> data = file.AsSpan(offset, length);
+                offset += length + 4;
+
+                if (type == "IHDR")
+                {
+                    width = ReadBigEndian(data[..4]);
+                    height = ReadBigEndian(data.Slice(4, 4));
+                    bitDepth = data[8];
+                    colourType = data[9];
+                    interlace = data[12];
+                }
+                else if (type == "IDAT")
+                {
+                    compressed.Write(data);
+                }
+                else if (type == "IEND")
+                {
+                    break;
+                }
+            }
+
+            if (width <= 0 || height <= 0 || bitDepth != 8 || colourType != 6 || interlace != 0)
+                throw new InvalidOperationException($"{path} must be an 8-bit non-interlaced RGBA PNG.");
+
+            compressed.Position = 0;
+            byte[] raw = new byte[(width * 4 + 1) * height];
+            using (ZLibStream zlib = new ZLibStream(compressed, CompressionMode.Decompress))
+            {
+                int read = 0;
+                while (read < raw.Length)
+                {
+                    int count = zlib.Read(raw, read, raw.Length - read);
+                    if (count == 0)
+                        break;
+
+                    read += count;
+                }
+
+                if (read != raw.Length)
+                    throw new InvalidOperationException($"{path} ended before all PNG pixel rows were decoded.");
+            }
+
+            byte[] previous = new byte[width * 4];
+            byte[] current = new byte[width * 4];
+            uint[] pixels = new uint[width * height];
+            int rawOffset = 0;
+            for (int y = 0; y < height; y++)
+            {
+                int filter = raw[rawOffset++];
+                Array.Copy(raw, rawOffset, current, 0, current.Length);
+                rawOffset += current.Length;
+                UnfilterPngRow(current, previous, filter, 4);
+
+                int pixelOffset = y * width;
+                for (int x = 0; x < width; x++)
+                {
+                    int source = x * 4;
+                    byte r = current[source];
+                    byte g = current[source + 1];
+                    byte b = current[source + 2];
+                    byte a = current[source + 3];
+                    pixels[pixelOffset + x] = (uint)((a << 24) | (r << 16) | (g << 8) | b);
+                }
+
+                (previous, current) = (current, previous);
+            }
+
+            return pixels;
+        }
+
+        private static void UnfilterPngRow(byte[] row, byte[] previous, int filter, int bytesPerPixel)
+        {
+            for (int i = 0; i < row.Length; i++)
+            {
+                int left = i >= bytesPerPixel ? row[i - bytesPerPixel] : 0;
+                int up = previous[i];
+                int upLeft = i >= bytesPerPixel ? previous[i - bytesPerPixel] : 0;
+                int predictor = filter switch
+                {
+                    0 => 0,
+                    1 => left,
+                    2 => up,
+                    3 => (left + up) >> 1,
+                    4 => PaethPredictor(left, up, upLeft),
+                    _ => throw new InvalidOperationException($"Unsupported PNG filter {filter}.")
+                };
+
+                row[i] = unchecked((byte)(row[i] + predictor));
+            }
+        }
+
+        private static int PaethPredictor(int left, int up, int upLeft)
+        {
+            int estimate = left + up - upLeft;
+            int leftDistance = Math.Abs(estimate - left);
+            int upDistance = Math.Abs(estimate - up);
+            int upLeftDistance = Math.Abs(estimate - upLeft);
+
+            if (leftDistance <= upDistance && leftDistance <= upLeftDistance)
+                return left;
+
+            return upDistance <= upLeftDistance ? up : upLeft;
+        }
+
         private static void WritePng(string path, ReadOnlySpan<uint> argbPixels, int width, int height)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
@@ -809,6 +992,11 @@ namespace BBC
             destination[offset + 1] = (byte)(value >> 16);
             destination[offset + 2] = (byte)(value >> 8);
             destination[offset + 3] = (byte)value;
+        }
+
+        private static int ReadBigEndian(ReadOnlySpan<byte> source)
+        {
+            return (source[0] << 24) | (source[1] << 16) | (source[2] << 8) | source[3];
         }
 
         private static string GetSdlError()
@@ -1045,6 +1233,9 @@ namespace BBC
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderCopy(IntPtr renderer, IntPtr texture, IntPtr srcrect, IntPtr dstrect);
 
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SDL_RenderCopy")]
+        private static extern int SDL_RenderCopy(IntPtr renderer, IntPtr texture, IntPtr srcrect, ref SdlRect dstrect);
+
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_RenderPresent(IntPtr renderer);
 
@@ -1074,6 +1265,23 @@ namespace BBC
     /// <param name="Shift">Whether Shift was held.</param>
     /// <param name="Control">Whether Control was held.</param>
     public readonly record struct BreakKeyPress(bool Shift, bool Control);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SdlRect
+    {
+        public int X;
+        public int Y;
+        public int W;
+        public int H;
+
+        public SdlRect(int x, int y, int w, int h)
+        {
+            X = x;
+            Y = y;
+            W = w;
+            H = h;
+        }
+    }
 
     /// <summary>Describes a BBC keyboard matrix key transition from the host keyboard.</summary>
     /// <param name="InternalKey">The BBC internal key number.</param>
