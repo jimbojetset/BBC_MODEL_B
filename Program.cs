@@ -193,6 +193,7 @@ namespace BBC
         private long nextBootScriptLineAtTicks;
         private readonly SystemVia systemVia;
         private readonly UserVia userVia = new UserVia();
+        private readonly CassetteInterface cassetteInterface = new CassetteInterface();
         private readonly HostFilingSystem hostFilingSystem;
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
@@ -1041,9 +1042,11 @@ namespace BBC
             if (DiscController8271.IsAddress(address))
                 return discController.Read(address, (ushort)Cpu.registers.PC);
 
+            if (CassetteInterface.IsAddress(address))
+                return cassetteInterface.Read(address);
+
             return address switch
             {
-                0xFE08 => 0x02, // ACIA transmit data register empty.
                 0xFE30 => (byte)selectedSidewaysRom,
                 _ => 0x00
             };
@@ -1074,6 +1077,12 @@ namespace BBC
             if (DiscController8271.IsAddress(address))
             {
                 discController.Write(address, value, (ushort)Cpu.registers.PC);
+                return;
+            }
+
+            if (CassetteInterface.IsAddress(address))
+            {
+                cassetteInterface.Write(address, value);
                 return;
             }
 
