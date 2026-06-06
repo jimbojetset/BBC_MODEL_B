@@ -23,8 +23,6 @@ namespace BBC
     {
         public const int DefaultWidth = 630;
         public const int DefaultHeight = 537;
-        public const int DefaultScale = 1;
-
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
@@ -83,11 +81,10 @@ namespace BBC
         /// <param name="height">Framebuffer height in pixels.</param>
         /// <param name="scale">Initial integer window scale.</param>
         /// <param name="scanlines">Whether to draw a CRT-style scanline overlay.</param>
-        public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, int scale = DefaultScale, bool scanlines = true)
+        public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, bool scanlines = true)
         {
             if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
             if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
-            if (scale <= 0) throw new ArgumentOutOfRangeException(nameof(scale));
 
             Width = width;
             Height = height;
@@ -108,8 +105,8 @@ namespace BBC
                 title,
                 SDL_WINDOWPOS_CENTERED,
                 SDL_WINDOWPOS_CENTERED,
-                logicalWidth * scale,
-                logicalHeight * scale,
+                logicalWidth,
+                logicalHeight,
                 SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
             ThrowIfNull(window, "SDL_CreateWindow");
 
