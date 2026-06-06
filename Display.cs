@@ -435,7 +435,7 @@ namespace BBC
                 return;
 
             hostCapsLockEnabled = enabled;
-            pendingKeyChanges.Enqueue(new HostKeyChange(BbcCapsLockKey, true));
+            pendingKeyChanges.Enqueue(new HostKeyChange(BbcCapsLockKey, enabled));
         }
 
         private static bool IsHostCapsLockEnabled()
