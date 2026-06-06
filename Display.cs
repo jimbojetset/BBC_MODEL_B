@@ -26,6 +26,7 @@ namespace BBC
         public const int DefaultScale = 2;
 
         private const byte BbcShiftKey = 0x00;
+        private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
         private const uint ScanlineColour = 0x60000000;
 
@@ -45,6 +46,7 @@ namespace BBC
         private IntPtr scanlineTexture;
         private bool scanlinesEnabled;
         private bool disposed;
+        private bool hostCapsLockEnabled;
 
         static Display()
         {
@@ -62,6 +64,9 @@ namespace BBC
 
         /// <summary>Gets whether an SDL quit event has been received.</summary>
         public bool QuitRequested { get; private set; }
+
+        /// <summary>Gets whether the host keyboard Caps Lock state is currently enabled.</summary>
+        public bool HostCapsLockEnabled => hostCapsLockEnabled;
 
         /// <summary>Initializes a new SDL display window.</summary>
         /// <param name="title">Window title.</param>
@@ -107,6 +112,7 @@ namespace BBC
             scanlineTexture = CreateScanlineTexture(width, height);
 
             SDL_StartTextInput();
+            hostCapsLockEnabled = IsHostCapsLockEnabled();
             Present();
         }
 
@@ -134,6 +140,7 @@ namespace BBC
                     EnqueueKeyUp(ev.KeySym);
             }
 
+            SyncHostCapsLockState();
             return !QuitRequested;
         }
 
@@ -327,6 +334,12 @@ namespace BBC
         {
             int modifiers = SDL_GetModState();
 
+            if (keySym == SDLK_CAPSLOCK)
+            {
+                SyncHostCapsLockState();
+                return;
+            }
+
             if (keySym == SDLK_F12)
             {
                 pendingBreaks.Enqueue(new BreakKeyPress(
@@ -377,6 +390,12 @@ namespace BBC
 
         private void EnqueueKeyUp(int keySym)
         {
+            if (keySym == SDLK_CAPSLOCK)
+            {
+                SyncHostCapsLockState();
+                return;
+            }
+
             EnqueueJoystickChange(keySym, false);
 
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
@@ -407,6 +426,21 @@ namespace BBC
 
             if (control.HasValue)
                 pendingJoystickChanges.Enqueue(new HostJoystickChange(control.Value, pressed));
+        }
+
+        private void SyncHostCapsLockState()
+        {
+            bool enabled = IsHostCapsLockEnabled();
+            if (enabled == hostCapsLockEnabled)
+                return;
+
+            hostCapsLockEnabled = enabled;
+            pendingKeyChanges.Enqueue(new HostKeyChange(BbcCapsLockKey, true));
+        }
+
+        private static bool IsHostCapsLockEnabled()
+        {
+            return (SDL_GetModState() & KMOD_CAPS) != 0;
         }
 
         private bool ApplyShiftAdjustment(ShiftAdjustment adjustment, bool hostShiftDown)
@@ -491,7 +525,6 @@ namespace BBC
                 SDLK_P => Key(0x37),
                 SDLK_LEFTBRACKET => Key(0x38),
                 SDLK_UP => Key(0x39),
-                SDLK_CAPSLOCK => Key(0x40),
                 SDLK_A => Key(0x41),
                 SDLK_X => Key(0x42),
                 SDLK_F => Key(0x43),
@@ -684,7 +717,7 @@ namespace BBC
                 }
 
                 if (ch >= 32 && ch <= 126)
-                    pendingInput.Enqueue((byte)char.ToUpperInvariant(ch));
+                    pendingInput.Enqueue((byte)ch);
             }
         }
 
@@ -923,6 +956,7 @@ namespace BBC
         private const int KMOD_CTRL = 0x00C0;
         private const int KMOD_ALT = 0x0300;
         private const int KMOD_GUI = 0x0C00;
+        private const int KMOD_CAPS = 0x2000;
 
         [StructLayout(LayoutKind.Explicit, Size = 56)]
         private struct SdlEvent

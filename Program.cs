@@ -170,6 +170,10 @@ namespace BBC
         private const ushort OscliEntry = 0xFFF7;
         private const byte KeyboardBufferEmptyFlag = 0x80;
         private const byte EscapePendingFlag = 0x80;
+        private const byte BbcCapsLockKey = 0x40;
+        private const int LowercaseDefaultCapsLockDelayCycles = CpuClockHz;
+        private const int LowercaseDefaultCapsLockPulseCycles = CpuClockHz / 20;
+        private const int CapsLockTapPulseCycles = CpuClockHz / 20;
 
         private bool initialised;
         private Thread? cpuThread;
@@ -193,6 +197,11 @@ namespace BBC
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
         private long keyboardInputEnabledAtTicks;
+        private int lowercaseDefaultDelayCycles;
+        private int lowercaseDefaultPulseCycles;
+        private bool lowercaseDefaultCapsLockPressed;
+        private int capsLockTapPulseCycles;
+        private bool capsLockTapPressed;
  
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -411,6 +420,7 @@ namespace BBC
             selectedSidewaysRom = BasicRomBank;
             if (pendingBreak.Shift)
                 systemVia.SetKeyState(0x00, true);
+            ScheduleLowercaseDefault(Display?.HostCapsLockEnabled == true);
             Memory.Memory[EscapeFlag] = 0;
             if (!string.IsNullOrEmpty(pendingBootExecScript))
             {
@@ -426,10 +436,63 @@ namespace BBC
             systemVia.Tick(cycles);
             userVia.Tick(cycles);
             discController.Tick(cycles);
+            TickLowercaseDefault(cycles);
+            TickCapsLockTap(cycles);
             if (systemVia.FrameCounter != previousFrame)
                 Video.CaptureVisibleFrame();
 
             UpdateCpuIrqLine();
+        }
+
+        private void ScheduleLowercaseDefault(bool hostCapsLockEnabled)
+        {
+            lowercaseDefaultDelayCycles = hostCapsLockEnabled ? 0 : LowercaseDefaultCapsLockDelayCycles;
+            lowercaseDefaultPulseCycles = 0;
+            lowercaseDefaultCapsLockPressed = false;
+        }
+
+        private void TickLowercaseDefault(int cycles)
+        {
+            if (lowercaseDefaultDelayCycles > 0)
+            {
+                lowercaseDefaultDelayCycles -= cycles;
+                if (lowercaseDefaultDelayCycles > 0)
+                    return;
+
+                lowercaseDefaultPulseCycles = LowercaseDefaultCapsLockPulseCycles;
+                lowercaseDefaultCapsLockPressed = true;
+                systemVia.SetKeyState(BbcCapsLockKey, true);
+            }
+
+            if (!lowercaseDefaultCapsLockPressed)
+                return;
+
+            lowercaseDefaultPulseCycles -= cycles;
+            if (lowercaseDefaultPulseCycles > 0)
+                return;
+
+            lowercaseDefaultCapsLockPressed = false;
+            systemVia.SetKeyState(BbcCapsLockKey, capsLockTapPressed);
+        }
+
+        private void StartCapsLockTap()
+        {
+            capsLockTapPulseCycles = CapsLockTapPulseCycles;
+            capsLockTapPressed = true;
+            systemVia.SetKeyState(BbcCapsLockKey, true);
+        }
+
+        private void TickCapsLockTap(int cycles)
+        {
+            if (!capsLockTapPressed)
+                return;
+
+            capsLockTapPulseCycles -= cycles;
+            if (capsLockTapPulseCycles > 0)
+                return;
+
+            capsLockTapPressed = false;
+            systemVia.SetKeyState(BbcCapsLockKey, lowercaseDefaultCapsLockPressed);
         }
 
         private void UpdateCpuIrqLine()
@@ -787,7 +850,17 @@ namespace BBC
             int count = display.DrainKeyChanges(keyChangeScratch);
 
             for (int i = 0; i < count; i++)
+            {
+                if (keyChangeScratch[i].InternalKey == BbcCapsLockKey)
+                {
+                    if (keyChangeScratch[i].Pressed)
+                        StartCapsLockTap();
+
+                    continue;
+                }
+
                 systemVia.SetKeyState(keyChangeScratch[i].InternalKey, keyChangeScratch[i].Pressed);
+            }
 
             if (count > 0)
                 UpdateCpuIrqLine();
@@ -855,7 +928,7 @@ namespace BBC
                 else if (ch == '#')
                     pendingKeyboardInput.Enqueue((byte)'#');
                 else if (ch >= 32 && ch <= 126)
-                    pendingKeyboardInput.Enqueue((byte)char.ToUpperInvariant(ch));
+                    pendingKeyboardInput.Enqueue((byte)ch);
             }
         }
 
