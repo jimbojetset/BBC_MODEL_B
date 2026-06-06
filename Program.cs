@@ -41,7 +41,7 @@ namespace BBC
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
             foreach (string path in options.MountPaths)
-                emulator.MountHostFile(path, queueLoadCommand: false);
+                emulator.MountHostFile(path);
 
             if (options.BootDisc)
                 emulator.QueueMountedDiscBoot();
@@ -167,11 +167,6 @@ namespace BBC
         private const ushort KeyboardBufferEndIndex = 0x02E1;
         private const ushort EscapeFlag = 0x00FF;
         private const ushort CliVector = 0x0208;
-        private const ushort FscVector = 0x021E;
-        private const ushort CurrentInputBuffer = 0x0241;
-        private const ushort ExecFileHandle = 0x0256;
-        private const ushort StringInputBufferAddressLow = 0x00F2;
-        private const ushort StringInputBufferAddressHigh = 0x00F3;
         private const ushort OscliEntry = 0xFFF7;
         private const byte KeyboardBufferEmptyFlag = 0x80;
         private const byte EscapePendingFlag = 0x80;
@@ -198,8 +193,6 @@ namespace BBC
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
         private long keyboardInputEnabledAtTicks;
-        private byte fileMessageOption = 1;
-        private readonly bool keyScanTraceEnabled = Environment.GetEnvironmentVariable("BBC_KEYSCAN_TRACE") == "1";
  
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -233,7 +226,7 @@ namespace BBC
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
             discController = new DiscController8271();
-            Video = new Video(Memory.Memory, OsRomStart);
+            Video = new Video(Memory.Memory);
             systemVia.ScreenMemoryWindowChanged += Video.SetScreenMemoryWindow;
             Cpu = new CPU_6502(Memory, CpuClockHz);
             discController.NmiRequested += () => Cpu.InitiateNMI(0xFFFA);
@@ -338,8 +331,7 @@ namespace BBC
 
         /// <summary>Mounts a host file or disc image.</summary>
         /// <param name="path">The host path.</param>
-        /// <param name="queueLoadCommand">Ignored; retained for existing callers.</param>
-        public void MountHostFile(string path, bool queueLoadCommand)
+        public void MountHostFile(string path)
         {
             if (IsDiscImagePath(path))
             {
@@ -420,8 +412,6 @@ namespace BBC
             if (pendingBreak.Shift)
                 systemVia.SetKeyState(0x00, true);
             Memory.Memory[EscapeFlag] = 0;
-            fileMessageOption = 1;
-
             if (!string.IsNullOrEmpty(pendingBootExecScript))
             {
                 QueueBootScript(pendingBootExecScript);
@@ -521,9 +511,6 @@ namespace BBC
 
             if (Cpu.registers.A == 0x8B)
             {
-                if (Cpu.registers.X == 1)
-                    fileMessageOption = Cpu.registers.Y;
-
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
@@ -539,7 +526,6 @@ namespace BBC
             if (Cpu.registers.A == 0x79)
             {
                 byte scanResult = ScanKeyboard(Cpu.registers.X);
-                TraceKeyScan("OSBYTE79", Cpu.registers.X, scanResult);
                 Cpu.registers.X = scanResult;
                 SetFirmwareResultFlags(scanResult);
                 ReturnFromFirmwareSubroutine();
@@ -549,7 +535,6 @@ namespace BBC
             if (Cpu.registers.A == 0x7A)
             {
                 byte scanResult = ScanKeyboard(0x10);
-                TraceKeyScan("OSBYTE7A", 0x10, scanResult);
                 Cpu.registers.X = scanResult;
                 SetFirmwareResultFlags(scanResult);
                 ReturnFromFirmwareSubroutine();
@@ -563,12 +548,10 @@ namespace BBC
 
             if (!TryMapNegativeInkeyCode(Cpu.registers.X, out byte internalKey))
             {
-                TraceKeyScan("OSBYTE81-unknown", Cpu.registers.X, 0);
                 return false;
             }
 
             byte result = systemVia.IsKeyPressed(internalKey) ? (byte)0xFF : (byte)0x00;
-            TraceKeyScan($"OSBYTE81 key={internalKey:X2}", Cpu.registers.X, result);
             Cpu.registers.X = result;
             Cpu.registers.Y = result;
             SetFirmwareResultFlags(result);
@@ -600,12 +583,6 @@ namespace BBC
         {
             Cpu.registers.Flags.Z = result == 0;
             Cpu.registers.Flags.N = (result & 0x80) != 0;
-        }
-
-        private void TraceKeyScan(string source, byte requested, byte result)
-        {
-            if (keyScanTraceEnabled)
-                Console.WriteLine($"KEYSCAN {source} request=${requested:X2} result=${result:X2}");
         }
 
         private void ReadAdval(byte channel, out byte x, out byte y)
@@ -770,7 +747,7 @@ namespace BBC
             display.DrainDiscLoads(discLoadScratch);
 
             foreach (string path in discLoadScratch)
-                MountHostFile(path, queueLoadCommand: false);
+                MountHostFile(path);
         }
 
         private void DrainHostScreenshotRequests(Display display)
@@ -1101,7 +1078,7 @@ namespace BBC
             }
 
             if (DiscController8271.IsAddress(address))
-                return discController.Read(address, (ushort)Cpu.registers.PC);
+                return discController.Read(address);
 
             if (CassetteInterface.IsAddress(address))
                 return cassetteInterface.Read(address);
@@ -1137,7 +1114,7 @@ namespace BBC
 
             if (DiscController8271.IsAddress(address))
             {
-                discController.Write(address, value, (ushort)Cpu.registers.PC);
+                discController.Write(address, value);
                 return;
             }
 

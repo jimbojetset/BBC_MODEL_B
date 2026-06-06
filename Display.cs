@@ -38,7 +38,6 @@ namespace BBC
         private int pendingScreenshotRequests;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
-        private readonly bool inputTraceEnabled = Environment.GetEnvironmentVariable("BBC_INPUT_TRACE") == "1";
 
         private IntPtr window;
         private IntPtr renderer;
@@ -327,7 +326,6 @@ namespace BBC
         private void EnqueueKeyDown(int keySym)
         {
             int modifiers = SDL_GetModState();
-            TraceInput("down", keySym, modifiers);
 
             if (keySym == SDLK_F12)
             {
@@ -379,7 +377,6 @@ namespace BBC
 
         private void EnqueueKeyUp(int keySym)
         {
-            TraceInput("up", keySym, SDL_GetModState());
             EnqueueJoystickChange(keySym, false);
 
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
@@ -568,12 +565,6 @@ namespace BBC
         private static BbcKeyChord Key(byte internalKey, ShiftAdjustment shiftAdjustment = ShiftAdjustment.Preserve)
         {
             return new BbcKeyChord(internalKey, shiftAdjustment);
-        }
-
-        private void TraceInput(string eventName, int keySym, int modifiers)
-        {
-            if (inputTraceEnabled)
-                Console.WriteLine($"INPUT {eventName} keySym={keySym} modifiers=0x{modifiers:X}");
         }
 
         private readonly record struct ActiveHostKey(byte InternalKey, ShiftAdjustment ShiftAdjustment, bool ShiftAdjusted);

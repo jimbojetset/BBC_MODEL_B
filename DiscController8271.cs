@@ -48,8 +48,6 @@ namespace BBC
         private bool nmiPending;
         private int nmiDelayCycles;
         private bool busy;
-        private int currentReadBytesProvided;
-        private int currentReadBytesConsumed;
 
         /// <summary>Initializes a new 8271-compatible disc controller.</summary>
         public DiscController8271()
@@ -158,8 +156,6 @@ namespace BBC
             nmiPending = false;
             nmiDelayCycles = 0;
             busy = false;
-            currentReadBytesProvided = 0;
-            currentReadBytesConsumed = 0;
         }
 
         /// <summary>Advances delayed FDC NMI events by the supplied number of CPU cycles.</summary>
@@ -180,13 +176,13 @@ namespace BBC
         /// <summary>Reads an 8271 register.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <returns>The register value.</returns>
-        public byte Read(ushort address, ushort pc = 0)
+        public byte Read(ushort address)
         {
             return address switch
             {
-                _ when (address & 0x07) == 0 => ReadStatus(address, pc),
-                _ when (address & 0x07) == 1 => ReadResult(address, pc),
-                _ when (address & 0x07) == 4 => ReadData(address, pc),
+                _ when (address & 0x07) == 0 => ReadStatus(),
+                _ when (address & 0x07) == 1 => ReadResult(),
+                _ when (address & 0x07) == 4 => ReadData(),
                 _ => 0x00
             };
         }
@@ -194,16 +190,16 @@ namespace BBC
         /// <summary>Writes an 8271 register.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <param name="value">The value written by the CPU.</param>
-        public void Write(ushort address, byte value, ushort pc = 0)
+        public void Write(ushort address, byte value)
         {
             switch (address & 0x07)
             {
                 case 0:
-                    BeginCommand(value, address, pc);
+                    BeginCommand(value);
                     break;
 
                 case 1:
-                    WriteParameter(value, address, pc);
+                    WriteParameter(value);
                     break;
 
                 case 2:
@@ -211,12 +207,12 @@ namespace BBC
                     break;
 
                 case 4:
-                    WriteData(value, address, pc);
+                    WriteData(value);
                     break;
             }
         }
 
-        private byte ReadStatus(ushort address, ushort pc)
+        private byte ReadStatus()
         {
             byte status = 0;
 
@@ -232,7 +228,7 @@ namespace BBC
             return status;
         }
 
-        private byte ReadResult(ushort address, ushort pc)
+        private byte ReadResult()
         {
             resultAvailable = false;
             nmiPending = false;
@@ -240,7 +236,7 @@ namespace BBC
             return result;
         }
 
-        private byte ReadData(ushort address, ushort pc)
+        private byte ReadData()
         {
             nmiPending = false;
 
@@ -250,7 +246,6 @@ namespace BBC
             }
 
             byte value = readData.Dequeue();
-            currentReadBytesConsumed++;
 
             if (readData.Count == 0)
                 SetResult(ResultOk, NmiReassertDelayCycles);
@@ -260,14 +255,12 @@ namespace BBC
             return value;
         }
 
-        private void BeginCommand(byte value, ushort address, ushort pc)
+        private void BeginCommand(byte value)
         {
 
             if (readData.Count > 0)
             {
                readData.Clear();
-                currentReadBytesProvided = 0;
-                currentReadBytesConsumed = 0;
             }
 
             nmiPending = false;
@@ -277,14 +270,12 @@ namespace BBC
             parameters.Clear();
             resultAvailable = false;
             busy = true;
-            currentReadBytesProvided = 0;
-            currentReadBytesConsumed = 0;
 
             if (GetParameterCount(command) == 0)
                 ExecuteCommand();
         }
 
-        private void WriteParameter(byte value, ushort address, ushort pc)
+        private void WriteParameter(byte value)
         {
             if (!busy && command == 0)
                 return;
@@ -295,7 +286,7 @@ namespace BBC
                 ExecuteCommand();
         }
 
-        private void WriteData(byte value, ushort address, ushort pc)
+        private void WriteData(byte value)
         {
             if (pendingWrite is null)
             {
@@ -443,8 +434,6 @@ namespace BBC
                     readData.Enqueue(image[offset + i]);
             }
 
-            currentReadBytesProvided = sectorSize * count;
-            currentReadBytesConsumed = 0;
             RequestNmi();
         }
 

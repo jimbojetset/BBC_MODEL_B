@@ -28,7 +28,6 @@ namespace BBC
         private const byte AciaStatusDataCarrierDetect = 0x04;
         private const byte AciaStatusClearToSend = 0x08;
 
-        private byte aciaControl;
         private byte serialUlaControl;
 
         /// <summary>
@@ -63,9 +62,6 @@ namespace BBC
         {
             if (address is >= AciaStart and <= AciaEnd)
             {
-                if ((address & 1) == 0)
-                    aciaControl = value;
-
                 return;
             }
 

@@ -118,7 +118,6 @@ namespace BBC
             if (action == 0xFF)
             {
                 uint requestedAddress = ReadDword(controlBlock + 2);
-                byte loadAddressFlag = memory.Memory[(controlBlock + 6) & 0xFFFF];
                 ushort targetAddress = memory.Memory[(controlBlock + 6) & 0xFFFF] == 0
                     ? (ushort)requestedAddress
                     : file.LoadAddress;

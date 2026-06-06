@@ -59,7 +59,6 @@ namespace BBC
         ];
 
         private readonly byte[] memory;
-        private readonly ushort osRomStart;
         private readonly byte[] crtcRegisters = new byte[CrtcRegisterCount];
         private readonly byte[] paletteRegisters = new byte[PaletteRegisterCount];
         private readonly byte[] mode4PaletteRegisters = new byte[PaletteRegisterCount];
@@ -100,7 +99,6 @@ namespace BBC
         private bool frameSawMode5;
         private bool activeSawMode4;
         private bool activeSawMode5;
-        private int frameSnapshotSequence;
         private int lastMode4Mode5SplitLine = 192;
         private bool hasLastMode4Mode5SplitLine;
 
@@ -121,11 +119,9 @@ namespace BBC
 
         /// <summary>Initializes a new video component.</summary>
         /// <param name="memory">The emulator's 64 KiB CPU-visible memory.</param>
-        /// <param name="osRomStart">The start address of the OS ROM font data used by the temporary mode 7 renderer.</param>
-        public Video(byte[] memory, ushort osRomStart)
+        public Video(byte[] memory)
         {
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
-            this.osRomStart = osRomStart;
             activeMemory = memory;
             activeCrtcRegisters = crtcRegisters;
             activePaletteRegisters = paletteRegisters;
@@ -154,7 +150,6 @@ namespace BBC
             rasterEvents.Clear();
             frameRasterEvents.Clear();
             activeRasterEvents.Clear();
-            frameSnapshotSequence = 0;
             lastMode4Mode5SplitLine = 192;
             hasLastMode4Mode5SplitLine = false;
             CurrentMode = BbcScreenMode.Mode7;
@@ -200,7 +195,6 @@ namespace BBC
                 frameScreenMemorySize = screenMemorySize;
                 frameSawMode4 = sawMode4ThisFrame;
                 frameSawMode5 = sawMode5ThisFrame;
-                frameSnapshotSequence++;
                 frameRasterEvents.Clear();
                 frameRasterEvents.AddRange(rasterEvents);
                 rasterEvents.Clear();
@@ -398,7 +392,7 @@ namespace BBC
                     else
                     {
                         bool doubleHeightBottom = state.DoubleHeight && IsDoubleHeightBottomRow(row, column, character);
-                        Saa5050Font.Draw(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, state.ForegroundColour, state.DoubleHeight, doubleHeightBottom);
+                        Saa5050Font.Draw(pixels, display.Width, display.Height, cellX, cellY, cellHeight, character, state.ForegroundColour, state.DoubleHeight, doubleHeightBottom);
                     }
                 }
             }

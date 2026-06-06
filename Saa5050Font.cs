@@ -65,7 +65,7 @@ namespace BBC
             throw new InvalidOperationException("SAA5050 glyph table contains an invalid row code.");
         }
 
-        public static void Draw(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool doubleHeight, bool doubleHeightBottom)
+        public static void Draw(uint[] pixels, int width, int height, int cellX, int cellY, int cellHeight, byte character, uint colour, bool doubleHeight, bool doubleHeightBottom)
         {
             character = (byte)(character & 0x7F);
             if (character < 32)
