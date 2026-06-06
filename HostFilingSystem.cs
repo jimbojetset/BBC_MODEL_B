@@ -165,7 +165,7 @@ namespace BBC
 
             if (TryHandleKeyCommand(command))
             {
-                 ReturnFromSubroutine(cpu);
+                ReturnFromSubroutine(cpu);
                 return true;
             }
 
@@ -189,7 +189,7 @@ namespace BBC
 
             if (!RunCommandInterceptionEnabled)
             {
-               return false;
+                return false;
             }
 
             if (TryParseLoadCommand(command, out string loadName, out ushort? loadAddress))
@@ -296,9 +296,24 @@ namespace BBC
             if (!TryParseFxArguments(arguments, out int a, out _, out int y))
                 return false;
 
-            if ((a & 0xFF) == 0x8A)
-                InsertSoftKey((byte)y);
+            // OSBYTE 16 selects how many analogue (ADC) channels the MOS samples in the
+            // background. The µPD7002 ADC is not emulated (ADVAL is serviced directly via
+            // the OSBYTE &80 intercept), so MOS's ADC sampling must never be started.
+            // Letting *FX 16 reach the real MOS drives the absent ADC and breaks games
+            // such as Frogger (it drops out to BASIC). Swallow it as a no-op.
+            if ((a & 0xFF) == 0x10)
+                return true;
 
+            // Only the softkey-insertion OSBYTE (*FX 138) is emulated at the host
+            // level so queued keystrokes reach the emulated keyboard buffer. Every
+            // other *FX command must fall through to the real MOS so its OSBYTE side
+            // effects (enabling the vsync event, cursor-key state, escape handling,
+            // etc.) actually take place. Swallowing them broke games such as
+            // YieArKungFu, which relies on *FX 14,4 to drive its raster-split palette.
+            if ((a & 0xFF) != 0x8A)
+                return false;
+
+            InsertSoftKey((byte)y);
             return true;
         }
 
@@ -481,7 +496,7 @@ namespace BBC
 
             if (trimmed.Length >= name.Length && string.Equals(trimmed[..name.Length], name, StringComparison.OrdinalIgnoreCase))
             {
-                if (trimmed.Length == name.Length || char.IsWhiteSpace(trimmed[name.Length]))
+                if (trimmed.Length == name.Length || char.IsWhiteSpace(trimmed[name.Length]) || trimmed[name.Length] == '"')
                 {
                     rest = trimmed[name.Length..];
                     return true;

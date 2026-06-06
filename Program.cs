@@ -166,6 +166,7 @@ namespace BBC
         private const ushort KeyboardBufferStartIndex = 0x02D8;
         private const ushort KeyboardBufferEndIndex = 0x02E1;
         private const ushort EscapeFlag = 0x00FF;
+        private const ushort EscapeKeyStatus = 0x0275;
         private const ushort CliVector = 0x0208;
         private const ushort OscliEntry = 0xFFF7;
         private const byte KeyboardBufferEmptyFlag = 0x80;
@@ -203,7 +204,7 @@ namespace BBC
         private bool capsLockTapPressed;
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
- 
+
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
 
@@ -525,7 +526,7 @@ namespace BBC
                 Cpu.registers.PC = SidewaysRomStart;
                 return true;
             }
-           return false;
+            return false;
         }
 
         private bool IsCliEntryPoint(ushort pc)
@@ -543,6 +544,19 @@ namespace BBC
                 ReadAdval(Cpu.registers.X, out byte x, out byte y);
                 Cpu.registers.X = x;
                 Cpu.registers.Y = y;
+                ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            if (Cpu.registers.A == 0x10)
+            {
+                // OSBYTE 16 selects how many analogue (ADC) channels the MOS samples.
+                // The µPD7002 ADC is not emulated; ADVAL is serviced directly via the
+                // OSBYTE &80 intercept above, so MOS's background ADC sampling must not
+                // be started. Letting this reach the real MOS drives the absent ADC and
+                // breaks games such as Frogger. Handle it as a clean no-op (X = previous
+                // channel count, reported as 0).
+                Cpu.registers.X = 0;
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
@@ -808,7 +822,7 @@ namespace BBC
             for (int i = 0; i < count; i++)
             {
                 if (inputScratch[i] == 27)
-                    TriggerEscapeCondition();
+                    HandleEscapeKeyPress();
                 else
                     pendingKeyboardInput.Enqueue(inputScratch[i]);
             }
@@ -944,6 +958,18 @@ namespace BBC
             }
 
             Cpu.RequestReset();
+        }
+
+        private void HandleEscapeKeyPress()
+        {
+            // OSBYTE 229 (OS variable $0275) selects the ESCAPE key behaviour: when it is
+            // non-zero the key acts as an ordinary key that generates ASCII 27, otherwise it
+            // raises an escape condition. Games such as YieArKungFu issue *FX 229,1 so they
+            // can read ESCAPE in-game instead of breaking back into the BASIC loader.
+            if (Memory.Memory[EscapeKeyStatus] != 0)
+                pendingKeyboardInput.Enqueue(27);
+            else
+                TriggerEscapeCondition();
         }
 
         private void TriggerEscapeCondition()

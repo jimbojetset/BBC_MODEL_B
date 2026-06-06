@@ -21,7 +21,7 @@ namespace BBC
     /// </summary>
     public sealed class Display : IDisposable
     {
-        public const int DefaultWidth = 630;
+        public const int DefaultWidth = 640;
         public const int DefaultHeight = 537;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
@@ -30,7 +30,7 @@ namespace BBC
         private const string MonitorImageFileName = "cub-monitor.png";
         private const int MonitorViewportWidth = 650;
         private const int MonitorViewportHeight = 520;
-        private const int MonitorViewportX = 110;
+        private const int MonitorViewportX = 105;
         private const int MonitorViewportY = 110;
 
         private readonly uint[] frameBuffer;
