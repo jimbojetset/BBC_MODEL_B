@@ -21,8 +21,8 @@ namespace BBC
     /// </summary>
     public sealed class Display : IDisposable
     {
-        public const int DefaultWidth = 640;
-        public const int DefaultHeight = 512;
+        public const int DefaultWidth = 500;
+        public const int DefaultHeight = 400;
         public const int DefaultScale = 2;
 
         private const byte BbcShiftKey = 0x00;
@@ -380,8 +380,6 @@ namespace BBC
                 bool shiftAdjusted = ApplyShiftAdjustment(chord.Value.ShiftAdjustment, (modifiers & KMOD_SHIFT) != 0);
                 activeHostKeys[keySym] = new ActiveHostKey(chord.Value.InternalKey, chord.Value.ShiftAdjustment, shiftAdjusted);
                 pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, true));
-                if (chord.Value.InternalKey == 0x49)
-                    pendingKeyChanges.Enqueue(new HostKeyChange(0x48, true));
             }
 
             if (keySym == SDLK_ESCAPE && (modifiers & KMOD_SHIFT) == 0)
@@ -401,8 +399,6 @@ namespace BBC
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
             {
                 pendingKeyChanges.Enqueue(new HostKeyChange(activeKey.InternalKey, false));
-                if (activeKey.InternalKey == 0x49)
-                    pendingKeyChanges.Enqueue(new HostKeyChange(0x48, false));
                 RestoreAdjustedShift(activeKey, (SDL_GetModState() & KMOD_SHIFT) != 0);
                 return;
             }
