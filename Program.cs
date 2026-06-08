@@ -149,6 +149,11 @@ namespace BBC
         public const int SidewaysRomBanks = 16;
         public const int BasicRomBank = 15;
         public const int DfsRomBank = 14;
+        // Banks 4..7 are sideways RAM in this configuration. Most enhanced BBC setups
+        // (Watford SRAM, Aries B20, Acorn 1.20) populate the upper four banks (12..15)
+        // with ROMs and leave the lower banks free for RAM. We mirror that arrangement.
+        public const int SidewaysRamFirstBank = 4;
+        public const int SidewaysRamLastBank = 7;
         public const int CpuClockHz = 2_000_000;
         public const ushort KeyboardBufferStart = 0x03E0;
         public const ushort KeyboardBufferEnd = 0x03FF;
@@ -196,6 +201,7 @@ namespace BBC
         private readonly SystemVia systemVia;
         private readonly UserVia userVia = new UserVia();
         private readonly CassetteInterface cassetteInterface = new CassetteInterface();
+        private readonly Adc7002 adc = new Adc7002();
         private readonly HostFilingSystem hostFilingSystem;
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
@@ -244,6 +250,12 @@ namespace BBC
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
+            Cpu.OnAccessStretch = ComputeBusStretchCycles;
+            adc.EndOfConversionChanged += eocActive =>
+            {
+                systemVia.SignalAdcEndOfConversion(eocActive);
+                UpdateCpuIrqLine();
+            };
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
@@ -414,6 +426,8 @@ namespace BBC
             Video.SetScreenMemoryWindow(systemVia.ScreenMemoryStart, systemVia.ScreenMemorySize);
             discController.Reset();
             joystickState = default;
+            adc.Reset();
+            UpdateAdcChannels();
             Cpu.SetIrqLine(false);
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             selectedSidewaysRom = BasicRomBank;
@@ -441,6 +455,7 @@ namespace BBC
             systemVia.Tick(cycles);
             userVia.Tick(cycles);
             discController.Tick(cycles);
+            adc.Tick(cycles);
             TickCapsLockTap(cycles);
             if (systemVia.FrameCounter != previousFrame)
                 Video.CaptureVisibleFrame();
@@ -894,6 +909,8 @@ namespace BBC
         private void DrainHostJoystickInput(Display display)
         {
             int count = display.DrainJoystickChanges(joystickChangeScratch);
+            if (count == 0)
+                return;
 
             for (int i = 0; i < count; i++)
             {
@@ -921,6 +938,26 @@ namespace BBC
                         break;
                 }
             }
+
+            UpdateAdcChannels();
+        }
+
+        private void UpdateAdcChannels()
+        {
+            // µPD7002 channels follow the BBC ADVAL convention: 0x0000 = max one direction, 0xFFFF = max other.
+            // Channel 0 returns 0/1 for fire (digital) — we reuse channel 0 for fire (most software polls ADVAL via OSBYTE).
+            // Channels 1 (X-axis) and 2 (Y-axis) carry analogue position.
+            ushort fire = joystickState.Fire ? (ushort)0xFFFF : (ushort)0x0000;
+            ushort xAxis = joystickState.Left ? (ushort)0xFFFF
+                         : joystickState.Right ? (ushort)0x0000
+                         : (ushort)0x8000;
+            ushort yAxis = joystickState.Up ? (ushort)0xFFFF
+                         : joystickState.Down ? (ushort)0x0000
+                         : (ushort)0x8000;
+            adc.SetChannel(0, fire);
+            adc.SetChannel(1, xAxis);
+            adc.SetChannel(2, yAxis);
+            adc.SetChannel(3, 0x8000);
         }
 
         private void DrainHostBreakInput(Display display)
@@ -1154,11 +1191,42 @@ namespace BBC
                     return true;
                 }
 
+                if (addr >= SidewaysRomStart && addr <= SidewaysRomEnd)
+                {
+                    // Sideways RAM: writes are accepted only when the currently paged-in bank is RAM.
+                    if (IsSidewaysRamBank(selectedSidewaysRom))
+                    {
+                        int bankOffset = selectedSidewaysRom * RomSize;
+                        int romOffset = addr - SidewaysRomStart;
+                        sidewaysRoms[bankOffset + romOffset] = value;
+                    }
+                    return true;
+                }
+
                 if (addr >= SidewaysRomStart)
                     return true;
 
                 return false;
             };
+        }
+
+        private static bool IsSidewaysRamBank(int bank)
+        {
+            return bank >= SidewaysRamFirstBank && bank <= SidewaysRamLastBank;
+        }
+
+        /// <summary>
+        /// Models BBC 1 MHz bus stretching for FRED/JIM/SHEILA accesses (&amp;FC00-&amp;FEFF).
+        /// On a real BBC, accesses to 1 MHz peripherals are synchronised to the 1 MHz clock,
+        /// adding a per-access stretch. We approximate this with a constant +1 cycle per access,
+        /// which is close enough for software that polls CRTC, VIA, ACIA, ADC, etc.
+        /// </summary>
+        private int ComputeBusStretchCycles(ulong address)
+        {
+            ushort addr = (ushort)(address & 0xFFFF);
+            if (addr >= IoStart && addr <= IoEnd)
+                return 1;
+            return 0;
         }
 
         private byte ReadSidewaysRom(ushort address)
@@ -1192,6 +1260,9 @@ namespace BBC
 
             if (CassetteInterface.IsAddress(address))
                 return cassetteInterface.Read(address);
+
+            if (Adc7002.IsAddress(address))
+                return adc.Read(address);
 
             return address switch
             {
@@ -1231,6 +1302,12 @@ namespace BBC
             if (CassetteInterface.IsAddress(address))
             {
                 cassetteInterface.Write(address, value);
+                return;
+            }
+
+            if (Adc7002.IsAddress(address))
+            {
+                adc.Write(address, value);
                 return;
             }
 

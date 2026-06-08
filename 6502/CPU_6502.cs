@@ -90,6 +90,24 @@ namespace BBC.CPU
         public bool PacingEnabled { get; set; } = true;
         public double SpeedScale { get; set; } = 1.0;
 
+        /// <summary>
+        /// Optional per-access cycle-stretch hook. The host returns extra CPU cycles for a read or write
+        /// (e.g. BBC 1 MHz bus stretching for SHEILA &amp; FRED/JIM).
+        /// </summary>
+        public Func<ulong, int>? OnAccessStretch;
+
+        // NMOS 6502 SEI/CLI/PLP delay: I flag change is visible only after the *next* instruction.
+        private bool deferredIFlagPending;
+        private bool deferredIFlagValue;
+        private bool iFlagBeforeInstruction;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ScheduleIFlag(bool value)
+        {
+            deferredIFlagPending = true;
+            deferredIFlagValue = value;
+        }
+
         /// <summary>Adds externally requested CPU stall cycles.</summary>
         /// <param name="cycles">The number of emulated CPU cycles to advance.</param>
         public void RequestExternalStallCycles(int cycles)
@@ -238,20 +256,39 @@ namespace BBC.CPU
                             else
                                 ProcessNMI();
                         }
-                        while (!registers.Flags.I && IRQ_Buffer.TryDequeue(out ulong irqValue))
+                        // NMOS interrupt timing: gate IRQ on the I-flag value seen at the START of
+                        // the previous instruction (one-instruction delay for SEI/CLI/PLP).
+                        bool irqGate = !iFlagBeforeInstruction;
+                        while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
                         {
                             if (irqValue != 0xFFFE)
                                 ProcessIRQ(irqValue);
                             else
                                 ProcessIRQ();
+                            irqGate = !registers.Flags.I;
                         }
-                        if (!registers.Flags.I && Volatile.Read(ref irqLineAsserted) != 0)
+                        if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
                             ProcessIRQ();
                         int beforeCycles = cyclesThisOperation;
                         bool handledByHost = OnBeforeInstruction?.Invoke() == true;
 
                         if (!handledByHost)
+                        {
+                            // Snapshot I before this instruction so the next boundary uses the delayed value (NMOS SEI/CLI/PLP).
+                            iFlagBeforeInstruction = registers.Flags.I;
                             Execute(GetNextByteInstruction());
+                            if (deferredIFlagPending)
+                            {
+                                registers.Flags.I = deferredIFlagValue;
+                                deferredIFlagPending = false;
+                            }
+                        }
+                        else
+                        {
+                            // Host handled the instruction: no opcode boundary was crossed by the CPU,
+                            // but interrupt visibility still tracks the current I value.
+                            iFlagBeforeInstruction = registers.Flags.I;
+                        }
 
                         int deltaCycles = cyclesThisOperation - beforeCycles;
                         if (handledByHost && deltaCycles <= 0)
@@ -1211,17 +1248,26 @@ namespace BBC.CPU
             }
 
             int beforeCycles = cyclesThisOperation;
-            while (!registers.Flags.I && IRQ_Buffer.TryDequeue(out ulong irqValue))
+            // NMOS interrupt timing: gate IRQ on the I-flag value seen at the START of the previous instruction.
+            bool irqGate = !iFlagBeforeInstruction;
+            while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
             {
                 if (irqValue != 0xFFFE)
                     ProcessIRQ(irqValue);
                 else
                     ProcessIRQ();
+                irqGate = !registers.Flags.I;
             }
-            if (!registers.Flags.I && Volatile.Read(ref irqLineAsserted) != 0)
+            if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
                 ProcessIRQ();
 
+            iFlagBeforeInstruction = registers.Flags.I;
             Execute(GetNextByteInstruction());
+            if (deferredIFlagPending)
+            {
+                registers.Flags.I = deferredIFlagValue;
+                deferredIFlagPending = false;
+            }
             int elapsed = cyclesThisOperation - beforeCycles;
             if (elapsed > 0)
             {
@@ -1950,10 +1996,10 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Executes the SEI CPU operation.</summary>
+        /// <summary>Executes the SEI CPU operation. NMOS 6502 defers the I-flag change by one instruction.</summary>
         private void SEI()
         {
-            registers.Flags.I = true;
+            ScheduleIFlag(true);
             cyclesThisOperation += 2;
         }
 
@@ -1990,11 +2036,14 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Executes the PLP CPU operation.</summary>
+        /// <summary>Executes the PLP CPU operation. NMOS 6502 defers the I-flag change by one instruction.</summary>
         private void PLP()
         {
             byte value = PopByteFromStack();
-            registers.Flags.SetFlagsFromByte(value, 0xCF); //ignore bits 5 & 6
+            // PLP changes I with one-instruction delay, like SEI/CLI. Mask out bit 2 first then schedule it.
+            bool newI = (value & 0x04) != 0;
+            registers.Flags.SetFlagsFromByte((byte)(value & ~0x04), 0xCB); // ignore bits 4,5 and I (bit 2)
+            ScheduleIFlag(newI);
             cyclesThisOperation += 4;
         }
 
@@ -2016,10 +2065,10 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Executes the CLI CPU operation.</summary>
+        /// <summary>Executes the CLI CPU operation. NMOS 6502 defers the I-flag change by one instruction.</summary>
         private void CLI()
         {
-            registers.Flags.I = false;
+            ScheduleIFlag(false);
             cyclesThisOperation += 2;
         }
 
@@ -3259,7 +3308,15 @@ namespace BBC.CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private byte ReadByteFromMemory(ulong addr)
         {
-            return bus.ReadByte(addr & 0xFFFF);
+            ulong masked = addr & 0xFFFF;
+            byte value = bus.ReadByte(masked);
+            var stretch = OnAccessStretch;
+            if (stretch != null)
+            {
+                int extra = stretch(masked);
+                if (extra > 0) cyclesThisOperation += extra;
+            }
+            return value;
         }
 
         /// <summary>Writes byte to memory.</summary>
@@ -3268,7 +3325,14 @@ namespace BBC.CPU
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void WriteByteToMemory(ulong addr, byte value)
         {
-            bus.WriteByte(addr & 0xFFFF, value);
+            ulong masked = addr & 0xFFFF;
+            bus.WriteByte(masked, value);
+            var stretch = OnAccessStretch;
+            if (stretch != null)
+            {
+                int extra = stretch(masked);
+                if (extra > 0) cyclesThisOperation += extra;
+            }
         }
 
         /// <summary>Reads a little-endian 16-bit word from the CPU bus.</summary>

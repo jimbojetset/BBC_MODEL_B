@@ -25,6 +25,8 @@ namespace BBC
         private const byte InterruptFlagTimer2 = 0x20;
         private const byte InterruptFlagVsync = 0x02;
         private const byte InterruptFlagKeyboard = 0x01;
+        // CB1 input on the system VIA carries µPD7002 EOC (negative edge = conversion complete).
+        private const byte InterruptFlagAdcEoc = 0x10;
         private const int VsyncPeripheralCycles = 20_000;
         private const byte InterruptSummary = 0x80;
         private readonly Sound sound;
@@ -117,6 +119,16 @@ namespace BBC
 
             if (dataDirectionA == 0x7F && !IsKeyboardAutoScanEnabled())
                 UpdateKeyboardColumnInterrupt();
+        }
+
+        /// <summary>Signals an ADC end-of-conversion edge into the system VIA CB1 input.</summary>
+        /// <param name="eocActive">True when the ADC has finished a conversion (active-low EOC line going low).</param>
+        public void SignalAdcEndOfConversion(bool eocActive)
+        {
+            if (eocActive)
+                SetInterrupt(InterruptFlagAdcEoc);
+            else
+                ClearInterrupt(InterruptFlagAdcEoc);
         }
 
         /// <summary>Returns whether one BBC keyboard matrix key is currently held.</summary>

@@ -10,7 +10,7 @@ obj/
 *.log
 
 ROMS/*.crdownload
-ROMS/*.rom
+
 *.ssd
 
 .vs/

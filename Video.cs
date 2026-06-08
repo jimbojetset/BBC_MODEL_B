@@ -232,9 +232,16 @@ namespace BBC
                     break;
 
                 case 0xFE01:
-                    crtcRegisters[selectedCrtcRegister & 0x1F] = value;
-                    if ((selectedCrtcRegister & 0x1F) is CrtcCursorHighRegister or CrtcCursorLowRegister)
-                        crtcCursorAddressWritten = true;
+                    {
+                        int regIndex = selectedCrtcRegister & 0x1F;
+                        crtcRegisters[regIndex] = value;
+                        if (regIndex is CrtcCursorHighRegister or CrtcCursorLowRegister)
+                            crtcCursorAddressWritten = true;
+                        // Mid-frame writes to display-start (R12/R13) or scanline-per-row (R9) change rendering
+                        // partway down the screen; capture a raster event so the renderer can split correctly.
+                        if (regIndex is CrtcDisplayStartHighRegister or CrtcDisplayStartLowRegister or CrtcScanLinesPerCharacterRegister)
+                            AddRasterEvent(frameCpuCycle);
+                    }
                     break;
 
                 case 0xFE20:
@@ -366,7 +373,7 @@ namespace BBC
 
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
-            bool flashVisible = (Environment.TickCount64 / 500 & 1) == 0;
+            bool flashVisible = (Environment.TickCount64 / 320 & 1) == 0;
 
             for (int row = 0; row < Mode7Rows; row++)
             {
@@ -378,47 +385,79 @@ namespace BBC
                     byte character = ReadMode7DisplayCharacter(row, column);
                     int cellX = column * cellWidth;
 
-                    if (TryApplyTeletextControl(character, state))
-                        continue;
+                    int control = character & 0x7F;
+                    bool isControl = control < 0x20;
+
+                    // Save the rendering attributes that apply to THIS cell (Set-After semantics:
+                    // most attributes change AFTER this cell; the cell itself is rendered as a
+                    // space using the attributes that were active before the control code).
+                    bool wasGraphicsMode = state.GraphicsMode;
+                    bool wasSeparated = state.SeparatedGraphics;
+                    bool wasHoldGraphics = state.HoldGraphics;
+                    bool wasDoubleHeight = state.DoubleHeight;
+                    bool wasConcealed = state.Concealed;
+                    uint cellForeground = state.ForegroundColour;
+                    uint cellBackground = state.BackgroundColour;
+                    byte? cellHeldMosaic = state.HeldMosaic;
+
+                    if (isControl)
+                    {
+                        // Update state for following cells. NEW-BACKGROUND (0x1D) is "Set-At" and
+                        // takes effect on the current cell — handled inside ApplyTeletextControl.
+                        ApplyTeletextControl(control, state);
+
+                        // Background colour is Set-At — re-read it for this cell.
+                        if (control == 0x1C || control == 0x1D)
+                            cellBackground = state.BackgroundColour;
+                    }
+
+                    // Fill the cell with current background colour.
+                    if (cellBackground != Background)
+                        FillRect(pixels, display.Width, display.Height, cellX, cellY, cellX + cellWidth, cellY + cellHeight, cellBackground);
 
                     if (state.Flashing && !flashVisible)
                         continue;
+                    if (cellConcealedForRender(state) || wasConcealed)
+                        continue;
 
-                    if (state.GraphicsMode && IsTeletextMosaicCharacter(character))
+                    if (isControl)
+                    {
+                        // Hold-Graphics: draw the most recent mosaic in graphics mode using the
+                        // attributes that were active *before* this control code.
+                        if (wasGraphicsMode && wasHoldGraphics && cellHeldMosaic.HasValue)
+                            DrawTeletextMosaic(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, cellHeldMosaic.Value, cellForeground, wasSeparated);
+                        continue;
+                    }
+
+                    if (wasGraphicsMode && IsTeletextMosaicCharacter(character))
                     {
                         state.HeldMosaic = character;
-                        DrawTeletextMosaic(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, state.ForegroundColour, state.SeparatedGraphics);
+                        DrawTeletextMosaic(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, cellForeground, wasSeparated);
                     }
                     else
                     {
-                        bool doubleHeightBottom = state.DoubleHeight && IsDoubleHeightBottomRow(row, column, character);
-                        Saa5050Font.Draw(pixels, display.Width, display.Height, cellX, cellY, cellHeight, character, state.ForegroundColour, state.DoubleHeight, doubleHeightBottom);
+                        bool doubleHeightBottom = wasDoubleHeight && IsDoubleHeightBottomRow(row, column, character);
+                        Saa5050Font.Draw(pixels, display.Width, display.Height, cellX, cellY, cellHeight, character, cellForeground, wasDoubleHeight, doubleHeightBottom);
                     }
                 }
             }
 
             RenderMode7Cursor(display);
+
+            // Conceal helper: only conceal once a Conceal (0x18) code has been seen on this row.
+            // Wrapped here as a local fn so we can use it above without leaking it from the class.
+            static bool cellConcealedForRender(TeletextState s) => s.Concealed;
         }
 
-        private bool TryApplyTeletextControl(byte character, TeletextState state)
+        private static void ApplyTeletextControl(int control, TeletextState state)
         {
-            int control = character & 0x7F;
-            if (control >= 0x20)
-                return false;
-
             switch (control)
             {
                 case >= 0x01 and <= 0x07:
                     state.GraphicsMode = false;
+                    state.Concealed = false;
                     state.ForegroundColour = BbcColours[control & 0x07];
-                    break;
-
-                case 0x0C:
-                    state.DoubleHeight = false;
-                    break;
-
-                case 0x0D:
-                    state.DoubleHeight = true;
+                    state.HeldMosaic = null;
                     break;
 
                 case 0x08:
@@ -429,9 +468,28 @@ namespace BBC
                     state.Flashing = false;
                     break;
 
-                case >= 0x10 and <= 0x17:
+                case 0x0C:
+                    state.DoubleHeight = false;
+                    break;
+
+                case 0x0D:
+                    state.DoubleHeight = true;
+                    break;
+
+                case >= 0x11 and <= 0x17:
                     state.GraphicsMode = true;
+                    state.Concealed = false;
                     state.ForegroundColour = BbcColours[control & 0x07];
+                    break;
+
+                case 0x10:
+                    // 0x10 is reserved/black-graphics on some teletext variants; treat as switch
+                    // to graphics mode with the current foreground colour.
+                    state.GraphicsMode = true;
+                    break;
+
+                case 0x18:
+                    state.Concealed = true;
                     break;
 
                 case 0x19:
@@ -459,7 +517,15 @@ namespace BBC
                     state.HeldMosaic = null;
                     break;
             }
+        }
 
+        private bool TryApplyTeletextControl(byte character, TeletextState state)
+        {
+            int control = character & 0x7F;
+            if (control >= 0x20)
+                return false;
+
+            ApplyTeletextControl(control, state);
             return true;
         }
 
@@ -686,9 +752,11 @@ namespace BBC
                 return;
 
             int eventIndex = 0;
+            int initialCrtcStart = ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
+                | activeCrtcRegisters[CrtcDisplayStartLowRegister];
             VideoRasterEvent state = activeRasterEvents.Count > 0
                 ? activeRasterEvents[0]
-                : new VideoRasterEvent(0, 0, 0, activeMode, activeUlaControl, activePaletteRegisters);
+                : new VideoRasterEvent(0, 0, 0, activeMode, activeUlaControl, activePaletteRegisters, initialCrtcStart);
 
             for (int y = 0; y < height; y++)
             {
@@ -1091,18 +1159,21 @@ namespace BBC
         {
             int scanline = Math.Clamp(frameCpuCycle, 0, VideoFrameCpuCycles - 1) * VideoFrameScanlines / VideoFrameCpuCycles;
             int visibleLine = scanline - VisibleStartScanline;
-            rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters));
+            int crtcStart = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
+                | crtcRegisters[CrtcDisplayStartLowRegister];
+            rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters, crtcStart));
         }
 
         private readonly struct VideoRasterEvent
         {
-            public VideoRasterEvent(int frameCpuCycle, int scanline, int visibleLine, BbcScreenMode mode, byte ulaControl, byte[] palette)
+            public VideoRasterEvent(int frameCpuCycle, int scanline, int visibleLine, BbcScreenMode mode, byte ulaControl, byte[] palette, int crtcStartAddress)
             {
                 FrameCpuCycle = frameCpuCycle;
                 Scanline = scanline;
                 VisibleLine = visibleLine;
                 Mode = mode;
                 UlaControl = ulaControl;
+                CrtcStartAddress = crtcStartAddress;
                 Palette = new byte[PaletteRegisterCount];
                 Array.Copy(palette, Palette, Palette.Length);
             }
@@ -1114,6 +1185,8 @@ namespace BBC
             public int VisibleLine { get; }
 
             public BbcScreenMode Mode { get; }
+
+            public int CrtcStartAddress { get; }
 
             public byte UlaControl { get; }
 
@@ -1127,6 +1200,7 @@ namespace BBC
             public bool HoldGraphics { get; set; }
             public bool DoubleHeight { get; set; }
             public bool Flashing { get; set; }
+            public bool Concealed { get; set; }
             public byte? HeldMosaic { get; set; }
             public uint ForegroundColour { get; set; } = Foreground;
             public uint BackgroundColour { get; set; } = Background;
