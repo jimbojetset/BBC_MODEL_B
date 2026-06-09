@@ -28,7 +28,7 @@ namespace BBC
         private const double PowerOnToneFrequencyHz = 120.0;
         private const double PowerOnToneDurationSeconds = 0.35;
         private const double PowerOnToneAmplitude = 0.1;
-        private readonly object syncRoot = new object();
+        private readonly Lock syncRoot = new Lock();
         private readonly int[] tonePeriods = [0, 0, 0];
         private readonly int[] volumes = [15, 15, 15, 15];
         private readonly double[] toneCounters = new double[3];
