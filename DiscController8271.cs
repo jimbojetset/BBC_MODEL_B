@@ -48,6 +48,8 @@ namespace BBC
         private bool nmiPending;
         private int nmiDelayCycles;
         private bool busy;
+        private bool imageDirty;
+        private bool writeProtected;
 
         /// <summary>Initializes a new 8271-compatible disc controller.</summary>
         public DiscController8271()
@@ -65,6 +67,16 @@ namespace BBC
 
         /// <summary>Gets the currently mounted host image filename.</summary>
         public string? MountedFileName => mountedFileName;
+
+        /// <summary>Gets whether the mounted image has unsaved writes.</summary>
+        public bool ImageDirty => imageDirty;
+
+        /// <summary>Gets or sets whether writes to the mounted image are silently discarded.</summary>
+        public bool WriteProtected
+        {
+            get => writeProtected;
+            set => writeProtected = value;
+        }
 
 
         /// <summary>Gets whether the controller is actively transferring bytes to or from the CPU.</summary>
@@ -138,7 +150,53 @@ namespace BBC
             driveMounted[3] = false;
             mountedPath = fullPath;
             mountedFileName = fileName;
+            imageDirty = false;
             Reset();
+        }
+
+        /// <summary>Writes any pending changes back to the host image file.</summary>
+        /// <returns>True when a flush was attempted, false when no mounted image was present.</returns>
+        public bool Flush()
+        {
+            if (!imageDirty)
+                return false;
+            if (string.IsNullOrEmpty(mountedPath))
+                return false;
+            if (writeProtected)
+            {
+                imageDirty = false;
+                return false;
+            }
+
+            try
+            {
+                byte[] combined;
+                if (drives[2].Length > 0)
+                {
+                    // DSD: drive 0 holds side 0, drive 2 holds side 1; concatenate.
+                    combined = new byte[drives[0].Length + drives[2].Length];
+                    Array.Copy(drives[0], 0, combined, 0, drives[0].Length);
+                    Array.Copy(drives[2], 0, combined, drives[0].Length, drives[2].Length);
+                }
+                else
+                {
+                    combined = drives[0];
+                }
+
+                File.WriteAllBytes(mountedPath, combined);
+                imageDirty = false;
+                return true;
+            }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine($"Disc image flush failed: {ex.Message}");
+                return false;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Console.Error.WriteLine($"Disc image flush failed: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>Resets transient 8271 state.</summary>
@@ -495,6 +553,9 @@ namespace BBC
 
         private void WriteSectors(PendingWrite write, List<byte> bytes)
         {
+            if (writeProtected)
+                return;
+
             byte[] image = drives[write.Drive];
             int source = 0;
 
@@ -503,6 +564,8 @@ namespace BBC
                 for (int i = 0; i < write.SectorSize; i++)
                     image[offset + i] = bytes[source++];
             }
+
+            imageDirty = true;
         }
 
         private void ReadSectorIds(int track, int count)

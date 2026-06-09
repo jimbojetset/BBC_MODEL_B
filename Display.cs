@@ -81,7 +81,7 @@ namespace BBC
         /// <param name="height">Framebuffer height in pixels.</param>
         /// <param name="scale">Initial integer window scale.</param>
         /// <param name="scanlines">Whether to draw a CRT-style scanline overlay.</param>
-        public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, bool scanlines = true)
+        public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, bool scanlines = false)
         {
             if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
             if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));

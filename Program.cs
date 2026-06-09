@@ -355,6 +355,13 @@ namespace BBC
         {
             if (IsDiscImagePath(path))
             {
+                // Persist any pending writes from the previously mounted image before swapping.
+                if (discController.HasMountedDisc && discController.ImageDirty)
+                {
+                    if (discController.Flush())
+                        Console.WriteLine($"Saved disc:   {discController.MountedFileName}");
+                }
+
                 discController.Mount(path);
                 hostFilingSystem.Mount(path);
 
@@ -377,6 +384,11 @@ namespace BBC
         public void Dispose()
         {
             StopCpu();
+            if (discController.HasMountedDisc && discController.ImageDirty)
+            {
+                if (discController.Flush())
+                    Console.WriteLine($"Saved disc:   {discController.MountedFileName}");
+            }
             Sound.Dispose();
             Display?.Dispose();
         }
@@ -1028,7 +1040,8 @@ namespace BBC
             if (now < keyboardInputEnabledAtTicks || now < nextBootScriptLineAtTicks || !IsKeyboardBufferEmpty())
                 return;
 
-            QueueKeyboardText(pendingBootScriptLines.Dequeue() + "\r");
+            string line = pendingBootScriptLines.Dequeue();
+            QueueKeyboardText(line + "\r");
             nextBootScriptLineAtTicks = now + (Stopwatch.Frequency / 3);
         }
 
@@ -1276,6 +1289,9 @@ namespace BBC
             if (Video.IsSheilaAddress(address))
             {
                 Video.WriteSheila(address, value, systemVia.FrameCpuCycle);
+                // CRTC programming or ULA clock-rate changes alter the frame period; push the
+                // latest CRTC-derived period so the SystemVia vsync timer tracks reality.
+                systemVia.SetVsyncPeriod(Video.GetCrtcFramePeriodPeripheralCycles());
                 return;
             }
 

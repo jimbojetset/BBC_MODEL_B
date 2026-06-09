@@ -33,8 +33,12 @@ namespace BBC
         private const int BitmapBytesPerRow10K = 40;
         private const int BitmapBytesPerRow20K = 80;
         private const int CrtcRegisterCount = 32;
+        private const int CrtcHorizontalTotalRegister = 0;
         private const int CrtcHorizontalDisplayedRegister = 1;
+        private const int CrtcVerticalTotalRegister = 4;
+        private const int CrtcVerticalAdjustRegister = 5;
         private const int CrtcVerticalDisplayedRegister = 6;
+        private const int CrtcVerticalSyncRegister = 7;
         private const int CrtcScanLinesPerCharacterRegister = 9;
         private const int CrtcCursorStartRegister = 10;
         private const int CrtcCursorEndRegister = 11;
@@ -102,6 +106,14 @@ namespace BBC
         private int lastMode4Mode5SplitLine = 192;
         private bool hasLastMode4Mode5SplitLine;
 
+        // Stability tracking: the CRTC-derived vsync period and the gapped-text-mode decision
+        // both fire only after the relevant CRTC registers have been observed unchanged for an
+        // entire frame, so a single mid-frame rupture cannot retarget rendering or vsync.
+        private int previousFrameCrtcSignature;
+        private int stableCrtcSignature;
+        private int previousFrameR9;
+        private int stableR9;
+
         /// <summary>Gets the currently selected BBC screen mode.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
 
@@ -152,6 +164,10 @@ namespace BBC
             activeRasterEvents.Clear();
             lastMode4Mode5SplitLine = 192;
             hasLastMode4Mode5SplitLine = false;
+            previousFrameCrtcSignature = 0;
+            stableCrtcSignature = 0;
+            previousFrameR9 = 0;
+            stableR9 = 0;
             CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
             screenMemoryStart = 0x3000;
@@ -178,6 +194,44 @@ namespace BBC
             screenMemorySize = size;
         }
 
+        /// <summary>Computes the frame period implied by the live CRTC programming, expressed in 1 MHz peripheral cycles.</summary>
+        /// <remarks>
+        /// The 6845 generates one frame every:
+        ///   characters_per_line * total_lines characters
+        /// where total_lines = (R4 + 1) * (R9 + 1) + R5.
+        /// The Video ULA's "high clock" bit selects 2 MHz (1 byte per char) vs 1 MHz (2 bytes per char) character rate.
+        /// On the BBC, the 6845 is clocked at the character rate so one CRTC character equals 1 (1 MHz mode)
+        /// or 0.5 (2 MHz mode) microseconds at the peripheral 1 MHz clock.
+        /// Returns 0 if the registers are clearly unprogrammed or out of range, so callers fall back to default 50 Hz.
+        /// </remarks>
+        public int GetCrtcFramePeriodPeripheralCycles()
+        {
+            int horizontalTotal = crtcRegisters[CrtcHorizontalTotalRegister];   // R0: characters per scanline minus 1
+            int verticalTotal = crtcRegisters[CrtcVerticalTotalRegister];       // R4: character rows minus 1
+            int verticalAdjust = crtcRegisters[CrtcVerticalAdjustRegister] & 0x1F; // R5: extra scanlines
+            int scanlinesPerRow = (crtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1; // R9 + 1
+
+            if (horizontalTotal <= 0 || verticalTotal <= 0 || scanlinesPerRow <= 0)
+                return 0;
+
+            // Stability gate: do not push a CRTC-derived period unless the current programming
+            // matches what we saw at the end of the previous frame. Mid-frame ruptures that
+            // briefly retarget R0/R4/R5/R9 (Tricky's Frogger trick) must not steer vsync.
+            if (stableCrtcSignature == 0 || ComputeCrtcSignature() != stableCrtcSignature)
+                return 0;
+
+            int charactersPerScanline = horizontalTotal + 1;
+            int totalScanlines = ((verticalTotal + 1) * scanlinesPerRow) + verticalAdjust;
+            int totalCharacters = charactersPerScanline * totalScanlines;
+
+            // Determine character clock: high clock bit on the ULA selects 2 MHz character rate.
+            bool highClock = (UlaControl & UlaClockHigh) != 0;
+            // peripheral cycles per CRTC character: 1 at 1 MHz character clock, 0.5 at 2 MHz.
+            // Express the result in integer 1 MHz cycles: high-clock => totalCharacters / 2 (rounded).
+            int peripheralCycles = highClock ? (totalCharacters + 1) / 2 : totalCharacters;
+            return peripheralCycles;
+        }
+
         /// <summary>Captures a coherent frame of BBC-visible video state at emulated vsync.</summary>
         public void CaptureVisibleFrame()
         {
@@ -202,7 +256,36 @@ namespace BBC
                 sawMode4ThisFrame = CurrentMode == BbcScreenMode.Mode4;
                 sawMode5ThisFrame = CurrentMode == BbcScreenMode.Mode5;
                 hasFrameSnapshot = true;
+
+                // Stability gating: only treat the CRTC programming as "settled" when the same
+                // signature has been observed for two consecutive frames. This prevents mid-frame
+                // ruptures (e.g. Tricky's per-row R12/R13 writes in Frogger) from being mistaken
+                // for a permanent reprogramming.
+                int currentSignature = ComputeCrtcSignature();
+                if (currentSignature == previousFrameCrtcSignature)
+                    stableCrtcSignature = currentSignature;
+                previousFrameCrtcSignature = currentSignature;
+
+                int currentR9 = (crtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
+                if (currentR9 == previousFrameR9)
+                    stableR9 = currentR9;
+                previousFrameR9 = currentR9;
             }
+        }
+
+        private int ComputeCrtcSignature()
+        {
+            // 32-bit packing of the CRTC registers that determine frame timing and layout.
+            // R0 (horizontal total), R4 (vertical total), R5 (vertical adjust), R6 (vertical displayed),
+            // R9 (scanlines per row), plus the ULA high-clock bit. Anything else can change without
+            // invalidating the period or gapped-text decision.
+            int sig = crtcRegisters[CrtcHorizontalTotalRegister];
+            sig |= crtcRegisters[CrtcVerticalTotalRegister] << 8;
+            sig |= (crtcRegisters[CrtcVerticalAdjustRegister] & 0x1F) << 16;
+            sig |= (crtcRegisters[CrtcVerticalDisplayedRegister] & 0x7F) << 21;
+            sig |= ((crtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) << 28);
+            sig ^= (UlaControl & UlaClockHigh) != 0 ? unchecked((int)0x80000000) : 0;
+            return sig;
         }
 
         /// <summary>Reads a byte from the CRTC or Video ULA register area.</summary>
@@ -237,10 +320,13 @@ namespace BBC
                         crtcRegisters[regIndex] = value;
                         if (regIndex is CrtcCursorHighRegister or CrtcCursorLowRegister)
                             crtcCursorAddressWritten = true;
-                        // Mid-frame writes to display-start (R12/R13) or scanline-per-row (R9) change rendering
-                        // partway down the screen; capture a raster event so the renderer can split correctly.
-                        if (regIndex is CrtcDisplayStartHighRegister or CrtcDisplayStartLowRegister or CrtcScanLinesPerCharacterRegister)
-                            AddRasterEvent(frameCpuCycle);
+                        // Mid-frame writes to display-start (R12/R13), scanline-per-row (R9), or
+                        // horizontal-displayed (R1) change rendering partway down the screen; capture
+                        // a raster event so the renderer can split correctly. R1 mid-frame is what
+                        // enables Tricky's per-character-row "vertical rupture" trick (used in Frogger).
+                        // R9 writes are flagged as well because they can also reorder character rows.
+                        if (regIndex is CrtcDisplayStartHighRegister or CrtcDisplayStartLowRegister or CrtcScanLinesPerCharacterRegister or CrtcHorizontalDisplayedRegister)
+                            AddRasterEvent(frameCpuCycle, crtcAddressLatch: true);
                     }
                     break;
 
@@ -324,7 +410,10 @@ namespace BBC
                         break;
 
                     case BbcScreenMode.Mode0:
-                        RenderBitmapMode0(display);
+                        if (IsGappedTextRow())
+                            RenderBitmapMode3(display);
+                        else
+                            RenderBitmapMode0(display);
                         break;
 
                     case BbcScreenMode.Mode1:
@@ -336,7 +425,10 @@ namespace BBC
                         break;
 
                     case BbcScreenMode.Mode4:
-                        RenderBitmapMode4(display);
+                        if (IsGappedTextRow())
+                            RenderBitmapMode6(display);
+                        else
+                            RenderBitmapMode4(display);
                         break;
 
                     case BbcScreenMode.Mode5:
@@ -584,25 +676,37 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
+            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
+            int defaultStart = GetBitmapDisplayStart();
+            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
+            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
 
-            for (int y = 0; y < height; y++)
+            for (int charRow = 0; charRow < characterRows; charRow++)
             {
-                int targetY = y * 2;
+                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow20K);
+                int rowCrtcStart = snapshots[charRow].CrtcStart;
 
-                for (int byteX = 0; byteX < bytesPerRow; byteX++)
+                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+                    int y = (charRow * 8) + rasterLine;
+                    if (y >= height)
+                        return;
+                    int targetY = y * 2;
 
-                    for (int bit = 0; bit < 8; bit++)
+                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
-                        int logicalColour = (value >> (7 - bit)) & 0x01;
-                        uint colour = GetPaletteColour(logicalColour);
-                        int targetX = xOffset + (byteX * 8) + bit;
+                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
 
-                        WriteScaledPixel1x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        for (int bit = 0; bit < 8; bit++)
+                        {
+                            int logicalColour = (value >> (7 - bit)) & 0x01;
+                            uint colour = GetPaletteColour(logicalColour);
+                            int targetX = xOffset + (byteX * 8) + bit;
+
+                            WriteScaledPixel1x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        }
                     }
                 }
             }
@@ -612,25 +716,37 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
+            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
+            int defaultStart = GetBitmapDisplayStart();
+            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
+            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
 
-            for (int y = 0; y < height; y++)
+            for (int charRow = 0; charRow < characterRows; charRow++)
             {
-                int targetY = y * 2;
+                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow20K);
+                int rowCrtcStart = snapshots[charRow].CrtcStart;
 
-                for (int byteX = 0; byteX < bytesPerRow; byteX++)
+                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+                    int y = (charRow * 8) + rasterLine;
+                    if (y >= height)
+                        return;
+                    int targetY = y * 2;
 
-                    for (int pixel = 0; pixel < 4; pixel++)
+                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
-                        int logicalColour = DecodeTwoBitPixel(value, pixel);
-                        uint colour = GetPaletteColour(logicalColour);
-                        int targetX = xOffset + (((byteX * 4) + pixel) * 2);
+                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
 
-                        WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        for (int pixel = 0; pixel < 4; pixel++)
+                        {
+                            int logicalColour = DecodeTwoBitPixel(value, pixel);
+                            uint colour = GetPaletteColour(logicalColour);
+                            int targetX = xOffset + (((byteX * 4) + pixel) * 2);
+
+                            WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        }
                     }
                 }
             }
@@ -640,25 +756,37 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
+            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
+            int defaultStart = GetBitmapDisplayStart();
+            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
+            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
 
-            for (int y = 0; y < height; y++)
+            for (int charRow = 0; charRow < characterRows; charRow++)
             {
-                int targetY = y * 2;
+                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow20K);
+                int rowCrtcStart = snapshots[charRow].CrtcStart;
 
-                for (int byteX = 0; byteX < bytesPerRow; byteX++)
+                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+                    int y = (charRow * 8) + rasterLine;
+                    if (y >= height)
+                        return;
+                    int targetY = y * 2;
 
-                    for (int pixel = 0; pixel < 2; pixel++)
+                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
-                        int logicalColour = DecodeFourBitPixel(value, pixel);
-                        uint colour = GetPaletteColour(logicalColour);
-                        int targetX = xOffset + (((byteX * 2) + pixel) * 4);
+                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
 
-                        WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        for (int pixel = 0; pixel < 2; pixel++)
+                        {
+                            int logicalColour = DecodeFourBitPixel(value, pixel);
+                            uint colour = GetPaletteColour(logicalColour);
+                            int targetX = xOffset + (((byteX * 2) + pixel) * 4);
+
+                            WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        }
                     }
                 }
             }
@@ -668,25 +796,37 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
+            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
+            int defaultStart = GetBitmapDisplayStart();
+            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
+            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
 
-            for (int y = 0; y < height; y++)
+            for (int charRow = 0; charRow < characterRows; charRow++)
             {
-                int targetY = y * 2;
+                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow10K);
+                int rowCrtcStart = snapshots[charRow].CrtcStart;
 
-                for (int byteX = 0; byteX < bytesPerRow; byteX++)
+                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+                    int y = (charRow * 8) + rasterLine;
+                    if (y >= height)
+                        return;
+                    int targetY = y * 2;
 
-                    for (int bit = 0; bit < 8; bit++)
+                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
-                        int logicalColour = (value >> (7 - bit)) & 0x01;
-                        uint colour = GetPaletteColour(logicalColour);
-                        int targetX = xOffset + (((byteX * 8) + bit) * 2);
+                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
 
-                        WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        for (int bit = 0; bit < 8; bit++)
+                        {
+                            int logicalColour = (value >> (7 - bit)) & 0x01;
+                            uint colour = GetPaletteColour(logicalColour);
+                            int targetX = xOffset + (((byteX * 8) + bit) * 2);
+
+                            WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        }
                     }
                 }
             }
@@ -696,29 +836,146 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
+            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
+            int defaultStart = GetBitmapDisplayStart();
+            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
+            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
 
-            for (int y = 0; y < height; y++)
+            for (int charRow = 0; charRow < characterRows; charRow++)
             {
-                int targetY = y * 2;
+                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow10K);
+                int rowCrtcStart = snapshots[charRow].CrtcStart;
 
-                for (int byteX = 0; byteX < bytesPerRow; byteX++)
+                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
                 {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+                    int y = (charRow * 8) + rasterLine;
+                    if (y >= height)
+                        return;
+                    int targetY = y * 2;
 
-                    for (int pixel = 0; pixel < 4; pixel++)
+                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
-                        int logicalColour = DecodeTwoBitPixel(value, pixel);
-                        uint colour = GetPaletteColour(logicalColour);
-                        int targetX = xOffset + (((byteX * 4) + pixel) * 4);
+                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
 
-                        WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        for (int pixel = 0; pixel < 4; pixel++)
+                        {
+                            int logicalColour = DecodeTwoBitPixel(value, pixel);
+                            uint colour = GetPaletteColour(logicalColour);
+                            int targetX = xOffset + (((byteX * 4) + pixel) * 4);
+
+                            WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        }
                     }
                 }
             }
         }
+
+        /// <summary>True when the current CRTC programming describes the BBC's gapped text modes
+        /// (Modes 3 or 6): the ULA selects a Mode 0/4 character clock but R9 selects 9 (so each
+        /// character row spans 10 scanlines instead of 8), and only 25 character rows are
+        /// displayed. The last two scanlines of each row are blanked, producing the characteristic
+        /// gappy text look.
+        /// Stability gate: R9 must be ≥ 9 for two consecutive frames before we dispatch as Mode 3/6,
+        /// otherwise a single mid-frame R9 rupture (used as a CRTC trick by some games such as
+        /// Tricky's Frogger) would briefly retarget rendering and corrupt the screen.</summary>
+        private bool IsGappedTextRow()
+        {
+            int displayedRows = activeCrtcRegisters[CrtcVerticalDisplayedRegister];
+            return stableR9 >= 9 && displayedRows > 0 && displayedRows <= 32;
+        }
+
+        private void RenderBitmapMode3(Display display)
+        {
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, Background);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
+            int displayedRows = Math.Max(1, (int)activeCrtcRegisters[CrtcVerticalDisplayedRegister]);
+            int scanlinesPerRow = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
+            int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
+            int defaultStart = GetBitmapDisplayStart();
+            int eventCursor = 0;
+
+            // Mode 3: each character cell holds 8 pixel rows but the CRTC reserves
+            // scanlinesPerRow lines per character row, leaving (scanlinesPerRow - 8) blank.
+            for (int charRow = 0; charRow < displayedRows; charRow++)
+            {
+                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
+                {
+                    int y = (charRow * 8) + rasterLine;
+                    if (y >= BitmapHeight)
+                        return;
+
+                    int displayLine = (charRow * scanlinesPerRow) + rasterLine;
+                    int crtcStart = GetCrtcStartForScanline(displayLine, ref eventCursor, defaultStart);
+                    int targetY = displayLine * 2;
+
+                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
+                    {
+                        byte value = activeMemory[GetGappedBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, crtcStart)];
+
+                        for (int bit = 0; bit < 8; bit++)
+                        {
+                            int logicalColour = (value >> (7 - bit)) & 0x01;
+                            uint colour = GetPaletteColour(logicalColour);
+                            int targetX = xOffset + (byteX * 8) + bit;
+
+                            WriteScaledPixel1x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        }
+                    }
+                }
+            }
+        }
+
+        private void RenderBitmapMode6(Display display)
+        {
+            uint[] pixels = display.FrameBuffer;
+            Array.Fill(pixels, Background);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
+            int displayedRows = Math.Max(1, (int)activeCrtcRegisters[CrtcVerticalDisplayedRegister]);
+            int scanlinesPerRow = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
+            int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
+            int defaultStart = GetBitmapDisplayStart();
+            int eventCursor = 0;
+
+            for (int charRow = 0; charRow < displayedRows; charRow++)
+            {
+                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
+                {
+                    int y = (charRow * 8) + rasterLine;
+                    if (y >= BitmapHeight)
+                        return;
+
+                    int displayLine = (charRow * scanlinesPerRow) + rasterLine;
+                    int crtcStart = GetCrtcStartForScanline(displayLine, ref eventCursor, defaultStart);
+                    int targetY = displayLine * 2;
+
+                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
+                    {
+                        byte value = activeMemory[GetGappedBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, crtcStart)];
+
+                        for (int bit = 0; bit < 8; bit++)
+                        {
+                            int logicalColour = (value >> (7 - bit)) & 0x01;
+                            uint colour = GetPaletteColour(logicalColour);
+                            int targetX = xOffset + (((byteX * 8) + bit) * 2);
+
+                            WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>Address fetch for gapped text modes (Modes 3 and 6). Memory layout matches
+        /// Modes 0/4 but only the first 8 raster lines of each character row contain pixel data.</summary>
+        private int GetGappedBitmapAddress(int characterRow, int rasterLine, int byteX, int bytesPerRow, int crtcStart)
+        {
+            int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + (rasterLine & 0x07);
+            return WrapBitmapAddress(memoryAddress);
+        }
+
 
         private bool ShouldRenderMode4Mode5Split()
         {
@@ -756,7 +1013,7 @@ namespace BBC
                 | activeCrtcRegisters[CrtcDisplayStartLowRegister];
             VideoRasterEvent state = activeRasterEvents.Count > 0
                 ? activeRasterEvents[0]
-                : new VideoRasterEvent(0, 0, 0, activeMode, activeUlaControl, activePaletteRegisters, initialCrtcStart);
+                : new VideoRasterEvent(0, 0, 0, activeMode, activeUlaControl, activePaletteRegisters, initialCrtcStart, activeCrtcRegisters[CrtcHorizontalDisplayedRegister], crtcAddressLatch: false);
 
             for (int y = 0; y < height; y++)
             {
@@ -822,10 +1079,11 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             int targetY = y * 2;
+            int crtcStart = GetBitmapDisplayStart();
 
             for (int byteX = 0; byteX < bytesPerRow; byteX++)
             {
-                byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+                byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow, crtcStart)];
 
                 for (int bit = 0; bit < 8; bit++)
                 {
@@ -842,10 +1100,11 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             int targetY = y * 2;
+            int crtcStart = GetBitmapDisplayStart();
 
             for (int byteX = 0; byteX < bytesPerRow; byteX++)
             {
-                byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
+                byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow, crtcStart)];
 
                 for (int pixel = 0; pixel < 4; pixel++)
                 {
@@ -952,6 +1211,196 @@ namespace BBC
             return WrapBitmapAddress(memoryAddress);
         }
 
+        /// <summary>Address overload that allows the caller to supply a per-scanline CRTC start address
+        /// (derived from raster events captured during the frame). This is what enables hardware
+        /// vertical scrolling and split screens that re-program R12/R13 mid-frame.</summary>
+        private int GetBitmapAddress(int y, int byteX, int bytesPerRow, int crtcStart)
+        {
+            int characterRow = y >> 3;
+            int rasterLine = y & 0x07;
+            int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
+            return WrapBitmapAddress(memoryAddress);
+        }
+
+        /// <summary>Address fetch addressed per character row using a row-specific CRTC start
+        /// (R12:R13) and bytes-per-row (R1). The supplied <paramref name="rowCrtcStart"/> already
+        /// reflects either the explicit per-row latched value or the natural sequential address
+        /// (computed by <see cref="BuildCharacterRowSnapshots"/>), so we never apply an additional
+        /// per-row stride here. This is the address pattern produced by the real 6845 when a game
+        /// performs per-character-row "vertical rupture" reprogramming or hardware scrolling.</summary>
+        private int GetCharacterRowBitmapAddress(int characterRow, int rasterLine, int byteX, int bytesPerRow, int rowCrtcStart)
+        {
+            _ = characterRow;
+            _ = bytesPerRow;
+            int memoryAddress = ((rowCrtcStart + byteX) << 3) + (rasterLine & 0x07);
+            return WrapBitmapAddress(memoryAddress);
+        }
+
+        /// <summary>Returns the CRTC start address (R12:R13) effective for the given visible scanline.
+        /// Walks the captured raster events and snaps to the most recent event whose visible-line
+        /// position is at or before <paramref name="y"/>. The caller may supply <paramref name="eventCursor"/>
+        /// initialised to 0 and re-use it across scanlines for O(N+R) total cost.</summary>
+        private int GetCrtcStartForScanline(int y, ref int eventCursor, int defaultStart)
+        {
+            int start = defaultStart;
+            // activeRasterEvents is already in time-order; walk forward while events apply to y or earlier.
+            // Snap each event's effective scanline to the next character-row boundary, matching real
+            // 6845 behaviour: R12/R13 latches only at the start of a character row, not mid-row.
+            // Only events caused by actual R12/R13 writes are honoured; mode/ULA/palette events
+            // carry an incidental CRTC snapshot only and must not retarget addressing.
+            while (eventCursor < activeRasterEvents.Count)
+            {
+                int eventVisibleLine = activeRasterEvents[eventCursor].VisibleLine;
+                int snappedLine = SnapToNextCharacterRow(eventVisibleLine);
+                if (snappedLine > y)
+                    break;
+                if (activeRasterEvents[eventCursor].CrtcAddressLatch)
+                    start = activeRasterEvents[eventCursor].CrtcStartAddress;
+                eventCursor++;
+            }
+            return start;
+        }
+
+        /// <summary>Snaps a write-time visible scanline up to the start of the next character row,
+        /// matching the 6845 latch behaviour for R12/R13/R1. Writes that occur within a character
+        /// row only take effect at the start of the following row, never partway through. Writes
+        /// that occur exactly on a row boundary are treated as latching at the start of that row,
+        /// because games typically issue the write just before vsync/HBL crosses the boundary and
+        /// our cycle-based scanline estimate is coarse enough that exact-boundary writes should
+        /// be honoured by the row that is just beginning.</summary>
+        private static int SnapToNextCharacterRow(int visibleLine)
+        {
+            // Writes before the first visible row programme the very first character row.
+            if (visibleLine <= 0)
+                return 0;
+            // Standard "round up to next multiple of 8". Boundary values map to themselves so a
+            // write timed at the start of row N latches into row N (not row N+1).
+            return ((visibleLine + 7) >> 3) << 3;
+        }
+
+        /// <summary>Returns the effective number of character rows that the CRTC actually
+        /// displays this frame. Normally this is just R6 (vertical displayed), but Tricky's
+        /// Frogger trick programs R6 = 1 and instead repaints the screen by rewriting R12:R13
+        /// at every character-row boundary, relying on a recurring vertical rupture rather than
+        /// on R6. In that case R6 alone would clip the display down to a single character row,
+        /// so we additionally count how far down the visible region the CRTC address-latch events
+        /// reach and use whichever is greater. The result is clamped to the maximum bitmap
+        /// height so we never render more rows than the screen can show.</summary>
+        /// <param name="defaultRows">The starting estimate (typically R6 from the frame snapshot).</param>
+        /// <param name="scanlinesPerRow">The CRTC scanlines per character row (R9 + 1).</param>
+        private int GetEffectiveCharacterRows(int defaultRows, int scanlinesPerRow)
+        {
+            int maxRows = Math.Max(1, BitmapHeight / Math.Max(1, scanlinesPerRow));
+            int rows = Math.Clamp(defaultRows, 1, maxRows);
+
+            if (activeRasterEvents.Count == 0 || scanlinesPerRow <= 0)
+                return rows;
+
+            // Find the deepest visible scanline that is targeted by an actual R12/R13/R1/R9
+            // address-latch event. Latches advance the rendered character-row index, so the
+            // effective row count must be at least one more than that latch's row index.
+            int highestLatchedRow = -1;
+            for (int i = 0; i < activeRasterEvents.Count; i++)
+            {
+                if (!activeRasterEvents[i].CrtcAddressLatch)
+                    continue;
+                int visibleLine = activeRasterEvents[i].VisibleLine;
+                if (visibleLine < 0 || visibleLine >= BitmapHeight)
+                    continue;
+                int rowIndex = visibleLine / scanlinesPerRow;
+                if (rowIndex > highestLatchedRow)
+                    highestLatchedRow = rowIndex;
+            }
+
+            if (highestLatchedRow + 1 > rows)
+                rows = Math.Min(maxRows, highestLatchedRow + 1);
+
+            return rows;
+        }
+
+        /// <summary>Builds a per-character-row map of (crtcStart, bytesPerRow) snapshots derived
+        /// from the time-ordered raster events. Each entry describes what R12:R13 and R1 looked
+        /// like at the moment the CRTC latched a new character row, with the natural memory stride
+        /// applied between rows that have no explicit event of their own. This is what enables the
+        /// per-character-row "vertical rupture" trick used by games such as Tricky's Frogger, where
+        /// R12:R13 (and sometimes R1) are reprogrammed once for every character row.
+        /// The default start/bytes-per-row from the frame snapshot are always used as the starting
+        /// state, and explicit raster events only override when they target a visible scanline.
+        /// Pre-visible events (e.g. the synthetic frame-start event captured at vsync) are ignored
+        /// here because their captured state may be transient and not representative of what the
+        /// frame actually uses.</summary>
+        /// <param name="characterRowCount">The number of character rows to populate (typically R6).</param>
+        /// <param name="scanlinesPerRow">The CRTC scanlines per character row (R9 + 1).</param>
+        /// <param name="defaultStart">Fallback R12:R13 to use before the first event.</param>
+        /// <param name="defaultBytesPerRow">Fallback R1 to use before the first event.</param>
+        private (int CrtcStart, int BytesPerRow)[] BuildCharacterRowSnapshots(int characterRowCount, int scanlinesPerRow, int defaultStart, int defaultBytesPerRow)
+        {
+            var snapshots = new (int CrtcStart, int BytesPerRow)[characterRowCount];
+            int currentStart = defaultStart;
+            int currentBytesPerRow = defaultBytesPerRow;
+
+            // Process any pre-visible (VisibleLine <= 0) events that occurred between vsync and
+            // the start of the active region. We honour real address-latch events (R12/R13/R1/R9
+            // writes) because games such as Tricky's Frogger reprogram R12/R13 during VBL to
+            // point at the first playfield row before scan 0. We skip non-latch events because
+            // their captured CRTC state is incidental (palette/ULA writes that just snapshot
+            // the current registers, which may carry the previous frame's end-of-frame values).
+            int eventIndex = 0;
+            while (eventIndex < activeRasterEvents.Count && activeRasterEvents[eventIndex].VisibleLine <= 0)
+            {
+                if (activeRasterEvents[eventIndex].CrtcAddressLatch)
+                {
+                    currentStart = activeRasterEvents[eventIndex].CrtcStartAddress;
+                    if (activeRasterEvents[eventIndex].HorizontalDisplayed > 0)
+                        currentBytesPerRow = activeRasterEvents[eventIndex].HorizontalDisplayed;
+                }
+                eventIndex++;
+            }
+
+            for (int row = 0; row < characterRowCount; row++)
+            {
+                int rowFirstScanline = row * scanlinesPerRow;
+                bool rowExplicitlyLatched = false;
+
+                // Walk every event whose snapped scanline matches the start of this character row.
+                // The 6845 latches at character-row boundaries, so writes within a row only take
+                // effect at the start of the next row. Only events flagged as CrtcAddressLatch (i.e.
+                // writes to R12/R13/R1/R9 themselves) may change addressing; mode/ULA/palette events
+                // are skipped here because their CRTC state snapshot is incidental, not authoritative.
+                while (eventIndex < activeRasterEvents.Count)
+                {
+                    int snappedLine = SnapToNextCharacterRow(activeRasterEvents[eventIndex].VisibleLine);
+                    if (snappedLine > rowFirstScanline)
+                        break;
+                    if (activeRasterEvents[eventIndex].CrtcAddressLatch)
+                    {
+                        currentStart = activeRasterEvents[eventIndex].CrtcStartAddress;
+                        if (activeRasterEvents[eventIndex].HorizontalDisplayed > 0)
+                            currentBytesPerRow = activeRasterEvents[eventIndex].HorizontalDisplayed;
+                        rowExplicitlyLatched = true;
+                    }
+                    eventIndex++;
+                }
+
+                if (rowExplicitlyLatched || row == 0)
+                {
+                    // Either an explicit R12/R13 write landed on this row, or we are at the first
+                    // row of the frame: use the currently latched start address directly.
+                    snapshots[row] = (currentStart, currentBytesPerRow);
+                }
+                else
+                {
+                    // No explicit event for this row: advance naturally from the previous row by
+                    // its bytes-per-row stride, mirroring the 6845 address generator.
+                    int previousStart = snapshots[row - 1].CrtcStart;
+                    int previousStride = snapshots[row - 1].BytesPerRow;
+                    snapshots[row] = (previousStart + previousStride, currentBytesPerRow);
+                }
+            }
+
+            return snapshots;
+        }
+
         private int GetBitmapDisplayStart()
         {
             return ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
@@ -984,7 +1433,12 @@ namespace BBC
         {
             int displayedRows = activeCrtcRegisters[CrtcVerticalDisplayedRegister];
             int scanlinesPerCharacter = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
-            int height = displayedRows * scanlinesPerCharacter;
+            // Honour Tricky's Frogger trick: when the game programs R6 = 1 but uses mid-frame
+            // R12/R13 latches to repaint additional rows, the effective number of displayed rows
+            // is greater than R6. Use the same heuristic as the per-row snapshot builder so the
+            // renderer's `y >= height` early-out matches the actual painted height.
+            int effectiveRows = GetEffectiveCharacterRows(displayedRows, scanlinesPerCharacter);
+            int height = effectiveRows * scanlinesPerCharacter;
 
             if (height <= 0)
                 return BitmapHeight;
@@ -1155,18 +1609,19 @@ namespace BBC
             };
         }
 
-        private void AddRasterEvent(int frameCpuCycle)
+        private void AddRasterEvent(int frameCpuCycle, bool crtcAddressLatch = false)
         {
             int scanline = Math.Clamp(frameCpuCycle, 0, VideoFrameCpuCycles - 1) * VideoFrameScanlines / VideoFrameCpuCycles;
             int visibleLine = scanline - VisibleStartScanline;
             int crtcStart = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
                 | crtcRegisters[CrtcDisplayStartLowRegister];
-            rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters, crtcStart));
+            int horizontalDisplayed = crtcRegisters[CrtcHorizontalDisplayedRegister];
+            rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters, crtcStart, horizontalDisplayed, crtcAddressLatch));
         }
 
         private readonly struct VideoRasterEvent
         {
-            public VideoRasterEvent(int frameCpuCycle, int scanline, int visibleLine, BbcScreenMode mode, byte ulaControl, byte[] palette, int crtcStartAddress)
+            public VideoRasterEvent(int frameCpuCycle, int scanline, int visibleLine, BbcScreenMode mode, byte ulaControl, byte[] palette, int crtcStartAddress, int horizontalDisplayed, bool crtcAddressLatch)
             {
                 FrameCpuCycle = frameCpuCycle;
                 Scanline = scanline;
@@ -1174,6 +1629,8 @@ namespace BBC
                 Mode = mode;
                 UlaControl = ulaControl;
                 CrtcStartAddress = crtcStartAddress;
+                HorizontalDisplayed = horizontalDisplayed;
+                CrtcAddressLatch = crtcAddressLatch;
                 Palette = new byte[PaletteRegisterCount];
                 Array.Copy(palette, Palette, Palette.Length);
             }
@@ -1187,6 +1644,14 @@ namespace BBC
             public BbcScreenMode Mode { get; }
 
             public int CrtcStartAddress { get; }
+
+            /// <summary>R1 (horizontal displayed = characters per row, i.e. memory bytes per row).</summary>
+            public int HorizontalDisplayed { get; }
+
+            /// <summary>True when this event was emitted by a write to R12/R13/R1 (display-start
+            /// high/low or horizontal-displayed). Other events (mode/ULA/palette writes) snapshot
+            /// these values for context only and must not be treated as a per-row CRTC latch.</summary>
+            public bool CrtcAddressLatch { get; }
 
             public byte UlaControl { get; }
 

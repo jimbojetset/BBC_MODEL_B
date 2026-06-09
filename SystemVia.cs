@@ -49,6 +49,7 @@ namespace BBC
         private int peripheralCycleRemainder;
         private int vsyncCycleCounter;
         private int frameCounter;
+        private int vsyncPeriodOverride;
 
         /// <summary>Initializes a new system VIA shim.</summary>
         /// <param name="sound">The sound generator connected to the VIA slow bus.</param>
@@ -90,13 +91,28 @@ namespace BBC
             peripheralCycleRemainder = 0;
             vsyncCycleCounter = 0;
             frameCounter = 0;
+            vsyncPeriodOverride = 0;
         }
+
+        /// <summary>Sets a CRTC-derived vsync period in 1 MHz peripheral cycles.</summary>
+        /// <param name="peripheralCycles">The frame period in peripheral cycles, or 0 to use the default 50 Hz timing.</param>
+        public void SetVsyncPeriod(int peripheralCycles)
+        {
+            // Clamp to a sane range so a half-programmed CRTC can't stall vsync entirely.
+            // 30 Hz to 100 Hz covers every realistic BBC mode while rejecting nonsense values.
+            if (peripheralCycles >= 10_000 && peripheralCycles <= 33_333)
+                vsyncPeriodOverride = peripheralCycles;
+            else
+                vsyncPeriodOverride = 0;
+        }
+
+        private int CurrentVsyncPeriod => vsyncPeriodOverride > 0 ? vsyncPeriodOverride : VsyncPeripheralCycles;
 
         /// <summary>Gets the number of emulated 50 Hz video frames since reset.</summary>
         public int FrameCounter => Volatile.Read(ref frameCounter);
 
         /// <summary>Gets the approximate CPU cycles elapsed since the current 50 Hz frame started.</summary>
-        public int FrameCpuCycle => Math.Clamp((vsyncCycleCounter * 2) + peripheralCycleRemainder, 0, (VsyncPeripheralCycles * 2) - 1);
+        public int FrameCpuCycle => Math.Clamp((vsyncCycleCounter * 2) + peripheralCycleRemainder, 0, (CurrentVsyncPeriod * 2) - 1);
 
         /// <summary>Gets the currently selected video RAM start address.</summary>
         public int ScreenMemoryStart => GetScreenMemoryWindow(addressableLatch).Start;
@@ -314,11 +330,13 @@ namespace BBC
         {
             vsyncCycleCounter += peripheralCycles;
 
-            while (vsyncCycleCounter >= VsyncPeripheralCycles)
+            int period = CurrentVsyncPeriod;
+            while (vsyncCycleCounter >= period)
             {
-                vsyncCycleCounter -= VsyncPeripheralCycles;
+                vsyncCycleCounter -= period;
                 Interlocked.Increment(ref frameCounter);
                 SetInterrupt(InterruptFlagVsync);
+                period = CurrentVsyncPeriod;
             }
         }
 

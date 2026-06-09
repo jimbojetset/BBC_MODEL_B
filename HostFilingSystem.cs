@@ -145,6 +145,11 @@ namespace BBC
             if (command.StartsWith('*'))
                 command = command[1..].TrimStart();
 
+            // BBC shorthand: '*/FILE' is equivalent to '*RUN FILE'. Rewrite once
+            // so the rest of the dispatcher (TryParseRunCommand etc.) just works.
+            if (command.StartsWith('/'))
+                command = "RUN " + command[1..].TrimStart();
+
             if (command.Length == 0)
             {
                 ReturnFromSubroutine(cpu);
