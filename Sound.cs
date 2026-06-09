@@ -26,7 +26,7 @@ namespace BBC
         private const int MaxQueuedSamples = SampleRate / 10;
         private const ushort AudioFormatS16 = 0x8010;
         private const double PowerOnToneFrequencyHz = 120.0;
-        private const double PowerOnToneDurationSeconds = 0.3;
+        private const double PowerOnToneDurationSeconds = 0.35;
         private const double PowerOnToneAmplitude = 0.1;
         private readonly object syncRoot = new object();
         private readonly int[] tonePeriods = [0, 0, 0];
