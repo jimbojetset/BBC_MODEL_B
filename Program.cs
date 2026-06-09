@@ -284,6 +284,7 @@ namespace BBC
 
             Display ??= new Display();
             Sound.Start();
+            Thread.Sleep(Sound.PowerOnToneDuration/2);
 
             StartCpu();
 

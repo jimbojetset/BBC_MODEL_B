@@ -115,6 +115,7 @@ namespace BBC
                 renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC);
             ThrowIfNull(renderer, "SDL_CreateRenderer");
 
+            ThrowIfSdlFailed(SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255), "SDL_SetRenderDrawColor");
             ThrowIfSdlFailed(SDL_RenderSetLogicalSize(renderer, logicalWidth, logicalHeight), "SDL_RenderSetLogicalSize");
             _ = SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
 
@@ -255,13 +256,13 @@ namespace BBC
             }
 
             ThrowIfSdlFailed(SDL_RenderClear(renderer), "SDL_RenderClear");
-            if (monitorTexture != IntPtr.Zero)
-                ThrowIfSdlFailed(SDL_RenderCopy(renderer, monitorTexture, IntPtr.Zero, IntPtr.Zero), "SDL_RenderCopy");
-
             ThrowIfSdlFailed(SDL_RenderCopy(renderer, texture, IntPtr.Zero, ref viewportRect), "SDL_RenderCopy");
 
             if (scanlinesEnabled && scanlineTexture != IntPtr.Zero)
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
+
+            if (monitorTexture != IntPtr.Zero)
+                ThrowIfSdlFailed(SDL_RenderCopy(renderer, monitorTexture, IntPtr.Zero, IntPtr.Zero), "SDL_RenderCopy");
 
             SDL_RenderPresent(renderer);
         }
@@ -270,6 +271,7 @@ namespace BBC
         {
             IntPtr staticTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
             ThrowIfNull(staticTexture, "SDL_CreateTexture");
+            ThrowIfSdlFailed(SDL_SetTextureBlendMode(staticTexture, SDL_BLENDMODE_BLEND), "SDL_SetTextureBlendMode");
 
             GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
             try
@@ -1205,6 +1207,9 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_DestroyRenderer(IntPtr renderer);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_SetRenderDrawColor(IntPtr renderer, byte r, byte g, byte b, byte a);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderSetLogicalSize(IntPtr renderer, int w, int h);

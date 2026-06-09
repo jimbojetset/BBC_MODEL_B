@@ -25,7 +25,9 @@ namespace BBC
         private const int SamplesPerBuffer = 1024;
         private const int MaxQueuedSamples = SampleRate / 10;
         private const ushort AudioFormatS16 = 0x8010;
-
+        private const double PowerOnToneFrequencyHz = 120.0;
+        private const double PowerOnToneDurationSeconds = 0.3;
+        private const double PowerOnToneAmplitude = 0.1;
         private readonly object syncRoot = new object();
         private readonly int[] tonePeriods = [0, 0, 0];
         private readonly int[] volumes = [15, 15, 15, 15];
@@ -40,6 +42,10 @@ namespace BBC
         private ushort noiseShiftRegister = 0x4000;
         private int latchedChannel;
         private bool latchedVolume;
+        private int powerOnToneSamplesRemaining;
+        private int powerOnToneTotalSamples;
+        private double powerOnTonePhase;
+        private bool powerOnToneQueued;
         private uint audioDevice;
         private Thread? audioThread;
         private bool running;
@@ -50,6 +56,9 @@ namespace BBC
         {
             Reset();
         }
+
+        /// <summary>Gets the length of the emulated hardware power-on tone.</summary>
+        public TimeSpan PowerOnToneDuration => TimeSpan.FromSeconds(PowerOnToneDurationSeconds);
 
         /// <summary>Resets all tone/noise registers to silence.</summary>
         public void Reset()
@@ -93,6 +102,7 @@ namespace BBC
                 throw new InvalidOperationException($"SDL_OpenAudioDevice failed: {GetSdlError()}");
 
             running = true;
+            QueuePowerOnTone();
             audioThread = new Thread(RunAudio)
             {
                 IsBackground = true,
@@ -206,6 +216,7 @@ namespace BBC
 
                     double noiseTargetGain = GetVolume(volumes[3]);
                     mixed += AdvanceNoise(noiseControl, tonePeriods[2]) * SlewChannelGain(3, noiseTargetGain);
+                    mixed += AdvancePowerOnTone();
                     samples[i] = (short)Math.Clamp(mixed * 8192, short.MinValue, short.MaxValue);
                 }
             }
@@ -238,6 +249,37 @@ namespace BBC
             }
 
             return noisePolarity;
+        }
+
+        private void QueuePowerOnTone()
+        {
+            lock (syncRoot)
+            {
+                if (powerOnToneQueued)
+                    return;
+
+                powerOnToneTotalSamples = (int)(PowerOnToneDurationSeconds * SampleRate);
+                powerOnToneSamplesRemaining = powerOnToneTotalSamples;
+                powerOnTonePhase = 0;
+                powerOnToneQueued = true;
+            }
+        }
+
+        private double AdvancePowerOnTone()
+        {
+            if (powerOnToneSamplesRemaining <= 0 || powerOnToneTotalSamples <= 0)
+                return 0;
+
+            double age = 1.0 - (powerOnToneSamplesRemaining / (double)powerOnToneTotalSamples);
+            double envelope = Math.Min(1.0, age / 0.08);
+            double sample = (powerOnTonePhase < 0.5 ? 1.0 : -1.0) * PowerOnToneAmplitude * envelope;
+
+            powerOnTonePhase += PowerOnToneFrequencyHz / SampleRate;
+            if (powerOnTonePhase >= 1.0)
+                powerOnTonePhase -= Math.Floor(powerOnTonePhase);
+
+            powerOnToneSamplesRemaining--;
+            return sample;
         }
 
         private void StepNoiseShiftRegister(byte control)
