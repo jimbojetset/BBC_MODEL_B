@@ -699,6 +699,7 @@ namespace BBC
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
+            int yOffset = GetBitmapYOffset(height);
             int defaultStart = GetBitmapDisplayStart();
             int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
             var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
@@ -713,7 +714,7 @@ namespace BBC
                     int y = (charRow * 8) + rasterLine;
                     if (y >= height)
                         return;
-                    int targetY = y * 2;
+                    int targetY = yOffset + (y * 2);
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
@@ -739,6 +740,7 @@ namespace BBC
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
+            int yOffset = GetBitmapYOffset(height);
             int defaultStart = GetBitmapDisplayStart();
             int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
             var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
@@ -753,7 +755,7 @@ namespace BBC
                     int y = (charRow * 8) + rasterLine;
                     if (y >= height)
                         return;
-                    int targetY = y * 2;
+                    int targetY = yOffset + (y * 2);
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
@@ -779,10 +781,11 @@ namespace BBC
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
+            int yOffset = GetBitmapYOffset(height);
 
             for (int y = 0; y < height; y++)
             {
-                int targetY = y * 2;
+                int targetY = yOffset + (y * 2);
 
                 for (int byteX = 0; byteX < bytesPerRow; byteX++)
                 {
@@ -807,6 +810,7 @@ namespace BBC
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
+            int yOffset = GetBitmapYOffset(height);
             int defaultStart = GetBitmapDisplayStart();
             int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
             var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
@@ -821,7 +825,7 @@ namespace BBC
                     int y = (charRow * 8) + rasterLine;
                     if (y >= height)
                         return;
-                    int targetY = y * 2;
+                    int targetY = yOffset + (y * 2);
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
@@ -847,6 +851,7 @@ namespace BBC
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
+            int yOffset = GetBitmapYOffset(height);
             int defaultStart = GetBitmapDisplayStart();
             int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
             var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
@@ -861,7 +866,7 @@ namespace BBC
                     int y = (charRow * 8) + rasterLine;
                     if (y >= height)
                         return;
-                    int targetY = y * 2;
+                    int targetY = yOffset + (y * 2);
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
@@ -901,7 +906,9 @@ namespace BBC
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int displayedRows = Math.Max(1, (int)activeCrtcRegisters[CrtcVerticalDisplayedRegister]);
             int scanlinesPerRow = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
+            int height = Math.Clamp(displayedRows * scanlinesPerRow, 1, BitmapHeight);
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
+            int yOffset = GetBitmapYOffset(height);
             int defaultStart = GetBitmapDisplayStart();
             int eventCursor = 0;
 
@@ -917,7 +924,7 @@ namespace BBC
 
                     int displayLine = (charRow * scanlinesPerRow) + rasterLine;
                     int crtcStart = GetCrtcStartForScanline(displayLine, scanlinesPerRow, ref eventCursor, defaultStart);
-                    int targetY = displayLine * 2;
+                    int targetY = yOffset + (displayLine * 2);
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
@@ -943,7 +950,9 @@ namespace BBC
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int displayedRows = Math.Max(1, (int)activeCrtcRegisters[CrtcVerticalDisplayedRegister]);
             int scanlinesPerRow = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
+            int height = Math.Clamp(displayedRows * scanlinesPerRow, 1, BitmapHeight);
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
+            int yOffset = GetBitmapYOffset(height);
             int defaultStart = GetBitmapDisplayStart();
             int eventCursor = 0;
 
@@ -957,7 +966,7 @@ namespace BBC
 
                     int displayLine = (charRow * scanlinesPerRow) + rasterLine;
                     int crtcStart = GetCrtcStartForScanline(displayLine, scanlinesPerRow, ref eventCursor, defaultStart);
-                    int targetY = displayLine * 2;
+                    int targetY = yOffset + (displayLine * 2);
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
                     {
