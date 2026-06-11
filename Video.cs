@@ -201,10 +201,10 @@ namespace BBC
         {
             int horizontalTotal = crtcRegisters[CrtcHorizontalTotalRegister];   // R0: characters per scanline minus 1
             int verticalTotal = crtcRegisters[CrtcVerticalTotalRegister];       // R4: character rows minus 1
-            int verticalAdjust = crtcRegisters[CrtcVerticalAdjustRegister] & 0x1F; // R5: extra scanlines
-            int scanlinesPerRow = (crtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1; // R9 + 1
+            int scanlinesPerRow = GetCrtcScanlinesPerCharacter(crtcRegisters); // R9 + 1
+            int totalScanlines = GetCrtcTotalScanlines(crtcRegisters);
 
-            if (horizontalTotal <= 0 || verticalTotal <= 0 || scanlinesPerRow <= 0)
+            if (horizontalTotal <= 0 || verticalTotal <= 0 || totalScanlines <= 0 || scanlinesPerRow <= 0)
                 return 0;
 
             // Stability gate: do not push a CRTC-derived period unless the current programming
@@ -214,7 +214,6 @@ namespace BBC
                 return 0;
 
             int charactersPerScanline = horizontalTotal + 1;
-            int totalScanlines = ((verticalTotal + 1) * scanlinesPerRow) + verticalAdjust;
             int totalCharacters = charactersPerScanline * totalScanlines;
 
             // Determine character clock: high clock bit on the ULA selects 2 MHz character rate.
@@ -898,7 +897,7 @@ namespace BBC
                         return;
 
                     int displayLine = (charRow * scanlinesPerRow) + rasterLine;
-                    int crtcStart = GetCrtcStartForScanline(displayLine, ref eventCursor, defaultStart);
+                    int crtcStart = GetCrtcStartForScanline(displayLine, scanlinesPerRow, ref eventCursor, defaultStart);
                     int targetY = displayLine * 2;
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
@@ -938,7 +937,7 @@ namespace BBC
                         return;
 
                     int displayLine = (charRow * scanlinesPerRow) + rasterLine;
-                    int crtcStart = GetCrtcStartForScanline(displayLine, ref eventCursor, defaultStart);
+                    int crtcStart = GetCrtcStartForScanline(displayLine, scanlinesPerRow, ref eventCursor, defaultStart);
                     int targetY = displayLine * 2;
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
@@ -1230,7 +1229,7 @@ namespace BBC
         /// Walks the captured raster events and snaps to the most recent event whose visible-line
         /// position is at or before <paramref name="y"/>. The caller may supply <paramref name="eventCursor"/>
         /// initialised to 0 and re-use it across scanlines for O(N+R) total cost.</summary>
-        private int GetCrtcStartForScanline(int y, ref int eventCursor, int defaultStart)
+        private int GetCrtcStartForScanline(int y, int scanlinesPerRow, ref int eventCursor, int defaultStart)
         {
             int start = defaultStart;
             // activeRasterEvents is already in time-order; walk forward while events apply to y or earlier.
@@ -1241,7 +1240,7 @@ namespace BBC
             while (eventCursor < activeRasterEvents.Count)
             {
                 int eventVisibleLine = activeRasterEvents[eventCursor].VisibleLine;
-                int snappedLine = SnapToNextCharacterRow(eventVisibleLine);
+                int snappedLine = SnapToNextCharacterRow(eventVisibleLine, scanlinesPerRow);
                 if (snappedLine > y)
                     break;
                 if (activeRasterEvents[eventCursor].CrtcAddressLatch)
@@ -1258,14 +1257,16 @@ namespace BBC
         /// because games typically issue the write just before vsync/HBL crosses the boundary and
         /// our cycle-based scanline estimate is coarse enough that exact-boundary writes should
         /// be honoured by the row that is just beginning.</summary>
-        private static int SnapToNextCharacterRow(int visibleLine)
+        private static int SnapToNextCharacterRow(int visibleLine, int scanlinesPerRow)
         {
+            scanlinesPerRow = Math.Max(1, scanlinesPerRow);
+
             // Writes before the first visible row programme the very first character row.
             if (visibleLine <= 0)
                 return 0;
-            // Standard "round up to next multiple of 8". Boundary values map to themselves so a
+            // Standard "round up to next character row". Boundary values map to themselves so a
             // write timed at the start of row N latches into row N (not row N+1).
-            return ((visibleLine + 7) >> 3) << 3;
+            return ((visibleLine + scanlinesPerRow - 1) / scanlinesPerRow) * scanlinesPerRow;
         }
 
         /// <summary>Returns the effective number of character rows that the CRTC actually
@@ -1359,7 +1360,7 @@ namespace BBC
                 // are skipped here because their CRTC state snapshot is incidental, not authoritative.
                 while (eventIndex < activeRasterEvents.Count)
                 {
-                    int snappedLine = SnapToNextCharacterRow(activeRasterEvents[eventIndex].VisibleLine);
+                    int snappedLine = SnapToNextCharacterRow(activeRasterEvents[eventIndex].VisibleLine, scanlinesPerRow);
                     if (snappedLine > rowFirstScanline)
                         break;
                     if (activeRasterEvents[eventIndex].CrtcAddressLatch)
@@ -1607,6 +1608,24 @@ namespace BBC
                 | crtcRegisters[CrtcDisplayStartLowRegister];
             int horizontalDisplayed = crtcRegisters[CrtcHorizontalDisplayedRegister];
             rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters, crtcStart, horizontalDisplayed, crtcAddressLatch));
+        }
+
+        private static int GetCrtcScanlinesPerCharacter(byte[] registers)
+        {
+            return (registers[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
+        }
+
+        private static int GetCrtcTotalScanlines(byte[] registers)
+        {
+            int verticalTotal = registers[CrtcVerticalTotalRegister];
+            int verticalAdjust = registers[CrtcVerticalAdjustRegister] & 0x1F;
+            int scanlinesPerRow = GetCrtcScanlinesPerCharacter(registers);
+            int totalScanlines = ((verticalTotal + 1) * scanlinesPerRow) + verticalAdjust;
+
+            if (totalScanlines < 200 || totalScanlines > 400)
+                return VideoFrameScanlines;
+
+            return totalScanlines;
         }
 
         private readonly struct VideoRasterEvent
