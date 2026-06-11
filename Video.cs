@@ -1198,15 +1198,48 @@ namespace BBC
 
         private byte ReadMode7DisplayCharacter(int row, int column)
         {
-            int offset = (GetMode7DisplayStartOffset() + (row * Mode7Columns) + column) & (Mode7ScreenBytes - 1);
-            return activeMemory[Mode7ScreenStart + offset];
+            int crtcAddress = GetMode7DisplayStartAddress()
+                + (row * GetMode7BytesPerRow())
+                + column;
+            return activeMemory[TranslateMode7Address(crtcAddress)];
         }
 
         private int GetMode7DisplayStartOffset()
         {
+            return GetMode7DisplayStartAddress() & (Mode7ScreenBytes - 1);
+        }
+
+        private int GetMode7DisplayStartAddress()
+        {
             int crtcStart = ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
                 | activeCrtcRegisters[CrtcDisplayStartLowRegister];
-            return crtcStart & (Mode7ScreenBytes - 1);
+            return crtcStart;
+        }
+
+        private int GetMode7BytesPerRow()
+        {
+            int displayed = activeCrtcRegisters[CrtcHorizontalDisplayedRegister];
+            if (displayed <= 0)
+                return Mode7Columns;
+
+            return Math.Clamp(displayed, 1, 128);
+        }
+
+        private int TranslateMode7Address(int crtcMemoryAddress)
+        {
+            int ma = crtcMemoryAddress & 0x3FFF;
+
+            if ((ma & 0x2000) != 0)
+            {
+                // BBC Model B teletext "chunky" addressing: when MA13 is set, the
+                // 1K offset comes from MA9..MA0. MA11 selects &7C00 when set, but
+                // on a Model B the clear case maps to &3C00 rather than &7C00.
+                int offset = ma & (Mode7ScreenBytes - 1);
+                int baseAddress = (ma & 0x0800) != 0 ? Mode7ScreenStart : 0x3C00;
+                return baseAddress + offset;
+            }
+
+            return TranslateBitmapAddress(ma, 0);
         }
 
         private int GetBitmapAddress(int y, int byteX, int bytesPerRow)
