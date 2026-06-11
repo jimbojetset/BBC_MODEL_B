@@ -1514,6 +1514,26 @@ namespace BBC
             return offset + GetDisplayEnableSkewPixels(displayPixelsPerByte);
         }
 
+        private int GetBitmapYOffset(int activeBitmapHeight)
+        {
+            if (HasVisibleRasterLayoutEvents())
+                return 0;
+
+            int unusedLines = BitmapHeight - activeBitmapHeight;
+            return unusedLines > 0 ? unusedLines : 0;
+        }
+
+        private bool HasVisibleRasterLayoutEvents()
+        {
+            foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
+            {
+                if (rasterEvent.CrtcAddressLatch && rasterEvent.VisibleLine >= 0)
+                    return true;
+            }
+
+            return false;
+        }
+
         private bool IsDisplayDisabledByCrtcSkew()
         {
             return GetCrtcDisplayEnableSkew() == 3;
