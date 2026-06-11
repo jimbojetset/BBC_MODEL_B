@@ -39,6 +39,7 @@ namespace BBC
         private const int CrtcVerticalAdjustRegister = 5;
         private const int CrtcVerticalDisplayedRegister = 6;
         private const int CrtcVerticalSyncRegister = 7;
+        private const int CrtcInterlaceAndSkewRegister = 8;
         private const int CrtcScanLinesPerCharacterRegister = 9;
         private const int CrtcCursorStartRegister = 10;
         private const int CrtcCursorEndRegister = 11;
@@ -100,8 +101,11 @@ namespace BBC
         private bool frameSawMode5;
         private bool activeSawMode4;
         private bool activeSawMode5;
+        private bool frameInterlaceFieldOdd;
+        private bool activeInterlaceFieldOdd;
         private int lastMode4Mode5SplitLine = 192;
         private bool hasLastMode4Mode5SplitLine;
+        private int capturedFrameCounter;
 
         // Stability tracking: the CRTC-derived vsync period and the gapped-text-mode decision
         // both fire only after the relevant CRTC registers have been observed unchanged for an
@@ -156,11 +160,14 @@ namespace BBC
             sawMode5ThisFrame = false;
             frameSawMode4 = false;
             frameSawMode5 = false;
+            frameInterlaceFieldOdd = false;
+            activeInterlaceFieldOdd = false;
             rasterEvents.Clear();
             frameRasterEvents.Clear();
             activeRasterEvents.Clear();
             lastMode4Mode5SplitLine = 192;
             hasLastMode4Mode5SplitLine = false;
+            capturedFrameCounter = 0;
             previousFrameCrtcSignature = 0;
             stableCrtcSignature = 0;
             previousFrameR9 = 0;
@@ -240,6 +247,7 @@ namespace BBC
                 frameScreenMemoryWindow = screenMemoryWindow;
                 frameSawMode4 = sawMode4ThisFrame;
                 frameSawMode5 = sawMode5ThisFrame;
+                frameInterlaceFieldOdd = (capturedFrameCounter++ & 1) != 0;
                 frameRasterEvents.Clear();
                 frameRasterEvents.AddRange(rasterEvents);
                 rasterEvents.Clear();
@@ -366,6 +374,7 @@ namespace BBC
                     activeScreenMemoryWindow = frameScreenMemoryWindow;
                     activeSawMode4 = frameSawMode4;
                     activeSawMode5 = frameSawMode5;
+                    activeInterlaceFieldOdd = frameInterlaceFieldOdd;
                     activeRasterEvents.Clear();
                     activeRasterEvents.AddRange(frameRasterEvents);
                 }
@@ -382,8 +391,15 @@ namespace BBC
                     activeScreenMemoryWindow = screenMemoryWindow;
                     activeSawMode4 = sawMode4ThisFrame;
                     activeSawMode5 = sawMode5ThisFrame;
+                    activeInterlaceFieldOdd = false;
                     activeRasterEvents.Clear();
                     activeRasterEvents.AddRange(rasterEvents);
+                }
+
+                if (IsDisplayDisabledByCrtcSkew())
+                {
+                    Array.Fill(display.FrameBuffer, Background);
+                    return;
                 }
 
                 if (ShouldRenderMode4Mode5Split())
@@ -454,6 +470,7 @@ namespace BBC
 
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
+            int xOffset = GetDisplayEnableSkewPixels(cellWidth);
             bool flashVisible = (Environment.TickCount64 / 320 & 1) == 0;
 
             for (int row = 0; row < Mode7Rows; row++)
@@ -464,7 +481,7 @@ namespace BBC
                 for (int column = 0; column < Mode7Columns; column++)
                 {
                     byte character = ReadMode7DisplayCharacter(row, column);
-                    int cellX = column * cellWidth;
+                    int cellX = xOffset + (column * cellWidth);
 
                     int control = character & 0x7F;
                     bool isControl = control < 0x20;
@@ -664,7 +681,7 @@ namespace BBC
         private void RenderBitmapMode0(Display display)
         {
             uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
+            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
@@ -704,7 +721,7 @@ namespace BBC
         private void RenderBitmapMode1(Display display)
         {
             uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
+            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
@@ -744,7 +761,7 @@ namespace BBC
         private void RenderBitmapMode2(Display display)
         {
             uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
+            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
@@ -784,7 +801,7 @@ namespace BBC
         private void RenderBitmapMode4(Display display)
         {
             uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
+            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
@@ -824,7 +841,7 @@ namespace BBC
         private void RenderBitmapMode5(Display display)
         {
             uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
+            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
             int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
@@ -878,7 +895,7 @@ namespace BBC
         private void RenderBitmapMode3(Display display)
         {
             uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
+            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int displayedRows = Math.Max(1, (int)activeCrtcRegisters[CrtcVerticalDisplayedRegister]);
             int scanlinesPerRow = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
@@ -920,7 +937,7 @@ namespace BBC
         private void RenderBitmapMode6(Display display)
         {
             uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
+            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int displayedRows = Math.Max(1, (int)activeCrtcRegisters[CrtcVerticalDisplayedRegister]);
             int scanlinesPerRow = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
@@ -989,7 +1006,7 @@ namespace BBC
         private void RenderMode4Mode5Split(Display display)
         {
             uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
+            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
             int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
@@ -1119,6 +1136,7 @@ namespace BBC
             const int cellWidth = Display.DefaultWidth / Mode7Columns;
             const int cellHeight = Display.DefaultHeight / Mode7Rows;
             const int crtcScanlinesPerCell = 10;
+            int xOffset = GetDisplayEnableSkewPixels(cellWidth);
 
             int column = cursorOffset % Mode7Columns;
             int row = cursorOffset / Mode7Columns;
@@ -1127,7 +1145,7 @@ namespace BBC
             if (shapeEnd < shapeStart)
                 return;
 
-            int startX = column * cellWidth;
+            int startX = xOffset + (column * cellWidth);
             int startY = (row * cellHeight) + (shapeStart * cellHeight / crtcScanlinesPerCell);
             int endX = Math.Min(startX + cellWidth, display.Width);
             int endY = Math.Min((row * cellHeight) + ((shapeEnd + 1) * cellHeight / crtcScanlinesPerCell), display.Height);
@@ -1441,10 +1459,33 @@ namespace BBC
         {
             int bytesPerRow = GetBitmapBytesPerRow(defaultBytesPerRow);
             int unusedBytes = defaultBytesPerRow - bytesPerRow;
-            if (unusedBytes <= 0)
+            int offset = unusedBytes > 0 ? unusedBytes * displayPixelsPerByte / 2 : 0;
+
+            return offset + GetDisplayEnableSkewPixels(displayPixelsPerByte);
+        }
+
+        private bool IsDisplayDisabledByCrtcSkew()
+        {
+            return GetCrtcDisplayEnableSkew() == 3;
+        }
+
+        private int GetDisplayEnableSkewPixels(int pixelsPerCharacter)
+        {
+            int skew = GetCrtcDisplayEnableSkew();
+            if (skew >= 3)
                 return 0;
 
-            return unusedBytes * displayPixelsPerByte / 2;
+            return skew * pixelsPerCharacter;
+        }
+
+        private int GetCrtcDisplayEnableSkew()
+        {
+            return (activeCrtcRegisters[CrtcInterlaceAndSkewRegister] >> 4) & 0x03;
+        }
+
+        private bool IsCrtcInterlacedSyncAndVideo()
+        {
+            return (activeCrtcRegisters[CrtcInterlaceAndSkewRegister] & 0x03) == 0x03;
         }
 
         private uint GetPaletteColour(int logicalColour)
@@ -1530,8 +1571,27 @@ namespace BBC
                 | (((value >> (7 - offset)) & 0x01) << 3);
         }
 
-        private static void WriteScaledPixel1x2(uint[] pixels, int width, int height, int x, int y, uint colour)
+        private void ClearBitmapFrameBuffer(uint[] pixels, int width, int height)
         {
+            if (!IsCrtcInterlacedSyncAndVideo())
+            {
+                Array.Fill(pixels, Background);
+                return;
+            }
+
+            int field = activeInterlaceFieldOdd ? 1 : 0;
+            for (int y = field; y < height; y += 2)
+                Array.Fill(pixels, Background, y * width, width);
+        }
+
+        private void WriteScaledPixel1x2(uint[] pixels, int width, int height, int x, int y, uint colour)
+        {
+            if (IsCrtcInterlacedSyncAndVideo())
+            {
+                WriteInterlacedPixelRun(pixels, width, height, x, y, 1, colour);
+                return;
+            }
+
             if ((uint)x >= (uint)width || (uint)(y + 1) >= (uint)height)
                 return;
 
@@ -1540,8 +1600,14 @@ namespace BBC
             pixels[offset + width] = colour;
         }
 
-        private static void WriteScaledPixel2x2(uint[] pixels, int width, int height, int x, int y, uint colour)
+        private void WriteScaledPixel2x2(uint[] pixels, int width, int height, int x, int y, uint colour)
         {
+            if (IsCrtcInterlacedSyncAndVideo())
+            {
+                WriteInterlacedPixelRun(pixels, width, height, x, y, 2, colour);
+                return;
+            }
+
             if ((uint)(x + 1) >= (uint)width || (uint)(y + 1) >= (uint)height)
                 return;
 
@@ -1552,8 +1618,14 @@ namespace BBC
             pixels[offset + width + 1] = colour;
         }
 
-        private static void WriteScaledPixel4x2(uint[] pixels, int width, int height, int x, int y, uint colour)
+        private void WriteScaledPixel4x2(uint[] pixels, int width, int height, int x, int y, uint colour)
         {
+            if (IsCrtcInterlacedSyncAndVideo())
+            {
+                WriteInterlacedPixelRun(pixels, width, height, x, y, 4, colour);
+                return;
+            }
+
             if ((uint)(x + 3) >= (uint)width || (uint)(y + 1) >= (uint)height)
                 return;
 
@@ -1563,6 +1635,18 @@ namespace BBC
                 pixels[offset + i] = colour;
                 pixels[offset + width + i] = colour;
             }
+        }
+
+        private void WriteInterlacedPixelRun(uint[] pixels, int width, int height, int x, int y, int runWidth, uint colour)
+        {
+            int targetY = y + (activeInterlaceFieldOdd ? 1 : 0);
+            if ((uint)x >= (uint)width || (uint)targetY >= (uint)height)
+                return;
+
+            int visibleRunWidth = Math.Min(runWidth, width - x);
+            int offset = targetY * width + x;
+            for (int i = 0; i < visibleRunWidth; i++)
+                pixels[offset + i] = colour;
         }
 
         private static void FillRect(uint[] pixels, int width, int height, int x0, int y0, int x1, int y1, uint colour)
