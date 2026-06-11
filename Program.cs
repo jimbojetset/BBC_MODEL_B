@@ -471,6 +471,7 @@ namespace BBC
         {
             Cpu.PacingEnabled = !discController.TransferActive;
             int previousFrame = systemVia.FrameCounter;
+            Sound.Tick(cycles);
             systemVia.Tick(cycles);
             userVia.Tick(cycles);
             discController.Tick(cycles);

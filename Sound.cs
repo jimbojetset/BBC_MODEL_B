@@ -21,9 +21,12 @@ namespace BBC
     public sealed class Sound : IDisposable
     {
         private const int ClockHz = 4_000_000;
+        private const int CpuClockHz = 2_000_000;
+        private const int ChipSampleRate = ClockHz / 8;
         private const int SampleRate = 48_000;
         private const int SamplesPerBuffer = 1024;
         private const int MaxQueuedSamples = SampleRate / 10;
+        private const int GeneratedQueueSamples = SampleRate / 5;
         private const ushort AudioFormatS16 = 0x8010;
         private const double PowerOnToneFrequencyHz = 120.0;
         private const double PowerOnToneDurationSeconds = 0.35;
@@ -32,10 +35,15 @@ namespace BBC
         private readonly int[] tonePeriods = [0, 0, 0];
         private readonly int[] volumes = [15, 15, 15, 15];
         private readonly double[] toneCounters = new double[3];
-        private readonly int[] tonePolarity = [1, 1, 1];
-        private readonly double[] smoothedChannelGains = new double[4];
+        private readonly int[] tonePolarity = [-1, -1, -1];
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
+        private readonly short[] generatedSamples = new short[GeneratedQueueSamples];
         private static readonly double[] VolumeTable = CreateVolumeTable();
+        private double sampleCycleRemainder;
+        private double chipSampleRemainder;
+        private int generatedReadIndex;
+        private int generatedWriteIndex;
+        private int generatedCount;
         private byte noiseControl;
         private double noiseCounter;
         private int noisePolarity = 1;
@@ -68,11 +76,16 @@ namespace BBC
                 Array.Fill(tonePeriods, 0);
                 Array.Fill(volumes, 15);
                 Array.Clear(toneCounters);
-                Array.Fill(tonePolarity, 1);
-                Array.Clear(smoothedChannelGains);
+                Array.Fill(tonePolarity, -1);
+                Array.Clear(generatedSamples);
+                sampleCycleRemainder = 0;
+                chipSampleRemainder = 0;
+                generatedReadIndex = 0;
+                generatedWriteIndex = 0;
+                generatedCount = 0;
                 noiseControl = 0;
                 noiseCounter = 0;
-                noisePolarity = 1;
+                noisePolarity = 0;
                 noiseShiftRegister = 0x4000;
                 latchedChannel = 0;
                 latchedVolume = false;
@@ -154,6 +167,24 @@ namespace BBC
             }
         }
 
+        /// <summary>Advances the sound generator by the specified number of 2 MHz CPU cycles.</summary>
+        /// <param name="cycles">The number of elapsed CPU cycles.</param>
+        public void Tick(int cycles)
+        {
+            if (cycles <= 0)
+                return;
+
+            lock (syncRoot)
+            {
+                double exactSamples = ((cycles * (double)SampleRate) / CpuClockHz) + sampleCycleRemainder;
+                int samplesToGenerate = (int)exactSamples;
+                sampleCycleRemainder = exactSamples - samplesToGenerate;
+
+                for (int i = 0; i < samplesToGenerate; i++)
+                    EnqueueGeneratedSample(GenerateSample());
+            }
+        }
+
         /// <summary>Releases the SDL audio device.</summary>
         public void Dispose()
         {
@@ -206,26 +237,64 @@ namespace BBC
             {
                 for (int i = 0; i < samples.Length; i++)
                 {
-                    double mixed = 0;
-
-                    for (int channel = 0; channel < 3; channel++)
+                    if (generatedCount > 0)
                     {
-                        double targetGain = GetVolume(volumes[channel]);
-                        mixed += AdvanceTone(channel, tonePeriods[channel]) * SlewChannelGain(channel, targetGain);
+                        samples[i] = generatedSamples[generatedReadIndex];
+                        generatedReadIndex = (generatedReadIndex + 1) % generatedSamples.Length;
+                        generatedCount--;
                     }
-
-                    double noiseTargetGain = GetVolume(volumes[3]);
-                    mixed += AdvanceNoise(noiseControl, tonePeriods[2]) * SlewChannelGain(3, noiseTargetGain);
-                    mixed += AdvancePowerOnTone();
-                    samples[i] = (short)Math.Clamp(mixed * 8192, short.MinValue, short.MaxValue);
+                    else
+                    {
+                        samples[i] = GenerateSample();
+                    }
                 }
             }
         }
 
+        private short GenerateSample()
+        {
+            double exactChipSamples = (ChipSampleRate / (double)SampleRate) + chipSampleRemainder;
+            int chipSamples = Math.Max(1, (int)exactChipSamples);
+            chipSampleRemainder = exactChipSamples - chipSamples;
+
+            double mixed = 0;
+            for (int i = 0; i < chipSamples; i++)
+                mixed += GenerateChipSample();
+
+            mixed /= chipSamples;
+            mixed += AdvancePowerOnTone();
+            return (short)Math.Clamp(mixed * short.MaxValue, short.MinValue, short.MaxValue);
+        }
+
+        private double GenerateChipSample()
+        {
+            double mixed = 0;
+
+            for (int channel = 0; channel < 3; channel++)
+                mixed += AdvanceTone(channel, tonePeriods[channel]) * GetVolume(volumes[channel]);
+
+            mixed += AdvanceNoise(noiseControl, tonePeriods[2]) * GetVolume(volumes[3]);
+            return mixed;
+        }
+
+        private void EnqueueGeneratedSample(short sample)
+        {
+            generatedSamples[generatedWriteIndex] = sample;
+            generatedWriteIndex = (generatedWriteIndex + 1) % generatedSamples.Length;
+
+            if (generatedCount < generatedSamples.Length)
+            {
+                generatedCount++;
+                return;
+            }
+
+            generatedReadIndex = (generatedReadIndex + 1) % generatedSamples.Length;
+        }
+
         private double AdvanceTone(int channel, int period)
         {
-            int effectivePeriod = period == 0 ? 1 : period;
-            toneCounters[channel] -= ClockHz / (16.0 * SampleRate);
+            int effectivePeriod = period == 0 ? 1024 : period;
+            toneCounters[channel] -= ClockHz / (16.0 * ChipSampleRate);
 
             while (toneCounters[channel] <= 0)
             {
@@ -233,19 +302,19 @@ namespace BBC
                 tonePolarity[channel] = -tonePolarity[channel];
             }
 
-            return tonePolarity[channel];
+            return tonePolarity[channel] > 0 ? 1.0 : 0.0;
         }
 
         private double AdvanceNoise(byte control, int tone2Period)
         {
             int period = GetNoisePeriod(control, tone2Period);
-            noiseCounter -= ClockHz / (16.0 * SampleRate);
+            noiseCounter -= ClockHz / (16.0 * ChipSampleRate);
 
             while (noiseCounter <= 0)
             {
                 noiseCounter += period;
                 StepNoiseShiftRegister(control);
-                noisePolarity = (noiseShiftRegister & 0x01) == 0 ? 1 : -1;
+                noisePolarity = noiseShiftRegister & 0x01;
             }
 
             return noisePolarity;
@@ -300,20 +369,8 @@ namespace BBC
         {
             noiseControl = control;
             noiseCounter = 0;
-            noisePolarity = 1;
+            noisePolarity = 0;
             noiseShiftRegister = 0x4000;
-        }
-
-        private double SlewChannelGain(int channel, double targetGain)
-        {
-            const double attackCoefficient = 0.25;
-            const double releaseCoefficient = 0.0025;
-
-            double currentGain = smoothedChannelGains[channel];
-            double coefficient = targetGain > currentGain ? attackCoefficient : releaseCoefficient;
-            currentGain += (targetGain - currentGain) * coefficient;
-            smoothedChannelGains[channel] = currentGain;
-            return currentGain;
         }
 
         private static int GetNoisePeriod(byte control, int tone2Period)
