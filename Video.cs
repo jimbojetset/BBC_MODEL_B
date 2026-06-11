@@ -103,6 +103,8 @@ namespace BBC
         private bool activeSawMode5;
         private bool frameInterlaceFieldOdd;
         private bool activeInterlaceFieldOdd;
+        private int frameNumber;
+        private int activeFrameNumber;
         private int lastMode4Mode5SplitLine = 192;
         private bool hasLastMode4Mode5SplitLine;
         private int capturedFrameCounter;
@@ -162,6 +164,8 @@ namespace BBC
             frameSawMode5 = false;
             frameInterlaceFieldOdd = false;
             activeInterlaceFieldOdd = false;
+            frameNumber = 0;
+            activeFrameNumber = 0;
             rasterEvents.Clear();
             frameRasterEvents.Clear();
             activeRasterEvents.Clear();
@@ -247,7 +251,8 @@ namespace BBC
                 frameScreenMemoryWindow = screenMemoryWindow;
                 frameSawMode4 = sawMode4ThisFrame;
                 frameSawMode5 = sawMode5ThisFrame;
-                frameInterlaceFieldOdd = (capturedFrameCounter++ & 1) != 0;
+                frameNumber = capturedFrameCounter++;
+                frameInterlaceFieldOdd = (frameNumber & 1) != 0;
                 frameRasterEvents.Clear();
                 frameRasterEvents.AddRange(rasterEvents);
                 rasterEvents.Clear();
@@ -375,6 +380,7 @@ namespace BBC
                     activeSawMode4 = frameSawMode4;
                     activeSawMode5 = frameSawMode5;
                     activeInterlaceFieldOdd = frameInterlaceFieldOdd;
+                    activeFrameNumber = frameNumber;
                     activeRasterEvents.Clear();
                     activeRasterEvents.AddRange(frameRasterEvents);
                 }
@@ -392,6 +398,7 @@ namespace BBC
                     activeSawMode4 = sawMode4ThisFrame;
                     activeSawMode5 = sawMode5ThisFrame;
                     activeInterlaceFieldOdd = false;
+                    activeFrameNumber = capturedFrameCounter;
                     activeRasterEvents.Clear();
                     activeRasterEvents.AddRange(rasterEvents);
                 }
@@ -1165,15 +1172,21 @@ namespace BBC
         private bool IsCursorVisible()
         {
             byte cursorStart = activeCrtcRegisters[CrtcCursorStartRegister];
-            byte cursorMode = (byte)(cursorStart & 0x60);
+            int cursorMode = (cursorStart >> 5) & 0x03;
 
-            if (cursorMode == 0x20)
-                return false;
+            if (cursorMode == 0)
+                return true;
 
-            if (cursorMode != 0 && (Environment.TickCount64 / 320 & 1) == 0)
-                return false;
+            // 6845 cursor mode 1 disables the cursor. Modes 2 and 3 flash at
+            // frame-derived rates; jsbeeb uses frame masks 0x08 and 0x10.
+            int flashMask = cursorMode switch
+            {
+                2 => 0x08,
+                3 => 0x10,
+                _ => 0
+            };
 
-            return true;
+            return flashMask != 0 && (activeFrameNumber & flashMask) != 0;
         }
 
         private (int Start, int End) GetCursorShape(int scanlinesPerCell)
