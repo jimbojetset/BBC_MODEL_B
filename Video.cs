@@ -324,12 +324,16 @@ namespace BBC
                         crtcRegisters[regIndex] = value;
                         if (regIndex is CrtcCursorHighRegister or CrtcCursorLowRegister)
                             crtcCursorAddressWritten = true;
-                        // Mid-frame writes to display-start (R12/R13), scanline-per-row (R9), or
+                        // Mid-frame writes to display-start (R12/R13), scanline-per-row (R9),
+                        // vertical-displayed (R6), or
                         // horizontal-displayed (R1) change rendering partway down the screen; capture
                         // a raster event so the renderer can split correctly. R1 mid-frame is what
                         // enables Tricky's per-character-row "vertical rupture" trick (used in Frogger).
-                        // R9 writes are flagged as well because they can also reorder character rows.
-                        if (regIndex is CrtcDisplayStartHighRegister or CrtcDisplayStartLowRegister or CrtcScanLinesPerCharacterRegister or CrtcHorizontalDisplayedRegister)
+                        // R6/R9 writes are flagged as well because games can use them to alter
+                        // the effective visible height or reorder character rows.
+                        if (regIndex is CrtcDisplayStartHighRegister or CrtcDisplayStartLowRegister
+                            or CrtcScanLinesPerCharacterRegister or CrtcHorizontalDisplayedRegister
+                            or CrtcVerticalDisplayedRegister)
                             AddRasterEvent(frameCpuCycle, crtcAddressLatch: true);
                     }
                     break;
