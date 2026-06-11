@@ -470,6 +470,9 @@ namespace BBC
 
             uint[] pixels = display.FrameBuffer;
             Array.Fill(pixels, Background);
+            if (IsTeletextOutputSuppressed())
+                return;
+
             int xOffset = GetDisplayEnableSkewPixels(cellWidth);
             bool flashVisible = (Environment.TickCount64 / 320 & 1) == 0;
 
@@ -1509,6 +1512,13 @@ namespace BBC
                 return 0;
 
             return skew * pixelsPerCharacter;
+        }
+
+        private bool IsTeletextOutputSuppressed()
+        {
+            // The SAA5050 is still fed by the video bus, but with the teletext bit set
+            // in a 2 MHz ULA mode (the "TTX trick") its display enable is forced off.
+            return activeMode == BbcScreenMode.Mode7 && (activeUlaControl & UlaClockHigh) != 0;
         }
 
         private int GetCrtcDisplayEnableSkew()
