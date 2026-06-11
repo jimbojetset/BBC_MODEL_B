@@ -772,37 +772,25 @@ namespace BBC
         {
             uint[] pixels = display.FrameBuffer;
             ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
+            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
             int height = GetBitmapHeight();
             int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
-            int defaultStart = GetBitmapDisplayStart();
-            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
-            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
 
-            for (int charRow = 0; charRow < characterRows; charRow++)
+            for (int y = 0; y < height; y++)
             {
-                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow20K);
-                int rowCrtcStart = snapshots[charRow].CrtcStart;
+                int targetY = y * 2;
 
-                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
+                for (int byteX = 0; byteX < bytesPerRow; byteX++)
                 {
-                    int y = (charRow * 8) + rasterLine;
-                    if (y >= height)
-                        return;
-                    int targetY = y * 2;
+                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
 
-                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
+                    for (int pixel = 0; pixel < 2; pixel++)
                     {
-                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
+                        int logicalColour = DecodeFourBitPixel(value, pixel);
+                        uint colour = GetPaletteColour(logicalColour);
+                        int targetX = xOffset + (((byteX * 2) + pixel) * 4);
 
-                        for (int pixel = 0; pixel < 2; pixel++)
-                        {
-                            int logicalColour = DecodeFourBitPixel(value, pixel);
-                            uint colour = GetPaletteColour(logicalColour);
-                            int targetX = xOffset + (((byteX * 2) + pixel) * 4);
-
-                            WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                        }
+                        WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
                     }
                 }
             }

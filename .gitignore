@@ -8,7 +8,6 @@ obj/
 
 .DS_Store
 *.log
-SSD/
+SSD/*.png
 ROMS/*.crdownload
-*.ssd
 .vs/
