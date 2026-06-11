@@ -972,8 +972,8 @@ namespace BBC
         /// Modes 0/4 but only the first 8 raster lines of each character row contain pixel data.</summary>
         private int GetGappedBitmapAddress(int characterRow, int rasterLine, int byteX, int bytesPerRow, int crtcStart)
         {
-            int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + (rasterLine & 0x07);
-            return WrapBitmapAddress(memoryAddress);
+            int ma = crtcStart + (characterRow * bytesPerRow) + byteX;
+            return TranslateBitmapAddress(ma, rasterLine);
         }
 
 
@@ -1207,8 +1207,8 @@ namespace BBC
             int crtcStart = GetBitmapDisplayStart();
             int characterRow = y >> 3;
             int rasterLine = y & 0x07;
-            int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
-            return WrapBitmapAddress(memoryAddress);
+            int ma = crtcStart + (characterRow * bytesPerRow) + byteX;
+            return TranslateBitmapAddress(ma, rasterLine);
         }
 
         /// <summary>Address overload that allows the caller to supply a per-scanline CRTC start address
@@ -1218,8 +1218,8 @@ namespace BBC
         {
             int characterRow = y >> 3;
             int rasterLine = y & 0x07;
-            int memoryAddress = ((crtcStart + (characterRow * bytesPerRow) + byteX) << 3) + rasterLine;
-            return WrapBitmapAddress(memoryAddress);
+            int ma = crtcStart + (characterRow * bytesPerRow) + byteX;
+            return TranslateBitmapAddress(ma, rasterLine);
         }
 
         /// <summary>Address fetch addressed per character row using a row-specific CRTC start
@@ -1232,8 +1232,8 @@ namespace BBC
         {
             _ = characterRow;
             _ = bytesPerRow;
-            int memoryAddress = ((rowCrtcStart + byteX) << 3) + (rasterLine & 0x07);
-            return WrapBitmapAddress(memoryAddress);
+            int ma = rowCrtcStart + byteX;
+            return TranslateBitmapAddress(ma, rasterLine);
         }
 
         /// <summary>Returns the CRTC start address (R12:R13) effective for the given visible scanline.
@@ -1407,17 +1407,29 @@ namespace BBC
                 | activeCrtcRegisters[CrtcDisplayStartLowRegister];
         }
 
-        private int WrapBitmapAddress(int address)
+        private int TranslateBitmapAddress(int crtcMemoryAddress, int rasterLine)
         {
-            if (address >= activeScreenMemoryStart && address < 0x8000)
-                return address;
+            // BBC bitmap addressing routes CRTC MA and RA through IC32/IC39 rather than
+            // using a simple linear CRTC-address << 3 window wrap.
+            int ma = crtcMemoryAddress & 0x1FFF;
+            int adjustedHigh = (ma >> 8) & 0x0F;
 
-            int relative = address - activeScreenMemoryStart;
-            relative %= activeScreenMemorySize;
-            if (relative < 0)
-                relative += activeScreenMemorySize;
+            if ((ma & 0x1000) != 0)
+                adjustedHigh = (adjustedHigh - GetScreenAddressSubtract()) & 0x0F;
 
-            return activeScreenMemoryStart + relative;
+            return ((adjustedHigh << 11) | ((ma & 0xFF) << 3) | (rasterLine & 0x07)) & 0x7FFF;
+        }
+
+        private int GetScreenAddressSubtract()
+        {
+            return (activeScreenMemoryStart, activeScreenMemorySize) switch
+            {
+                (0x4000, 0x4000) => 8,
+                (0x6000, 0x2000) => 4,
+                (0x3000, 0x5000) => 10,
+                (0x5800, 0x2800) => 5,
+                _ => 0
+            };
         }
 
         private int GetBitmapBytesPerRow(int defaultBytesPerRow)
