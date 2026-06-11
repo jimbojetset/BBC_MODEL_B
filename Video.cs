@@ -81,12 +81,9 @@ namespace BBC
         private byte[] activePaletteRegisters;
         private byte[] activeMode4PaletteRegisters;
         private byte[] activeMode5PaletteRegisters;
-        private int screenMemoryStart = 0x3000;
-        private int screenMemorySize = 0x5000;
-        private int frameScreenMemoryStart = 0x3000;
-        private int frameScreenMemorySize = 0x5000;
-        private int activeScreenMemoryStart = 0x3000;
-        private int activeScreenMemorySize = 0x5000;
+        private ScreenMemoryWindow screenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
+        private ScreenMemoryWindow frameScreenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
+        private ScreenMemoryWindow activeScreenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
         private byte selectedCrtcRegister;
         private byte lastPaletteWrite;
         private bool crtcCursorAddressWritten;
@@ -170,28 +167,24 @@ namespace BBC
             stableR9 = 0;
             CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
-            screenMemoryStart = 0x3000;
-            screenMemorySize = 0x5000;
-            frameScreenMemoryStart = screenMemoryStart;
-            frameScreenMemorySize = screenMemorySize;
+            screenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
+            frameScreenMemoryWindow = screenMemoryWindow;
             frameUlaControl = UlaControl;
             frameMode = CurrentMode;
             AddRasterEvent(0);
         }
 
         /// <summary>Sets the BBC video RAM window used by hardware scrolling wraparound.</summary>
-        /// <param name="start">The first RAM address in the selected video window.</param>
-        /// <param name="size">The selected video window size in bytes.</param>
-        public void SetScreenMemoryWindow(int start, int size)
+        /// <param name="window">The selected video RAM window and BBC hardware scroll mapping.</param>
+        public void SetScreenMemoryWindow(ScreenMemoryWindow window)
         {
-            if (start < 0 || start >= memory.Length)
-                throw new ArgumentOutOfRangeException(nameof(start));
+            if (window.Start < 0 || window.Start >= memory.Length)
+                throw new ArgumentOutOfRangeException(nameof(window));
 
-            if (size <= 0 || start + size > 0x8000)
-                throw new ArgumentOutOfRangeException(nameof(size));
+            if (window.Size <= 0 || window.Start + window.Size > 0x8000)
+                throw new ArgumentOutOfRangeException(nameof(window));
 
-            screenMemoryStart = start;
-            screenMemorySize = size;
+            screenMemoryWindow = window;
         }
 
         /// <summary>Computes the frame period implied by the live CRTC programming, expressed in 1 MHz peripheral cycles.</summary>
@@ -245,8 +238,7 @@ namespace BBC
                 frameCrtcCursorAddressWritten = crtcCursorAddressWritten;
                 frameUlaControl = UlaControl;
                 frameMode = CurrentMode;
-                frameScreenMemoryStart = screenMemoryStart;
-                frameScreenMemorySize = screenMemorySize;
+                frameScreenMemoryWindow = screenMemoryWindow;
                 frameSawMode4 = sawMode4ThisFrame;
                 frameSawMode5 = sawMode5ThisFrame;
                 frameRasterEvents.Clear();
@@ -372,8 +364,7 @@ namespace BBC
                     activeCrtcCursorAddressWritten = frameCrtcCursorAddressWritten;
                     activeUlaControl = frameUlaControl;
                     activeMode = frameMode;
-                    activeScreenMemoryStart = frameScreenMemoryStart;
-                    activeScreenMemorySize = frameScreenMemorySize;
+                    activeScreenMemoryWindow = frameScreenMemoryWindow;
                     activeSawMode4 = frameSawMode4;
                     activeSawMode5 = frameSawMode5;
                     activeRasterEvents.Clear();
@@ -389,8 +380,7 @@ namespace BBC
                     activeCrtcCursorAddressWritten = crtcCursorAddressWritten;
                     activeUlaControl = UlaControl;
                     activeMode = CurrentMode;
-                    activeScreenMemoryStart = screenMemoryStart;
-                    activeScreenMemorySize = screenMemorySize;
+                    activeScreenMemoryWindow = screenMemoryWindow;
                     activeSawMode4 = sawMode4ThisFrame;
                     activeSawMode5 = sawMode5ThisFrame;
                     activeRasterEvents.Clear();
@@ -1415,21 +1405,9 @@ namespace BBC
             int adjustedHigh = (ma >> 8) & 0x0F;
 
             if ((ma & 0x1000) != 0)
-                adjustedHigh = (adjustedHigh - GetScreenAddressSubtract()) & 0x0F;
+                adjustedHigh = (adjustedHigh - activeScreenMemoryWindow.AddressSubtract) & 0x0F;
 
             return ((adjustedHigh << 11) | ((ma & 0xFF) << 3) | (rasterLine & 0x07)) & 0x7FFF;
-        }
-
-        private int GetScreenAddressSubtract()
-        {
-            return (activeScreenMemoryStart, activeScreenMemorySize) switch
-            {
-                (0x4000, 0x4000) => 8,
-                (0x6000, 0x2000) => 4,
-                (0x3000, 0x5000) => 10,
-                (0x5800, 0x2800) => 5,
-                _ => 0
-            };
         }
 
         private int GetBitmapBytesPerRow(int defaultBytesPerRow)

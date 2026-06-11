@@ -436,7 +436,7 @@ namespace BBC
             Sound.Reset();
             systemVia.Reset();
             userVia.Reset();
-            Video.SetScreenMemoryWindow(systemVia.ScreenMemoryStart, systemVia.ScreenMemorySize);
+            Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
             discController.Reset();
             joystickState = default;
             adc.Reset();

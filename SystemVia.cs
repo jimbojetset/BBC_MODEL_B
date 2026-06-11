@@ -59,7 +59,7 @@ namespace BBC
         }
 
         /// <summary>Raised when the addressable latch changes the video RAM wrap window.</summary>
-        public event Action<int, int>? ScreenMemoryWindowChanged;
+        public event Action<ScreenMemoryWindow>? ScreenMemoryWindowChanged;
 
         /// <summary>Returns whether an address belongs to the system VIA.</summary>
         /// <param name="address">The CPU-visible address.</param>
@@ -115,10 +115,13 @@ namespace BBC
         public int FrameCpuCycle => Math.Clamp((vsyncCycleCounter * 2) + peripheralCycleRemainder, 0, (CurrentVsyncPeriod * 2) - 1);
 
         /// <summary>Gets the currently selected video RAM start address.</summary>
-        public int ScreenMemoryStart => GetScreenMemoryWindow(addressableLatch).Start;
+        public int ScreenMemoryStart => CurrentScreenMemoryWindow.Start;
 
         /// <summary>Gets the currently selected video RAM window size.</summary>
-        public int ScreenMemorySize => GetScreenMemoryWindow(addressableLatch).Size;
+        public int ScreenMemorySize => CurrentScreenMemoryWindow.Size;
+
+        /// <summary>Gets the currently selected video RAM window and BBC hardware scroll mapping.</summary>
+        public ScreenMemoryWindow CurrentScreenMemoryWindow => GetScreenMemoryWindow(addressableLatch);
 
         /// <summary>Updates one BBC keyboard matrix key state.</summary>
         /// <param name="internalKey">The BBC internal key number.</param>
@@ -345,7 +348,7 @@ namespace BBC
             int latchBit = value & 0x07;
             bool latchValue = (value & 0x08) != 0;
             bool previousSoundWriteEnable = (addressableLatch & (1 << SoundWriteEnableLatchBit)) != 0;
-            (int PreviousStart, int PreviousSize) = GetScreenMemoryWindow(addressableLatch);
+            ScreenMemoryWindow previousWindow = GetScreenMemoryWindow(addressableLatch);
 
             if (latchValue)
                 addressableLatch |= (byte)(1 << latchBit);
@@ -359,23 +362,23 @@ namespace BBC
 
             if (latchBit is ScreenAddressLatchLowBit or ScreenAddressLatchHighBit)
             {
-                (int start, int size) = GetScreenMemoryWindow(addressableLatch);
-                if (start != PreviousStart || size != PreviousSize)
-                    ScreenMemoryWindowChanged?.Invoke(start, size);
+                ScreenMemoryWindow currentWindow = GetScreenMemoryWindow(addressableLatch);
+                if (currentWindow != previousWindow)
+                    ScreenMemoryWindowChanged?.Invoke(currentWindow);
             }
         }
 
-        private static (int Start, int Size) GetScreenMemoryWindow(byte latch)
+        private static ScreenMemoryWindow GetScreenMemoryWindow(byte latch)
         {
             int code = ((latch >> ScreenAddressLatchLowBit) & 0x01)
                 | (((latch >> ScreenAddressLatchHighBit) & 0x01) << 1);
 
             return code switch
             {
-                0 => (0x4000, 0x4000), // Mode 3: 16K.
-                1 => (0x6000, 0x2000), // Mode 6: 8K.
-                2 => (0x3000, 0x5000), // Modes 0, 1, 2: 20K.
-                _ => (0x5800, 0x2800)  // Modes 4, 5: 10K.
+                0 => new ScreenMemoryWindow(0x4000, 0x4000, code, 8),  // Mode 3: 16K.
+                1 => new ScreenMemoryWindow(0x6000, 0x2000, code, 4),  // Mode 6: 8K.
+                2 => new ScreenMemoryWindow(0x3000, 0x5000, code, 10), // Modes 0, 1, 2: 20K.
+                _ => new ScreenMemoryWindow(0x5800, 0x2800, code, 5)   // Modes 4, 5: 10K.
             };
         }
 
