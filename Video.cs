@@ -818,6 +818,8 @@ namespace BBC
             int defaultStart = GetBitmapDisplayStart();
             int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
             var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
+            int eventIndex = 0;
+            byte[] currentPalette = activePaletteRegisters;
 
             for (int charRow = 0; charRow < characterRows; charRow++)
             {
@@ -829,6 +831,7 @@ namespace BBC
                     int y = (charRow * 8) + rasterLine;
                     if (y >= height)
                         return;
+                    currentPalette = GetPaletteForVisibleLine(y, ref eventIndex, currentPalette);
                     int targetY = yOffset + (y * 2);
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
@@ -838,8 +841,8 @@ namespace BBC
                         for (int bit = 0; bit < 8; bit++)
                         {
                             int logicalColour = (value >> (7 - bit)) & 0x01;
-                            uint colour = GetPaletteColour(logicalColour);
                             int targetX = xOffset + (((byteX * 8) + bit) * 2);
+                            uint colour = GetPaletteColour(BbcScreenMode.Mode4, currentPalette, logicalColour);
 
                             WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
                         }
@@ -859,7 +862,8 @@ namespace BBC
             int defaultStart = GetBitmapDisplayStart();
             int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
             var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
-
+            int eventIndex = 0;
+            byte[] currentPalette = activePaletteRegisters;
             for (int charRow = 0; charRow < characterRows; charRow++)
             {
                 int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow10K);
@@ -870,6 +874,7 @@ namespace BBC
                     int y = (charRow * 8) + rasterLine;
                     if (y >= height)
                         return;
+                    currentPalette = GetPaletteForVisibleLine(y, ref eventIndex, currentPalette);
                     int targetY = yOffset + (y * 2);
 
                     for (int byteX = 0; byteX < bytesPerRow; byteX++)
@@ -879,8 +884,8 @@ namespace BBC
                         for (int pixel = 0; pixel < 4; pixel++)
                         {
                             int logicalColour = DecodeTwoBitPixel(value, pixel);
-                            uint colour = GetPaletteColour(logicalColour);
                             int targetX = xOffset + (((byteX * 4) + pixel) * 4);
+                            uint colour = GetPaletteColour(BbcScreenMode.Mode5, currentPalette, logicalColour);
 
                             WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
                         }
@@ -1094,6 +1099,19 @@ namespace BBC
             }
 
             return false;
+        }
+
+        private byte[] GetPaletteForVisibleLine(int visibleLine, ref int eventIndex, byte[] currentPalette)
+        {
+            while (eventIndex < activeRasterEvents.Count && activeRasterEvents[eventIndex].VisibleLine <= visibleLine)
+            {
+                if (activeRasterEvents[eventIndex].VisibleLine >= 0)
+                    currentPalette = activeRasterEvents[eventIndex].Palette;
+
+                eventIndex++;
+            }
+
+            return currentPalette;
         }
 
         private void RenderMode4BitmapRow(Display display, int y, int bytesPerRow, int xOffset, byte[] palette)

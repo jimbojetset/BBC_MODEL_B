@@ -425,9 +425,6 @@ namespace BBC
                 activeHostKeys[keySym] = new ActiveHostKey(chord.Value.InternalKey, chord.Value.ShiftAdjustment, shiftAdjusted);
                 pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, true));
             }
-
-            if (keySym == SDLK_ESCAPE && (modifiers & KMOD_SHIFT) == 0)
-                pendingInput.Enqueue(27);
         }
 
         private void EnqueueKeyUp(int keySym)
