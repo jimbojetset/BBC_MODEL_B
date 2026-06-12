@@ -484,7 +484,7 @@ namespace BBC
             if (IsTeletextOutputSuppressed())
                 return;
 
-            int xOffset = GetDisplayEnableSkewPixels(cellWidth);
+            int xOffset = 0;
             bool flashVisible = (Environment.TickCount64 / 320 & 1) == 0;
 
             for (int row = 0; row < Mode7Rows; row++)
@@ -663,25 +663,29 @@ namespace BBC
         {
             int value = character & 0x7F;
             int pattern = (value & 0x1F) | ((value & 0x40) >> 1);
-            int blockWidth = cellWidth / 2;
-            int blockHeight = cellHeight / 3;
-            int gap = separated ? 2 : 0;
-
-            for (int block = 0; block < 6; block++)
+            for (int sourceY = 0; sourceY < 10; sourceY++)
             {
-                if ((pattern & (1 << block)) == 0)
-                    continue;
+                for (int sourceX = 0; sourceX < 6; sourceX++)
+                {
+                    int block = (sourceY < 3 ? 0 : sourceY < 7 ? 2 : 4) + (sourceX < 3 ? 0 : 1);
+                    if ((pattern & (1 << block)) == 0)
+                        continue;
 
-                int blockX = block & 1;
-                int blockY = block / 2;
-                int x0 = cellX + (blockX * blockWidth) + gap;
-                int y0 = cellY + (blockY * blockHeight) + gap;
-                int x1 = cellX + ((blockX + 1) * blockWidth) - gap;
-                int y1 = blockY == 2
-                    ? cellY + cellHeight - gap
-                    : cellY + ((blockY + 1) * blockHeight) - gap;
+                    if (separated)
+                    {
+                        int blockStartX = sourceX < 3 ? 0 : 3;
+                        int blockStartY = sourceY < 3 ? 0 : sourceY < 7 ? 3 : 7;
+                        int blockEndY = sourceY < 3 ? 2 : sourceY < 7 ? 6 : 9;
+                        if (sourceX == blockStartX || sourceY == blockEndY)
+                            continue;
+                    }
 
-                FillRect(pixels, width, height, x0, y0, x1, y1, colour);
+                    int x0 = cellX + (sourceX * cellWidth / 6);
+                    int x1 = cellX + ((sourceX + 1) * cellWidth / 6);
+                    int y0 = cellY + (sourceY * cellHeight / 10);
+                    int y1 = cellY + ((sourceY + 1) * cellHeight / 10);
+                    FillRect(pixels, width, height, x0, y0, x1, y1, colour);
+                }
             }
         }
 
@@ -1147,7 +1151,7 @@ namespace BBC
             const int cellWidth = Display.DefaultWidth / Mode7Columns;
             const int cellHeight = Display.DefaultHeight / Mode7Rows;
             const int crtcScanlinesPerCell = 10;
-            int xOffset = GetDisplayEnableSkewPixels(cellWidth);
+            int xOffset = 0;
 
             int column = cursorOffset % Mode7Columns;
             int row = cursorOffset / Mode7Columns;
