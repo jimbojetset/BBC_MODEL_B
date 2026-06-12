@@ -185,6 +185,7 @@ namespace BBC
         private const byte BbcCapsLockKey = 0x40;
         private const int CapsLockTapPulseCycles = CpuClockHz / 20;
         private const int MinimumMatrixKeyPressMilliseconds = 40;
+        private const uint DisplayBlack = 0xFF000000;
 
         private bool initialised;
         private Thread? cpuThread;
@@ -216,6 +217,7 @@ namespace BBC
         private bool capsLockTapPressed;
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
+        private bool blankDisplayUntilStableVideo;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -275,7 +277,10 @@ namespace BBC
             InstallMemoryMapHooks();
 
             if (createDisplay)
+            {
                 Display = new Display();
+                BlankDisplayUntilStableVideo(Display, presentNow: false);
+            }
 
             pendingBreak = default;
             Cpu.ResetNow();
@@ -288,7 +293,12 @@ namespace BBC
             if (!initialised)
                 Initialise(createDisplay: true);
 
-            Display ??= new Display();
+            if (Display is null)
+            {
+                Display = new Display();
+                BlankDisplayUntilStableVideo(Display, presentNow: false);
+            }
+
             Sound.Start();
             Thread.Sleep(Sound.PowerOnToneDuration/2);
 
@@ -308,7 +318,7 @@ namespace BBC
                 DrainHostJoystickInput(Display);
                 DrainHostKeyboardInput(Display);
                 QueuePendingBootScriptLine();
-                Video.Render(Display);
+                RenderDisplayFrame(Display);
                 DrainHostScreenshotRequests(Display);
                 Display.Present();
 
@@ -465,6 +475,31 @@ namespace BBC
                 QueueBootScript(pendingBootExecScript);
                 pendingBootExecScript = null;
             }
+        }
+
+        private void RenderDisplayFrame(Display display)
+        {
+            if (blankDisplayUntilStableVideo)
+            {
+                if (!Video.HasStableDisplaySnapshot)
+                {
+                    Array.Fill(display.FrameBuffer, DisplayBlack);
+                    return;
+                }
+
+                blankDisplayUntilStableVideo = false;
+            }
+
+            Video.Render(display);
+        }
+
+        private void BlankDisplayUntilStableVideo(Display display, bool presentNow)
+        {
+            blankDisplayUntilStableVideo = true;
+            Video.InvalidateFrameSnapshot();
+            Array.Fill(display.FrameBuffer, DisplayBlack);
+            if (presentNow)
+                display.Present();
         }
 
         private void AdvanceDeviceCycles(int cycles)
@@ -1005,6 +1040,7 @@ namespace BBC
                 pendingBreak = new BreakKeyPress(false, pendingBreak.Control);
             }
 
+            BlankDisplayUntilStableVideo(display, presentNow: true);
             Cpu.RequestReset();
         }
 

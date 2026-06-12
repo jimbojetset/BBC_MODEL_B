@@ -123,6 +123,21 @@ namespace BBC
         /// <summary>Gets the current Video ULA control register value.</summary>
         public byte UlaControl { get; private set; }
 
+        /// <summary>Gets whether a stable, displayable frame snapshot is available.</summary>
+        public bool HasStableDisplaySnapshot
+        {
+            get
+            {
+                lock (frameSnapshotLock)
+                {
+                    return hasFrameSnapshot
+                        && stableCrtcSignature != 0
+                        && frameCrtcRegisters[CrtcHorizontalDisplayedRegister] > 0
+                        && frameCrtcRegisters[CrtcVerticalDisplayedRegister] > 0;
+                }
+            }
+        }
+
         /// <summary>Returns whether a SHEILA address belongs to the video hardware.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <returns>True when the address is handled by this component.</returns>
@@ -152,37 +167,54 @@ namespace BBC
         /// <summary>Resets video device state.</summary>
         public void Reset()
         {
-            Array.Clear(crtcRegisters);
-            ResetPalette();
-            selectedCrtcRegister = 0;
-            crtcCursorAddressWritten = false;
-            frameCrtcCursorAddressWritten = false;
-            hasFrameSnapshot = false;
-            sawMode4ThisFrame = false;
-            sawMode5ThisFrame = false;
-            frameSawMode4 = false;
-            frameSawMode5 = false;
-            frameInterlaceFieldOdd = false;
-            activeInterlaceFieldOdd = false;
-            frameNumber = 0;
-            activeFrameNumber = 0;
-            rasterEvents.Clear();
-            frameRasterEvents.Clear();
-            activeRasterEvents.Clear();
-            lastMode4Mode5SplitLine = 192;
-            hasLastMode4Mode5SplitLine = false;
-            capturedFrameCounter = 0;
-            previousFrameCrtcSignature = 0;
-            stableCrtcSignature = 0;
-            previousFrameR9 = 0;
-            stableR9 = 0;
-            CurrentMode = BbcScreenMode.Mode7;
-            UlaControl = 0;
-            screenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
-            frameScreenMemoryWindow = screenMemoryWindow;
-            frameUlaControl = UlaControl;
-            frameMode = CurrentMode;
-            AddRasterEvent(0);
+            lock (frameSnapshotLock)
+            {
+                Array.Clear(crtcRegisters);
+                ResetPalette();
+                selectedCrtcRegister = 0;
+                crtcCursorAddressWritten = false;
+                frameCrtcCursorAddressWritten = false;
+                hasFrameSnapshot = false;
+                sawMode4ThisFrame = false;
+                sawMode5ThisFrame = false;
+                frameSawMode4 = false;
+                frameSawMode5 = false;
+                frameInterlaceFieldOdd = false;
+                activeInterlaceFieldOdd = false;
+                frameNumber = 0;
+                activeFrameNumber = 0;
+                rasterEvents.Clear();
+                frameRasterEvents.Clear();
+                activeRasterEvents.Clear();
+                lastMode4Mode5SplitLine = 192;
+                hasLastMode4Mode5SplitLine = false;
+                capturedFrameCounter = 0;
+                previousFrameCrtcSignature = 0;
+                stableCrtcSignature = 0;
+                previousFrameR9 = 0;
+                stableR9 = 0;
+                CurrentMode = BbcScreenMode.Mode7;
+                UlaControl = 0;
+                screenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
+                frameScreenMemoryWindow = screenMemoryWindow;
+                frameUlaControl = UlaControl;
+                frameMode = CurrentMode;
+                AddRasterEvent(0);
+            }
+        }
+
+        /// <summary>Discards the current frame snapshot so rendering can wait for a fresh coherent frame.</summary>
+        public void InvalidateFrameSnapshot()
+        {
+            lock (frameSnapshotLock)
+            {
+                hasFrameSnapshot = false;
+                frameRasterEvents.Clear();
+                previousFrameCrtcSignature = 0;
+                stableCrtcSignature = 0;
+                previousFrameR9 = 0;
+                stableR9 = 0;
+            }
         }
 
         /// <summary>Sets the BBC video RAM window used by hardware scrolling wraparound.</summary>
@@ -408,6 +440,12 @@ namespace BBC
                 }
 
                 if (IsDisplayDisabledByCrtcSkew())
+                {
+                    Array.Fill(display.FrameBuffer, Background);
+                    return;
+                }
+
+                if (!IsDisplayProgrammed())
                 {
                     Array.Fill(display.FrameBuffer, Background);
                     return;
@@ -1559,6 +1597,12 @@ namespace BBC
         private bool IsDisplayDisabledByCrtcSkew()
         {
             return GetCrtcDisplayEnableSkew() == 3;
+        }
+
+        private bool IsDisplayProgrammed()
+        {
+            return activeCrtcRegisters[CrtcHorizontalDisplayedRegister] > 0
+                && activeCrtcRegisters[CrtcVerticalDisplayedRegister] > 0;
         }
 
         private int GetDisplayEnableSkewPixels(int pixelsPerCharacter)
