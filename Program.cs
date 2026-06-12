@@ -530,6 +530,9 @@ namespace BBC
             string commandName = GetCommandName(command);
             for (int bank = SidewaysRomBanks - 1; bank >= 0; bank--)
             {
+                if (!IsLanguageRom(bank))
+                    continue;
+
                 string title = ReadSidewaysRomTitle(bank);
                 if (title.Length == 0 || !MatchesSidewaysRomCommand(commandName, title))
                     continue;
@@ -541,6 +544,15 @@ namespace BBC
                 return true;
             }
             return false;
+        }
+
+        private bool IsLanguageRom(int bank)
+        {
+            if (bank < 0 || bank >= SidewaysRomBanks)
+                return false;
+
+            int typeOffset = bank * RomSize + 6;
+            return (sidewaysRoms[typeOffset] & 0x40) != 0;
         }
 
         private bool IsCliEntryPoint(ushort pc)
