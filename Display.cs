@@ -527,7 +527,7 @@ namespace BBC
 
             return keySym switch
             {
-                SDLK_LSHIFT or SDLK_RSHIFT => Key(BbcShiftKey),
+                SDLK_LSHIFT or SDLK_RSHIFT => Key(0x00),
                 SDLK_LCTRL or SDLK_RCTRL => Key(0x01),
                 SDLK_Q => Key(0x10),
                 SDLK_3 => Key(0x11),
