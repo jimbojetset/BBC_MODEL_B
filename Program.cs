@@ -602,6 +602,11 @@ namespace BBC
 
             if (Cpu.registers.A == 0x80)
             {
+                // Negative ADVAL channels report MOS sound-buffer state. Let the OS handle
+                // those; the host shortcut is only for the analogue joystick/fire channels.
+                if ((Cpu.registers.X & 0x80) != 0)
+                    return false;
+
                 ReadAdval(Cpu.registers.X, out byte x, out byte y);
                 Cpu.registers.X = x;
                 Cpu.registers.Y = y;
