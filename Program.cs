@@ -299,7 +299,7 @@ namespace BBC
             }
 
             Sound.Start();
-            Thread.Sleep(Sound.PowerOnToneDuration/2);
+            //Thread.Sleep(Sound.PowerOnToneDuration/2);
 
             StartCpu();
 

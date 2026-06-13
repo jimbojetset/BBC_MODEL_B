@@ -88,10 +88,14 @@ namespace BBC
         private int beamCompletedMinY;
         private int beamCompletedMaxX;
         private int beamCompletedMaxY;
+        private bool beamCompletedVisibleRuptureTimingActive;
         private int beamMode4To5X;
         private int beamMode4To5Y;
         private int beamMode4To5HorizontalCounter;
         private int beamMode4To5VerticalCounter;
+        private int beamPendingDisplayStartRuptureAddress;
+        private bool beamPendingDisplayStartRupture;
+        private bool beamDisplayStartRuptureThisRow;
         private bool beamOddClock;
         private bool beamHalfClock = true;
         private bool beamFirstScanline = true;
@@ -112,6 +116,10 @@ namespace BBC
         private int beamBitmapY;
         private int beamFrameCount;
         private int beamCompletedFrameCount;
+        private int beamStableVerticalTotal;
+        private int beamStableVerticalAdjust;
+        private int beamStableVerticalSync;
+        private bool beamStableVerticalTimingValid;
         private int beamHpulseWidth;
         private int beamVpulseWidth;
         private int beamHpulseCounter;
@@ -209,10 +217,14 @@ namespace BBC
             beamCompletedMinY = 0;
             beamCompletedMaxX = 0;
             beamCompletedMaxY = 0;
+            beamCompletedVisibleRuptureTimingActive = false;
             beamMode4To5X = -1;
             beamMode4To5Y = -1;
             beamMode4To5HorizontalCounter = -1;
             beamMode4To5VerticalCounter = -1;
+            beamPendingDisplayStartRuptureAddress = 0;
+            beamPendingDisplayStartRupture = false;
+            beamDisplayStartRuptureThisRow = false;
             beamOddClock = false;
             beamHalfClock = true;
             beamFirstScanline = true;
@@ -232,6 +244,10 @@ namespace BBC
             beamBitmapX = 0;
             beamBitmapY = 0;
             beamFrameCount = 0;
+            beamStableVerticalTotal = 0;
+            beamStableVerticalAdjust = 0;
+            beamStableVerticalSync = 0;
+            beamStableVerticalTimingValid = false;
             beamHpulseWidth = 0;
             beamVpulseWidth = 0;
             beamHpulseCounter = 0;
@@ -384,14 +400,14 @@ namespace BBC
                 beamHorizontalCounter = (beamHorizontalCounter + 1) & 0xFF;
             }
 
-            bool r6Hit = beamVerticalCounter == crtcRegisters[CrtcVerticalDisplayedRegister];
-            if (r6Hit && !beamFirstScanline && BeamVerticalDisplayEnabled)
+            bool r6Hit = beamVerticalCounter == GetBeamVerticalDisplayed();
+            if (r6Hit && !beamFirstScanline && BeamVerticalDisplayEnabled && !beamDisplayStartRuptureThisRow)
             {
                 BeamDisplayEnableClear(VDisplayEnable);
                 beamFrameCount++;
             }
 
-            bool r7Hit = beamVerticalCounter == crtcRegisters[CrtcVerticalSyncRegister];
+            bool r7Hit = beamVerticalCounter == GetBeamVerticalSync();
             if (r6Hit || r7Hit)
                 beamDoEvenFrameLogic = (beamFrameCount & 1) != 0;
         }
@@ -410,7 +426,7 @@ namespace BBC
                 beamInVSync = false;
             }
 
-            if (beamVerticalCounter == crtcRegisters[CrtcVerticalSyncRegister]
+            if (beamVerticalCounter == GetBeamVerticalSync()
                 && !beamInVSync
                 && !beamHadVSyncThisRow
                 && isVsyncPoint)
@@ -423,7 +439,7 @@ namespace BBC
             {
                 beamHadVSyncThisRow = true;
                 beamVpulseCounter = 0;
-                if (crtcRegisters[CrtcHorizontalTotalRegister] != 0 && crtcRegisters[CrtcVerticalTotalRegister] != 0)
+                if (crtcRegisters[CrtcHorizontalTotalRegister] != 0 && GetBeamVerticalTotal() != 0)
                     PaintAndClearBeamFrame();
             }
 
@@ -596,7 +612,7 @@ namespace BBC
                     beamBitmapX -= 4;
 
                 beamBitmapY += 2;
-                if (beamBitmapY >= 768)
+                if (beamBitmapY >= 768 && !BeamVisibleRuptureTimingActive)
                     PaintAndClearBeamFrame();
             }
             else if (beamHpulseCounter == beamHpulseWidth)
@@ -674,6 +690,20 @@ namespace BBC
         {
             beamVerticalCounter = (beamVerticalCounter + 1) & 0x7F;
             beamScanlineCounter = 0;
+            beamDisplayStartRuptureThisRow = false;
+            if (beamPendingDisplayStartRupture)
+            {
+                beamLineStartAddress = beamPendingDisplayStartRuptureAddress;
+                beamNextLineStartAddress = beamPendingDisplayStartRuptureAddress;
+                BeamDisplayEnableSet(VDisplayEnable | ScanlineDisplayEnable);
+                beamPendingDisplayStartRupture = false;
+                beamDisplayStartRuptureThisRow = true;
+            }
+            else if (BeamVisibleRuptureTimingActive)
+            {
+                BeamDisplayEnableClear(VDisplayEnable);
+            }
+
             if (beamPixelUlaControlOverrideValid)
             {
                 beamPixelUlaControlOverrideValid = false;
@@ -695,6 +725,7 @@ namespace BBC
         {
             beamVerticalCounter = 0;
             beamFirstScanline = true;
+            beamDisplayStartRuptureThisRow = false;
             beamNextLineStartAddress = (crtcRegisters[CrtcDisplayStartLowRegister]
                 | (crtcRegisters[CrtcDisplayStartHighRegister] << 8)) & 0x3FFF;
             beamLineStartAddress = beamNextLineStartAddress;
@@ -718,7 +749,7 @@ namespace BBC
             if (!beamEndOfMainLatched)
                 return;
 
-            if (beamVerticalAdjustCounter == (crtcRegisters[CrtcVerticalAdjustRegister] & 0x1F))
+            if (beamVerticalAdjustCounter == (GetBeamVerticalAdjust() & 0x1F))
                 beamEndOfVertAdjustLatched = true;
             beamVerticalAdjustCounter = (beamVerticalAdjustCounter + 1) & 0x1F;
         }
@@ -728,7 +759,7 @@ namespace BBC
             if (beamHorizontalCounter != 1)
                 return;
 
-            if (beamVerticalCounter == crtcRegisters[CrtcVerticalTotalRegister]
+            if (beamVerticalCounter == GetBeamVerticalTotal()
                 && beamScanlineCounter == crtcRegisters[CrtcScanLinesPerCharacterRegister])
             {
                 beamEndOfMainLatched = true;
@@ -747,6 +778,7 @@ namespace BBC
                 beamCompletedMinY = beamActiveMinY;
                 beamCompletedMaxX = beamActiveMaxX;
                 beamCompletedMaxY = beamActiveMaxY;
+                beamCompletedVisibleRuptureTimingActive = BeamVisibleRuptureTimingActive;
                 beamCompletedFrameCount = beamFrameCount;
                 beamHasCompletedFrame = true;
                 ClearBeamRenderFrame();
@@ -864,6 +896,8 @@ namespace BBC
                         value = (byte)(value & CrtcRegisterMasks[regIndex]);
                         crtcRegisters[regIndex] = value;
                         UpdateBeamCrtcDerivedState(regIndex, value);
+                        UpdateBeamStableVerticalTiming();
+                        HandleBeamDisplayStartRupture(regIndex);
                     }
                     break;
 
@@ -910,14 +944,15 @@ namespace BBC
                 int sourceWidth = beamCompletedMaxX - beamCompletedMinX;
                 int sourceHeight = sourceMaxY - sourceMinY;
                 int copyWidth = Math.Min(display.Width, sourceWidth);
-                int copyHeight = Math.Min(display.Height, sourceHeight);
+                int destinationY = beamCompletedVisibleRuptureTimingActive ? 26 : 0;
+                int copyHeight = Math.Min(display.Height - destinationY, sourceHeight);
                 int destinationX = Math.Max(0, (display.Width - copyWidth) / 2);
 
                 for (int y = 0; y < copyHeight; y++)
                 {
                     int sourceY = sourceMinY + y;
                     int sourceRow = sourceY * BeamFramebufferWidth;
-                    int destinationRow = (y * display.Width) + destinationX;
+                    int destinationRow = ((y + destinationY) * display.Width) + destinationX;
 
                     Array.Copy(beamCompletedFrame, sourceRow + beamCompletedMinX, destination, destinationRow, copyWidth);
                 }
@@ -925,6 +960,54 @@ namespace BBC
                 return true;
             }
         }
+
+        private void HandleBeamDisplayStartRupture(int register)
+        {
+            if (register != CrtcDisplayStartHighRegister)
+                return;
+
+            if (beamInVSync || beamFirstScanline)
+                return;
+
+            if (crtcRegisters[CrtcVerticalDisplayedRegister] > 1)
+                return;
+
+            beamPendingDisplayStartRuptureAddress = (crtcRegisters[CrtcDisplayStartLowRegister]
+                | (crtcRegisters[CrtcDisplayStartHighRegister] << 8)) & 0x3FFF;
+            beamPendingDisplayStartRupture = true;
+        }
+
+        private void UpdateBeamStableVerticalTiming()
+        {
+            if (crtcRegisters[CrtcVerticalTotalRegister] < 0x10
+                || crtcRegisters[CrtcVerticalDisplayedRegister] < 0x10
+                || crtcRegisters[CrtcVerticalSyncRegister] < 0x10)
+            {
+                return;
+            }
+
+            beamStableVerticalTotal = crtcRegisters[CrtcVerticalTotalRegister];
+            beamStableVerticalAdjust = crtcRegisters[CrtcVerticalAdjustRegister] & 0x1F;
+            beamStableVerticalSync = crtcRegisters[CrtcVerticalSyncRegister];
+            beamStableVerticalTimingValid = true;
+        }
+
+        private bool BeamVisibleRuptureTimingActive =>
+            beamStableVerticalTimingValid
+            && crtcRegisters[CrtcVerticalTotalRegister] <= 0x07
+            && crtcRegisters[CrtcVerticalDisplayedRegister] <= 0x01
+            && crtcRegisters[CrtcVerticalSyncRegister] <= 0x03;
+
+        private int GetBeamVerticalTotal() =>
+            BeamVisibleRuptureTimingActive ? beamStableVerticalTotal : crtcRegisters[CrtcVerticalTotalRegister];
+
+        private int GetBeamVerticalAdjust() =>
+            BeamVisibleRuptureTimingActive ? beamStableVerticalAdjust : crtcRegisters[CrtcVerticalAdjustRegister];
+
+        private int GetBeamVerticalDisplayed() => crtcRegisters[CrtcVerticalDisplayedRegister];
+
+        private int GetBeamVerticalSync() =>
+            BeamVisibleRuptureTimingActive ? beamStableVerticalSync : crtcRegisters[CrtcVerticalSyncRegister];
 
         /// <summary>Counts non-blank mode 7 screen cells for smoke tests.</summary>
         /// <returns>The number of non-blank cells in the physical mode 7 screen buffer.</returns>

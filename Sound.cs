@@ -24,10 +24,11 @@ namespace BBC
         private const int CpuClockHz = 2_000_000;
         private const int ChipSampleRate = ClockHz / 8;
         private const int SampleRate = 48_000;
-        private const int SamplesPerBuffer = 1024;
-        private const int MaxQueuedSamples = SampleRate / 10;
+        private const int SamplesPerBuffer = 512;
+        private const int DeviceBufferSamples = 1024;
+        private const int MaxQueuedSamples = SamplesPerBuffer * 2;
         private const int GeneratedQueueSamples = SampleRate / 2;
-        private const int GeneratedQueueHighWaterSamples = GeneratedQueueSamples - SamplesPerBuffer;
+        private const int GeneratedQueueHighWaterSamples = SamplesPerBuffer * 3;
         private const int PsgWriteEnableDelayCycles = 14;
         private const ushort AudioFormatS16 = 0x8010;
         private const double PowerOnToneFrequencyHz = 120.0;
@@ -121,7 +122,7 @@ namespace BBC
                 Freq = SampleRate,
                 Format = AudioFormatS16,
                 Channels = 1,
-                Samples = SamplesPerBuffer
+                Samples = DeviceBufferSamples
             };
 
             audioDevice = SDL_OpenAudioDevice(null, 0, ref desired, out SdlAudioSpec obtained, 0);
@@ -129,7 +130,7 @@ namespace BBC
                 throw new InvalidOperationException($"SDL_OpenAudioDevice failed: {GetSdlError()}");
 
             running = true;
-            QueuePowerOnTone();
+            //QueuePowerOnTone();
             audioThread = new Thread(RunAudio)
             {
                 IsBackground = true,
@@ -234,7 +235,7 @@ namespace BBC
                     }
                 }
 
-                Thread.Sleep(5);
+                Thread.Sleep(1);
             }
         }
 
