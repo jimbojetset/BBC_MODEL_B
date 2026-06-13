@@ -486,4 +486,9 @@ namespace BBC
                 ClearInterrupt(InterruptFlagKeyboard);
         }
     }
+
+    /// <summary>
+    /// Describes the BBC video RAM wrap window and hardware scroll mapping selected by the system VIA.
+    /// </summary>
+    public readonly record struct ScreenMemoryWindow(int Start, int Size, int HardwareScroll, int AddressSubtract);
 }
