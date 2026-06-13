@@ -22,16 +22,16 @@ namespace BBC
         public const int Mode7Rows = 25;
         public const int Mode7ScreenBytes = 1024;
 
-        private const ushort TextCursorAddressLow = 0x034A;
-        private const ushort TextCursorAddressHigh = 0x034B;
         private const uint Background = 0xFF000000;
-        private const uint Foreground = 0xFFFFFFFF;
-        private const int BitmapHeight = 256;
-        private const int VideoFrameCpuCycles = 40_000;
-        private const int VideoFrameScanlines = 312;
-        private const int VisibleStartScanline = 36;
-        private const int BitmapBytesPerRow10K = 40;
-        private const int BitmapBytesPerRow20K = 80;
+        private const int BeamFramebufferWidth = 1024;
+        private const int BeamFramebufferHeight = 625;
+        private const int VDisplayEnable = 1 << 0;
+        private const int HDisplayEnable = 1 << 1;
+        private const int SkewDisplayEnable = 1 << 2;
+        private const int ScanlineDisplayEnable = 1 << 3;
+        private const int UserDisplayEnable = 1 << 4;
+        private const int FrameSkipEnable = 1 << 5;
+        private const int EverythingEnabled = VDisplayEnable | HDisplayEnable | SkewDisplayEnable | ScanlineDisplayEnable | UserDisplayEnable | FrameSkipEnable;
         private const int CrtcRegisterCount = 32;
         private const int CrtcHorizontalTotalRegister = 0;
         private const int CrtcHorizontalDisplayedRegister = 1;
@@ -62,60 +62,85 @@ namespace BBC
             0xFF00FFFF, // cyan
             0xFFFFFFFF  // white
         ];
+        private static readonly byte[] CrtcRegisterMasks =
+        [
+            0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x1F, 0x7F, 0x7F,
+            0xF3, 0x1F, 0x7F, 0x1F, 0x3F, 0xFF, 0x3F, 0xFF,
+            0x3F, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ];
 
         private readonly byte[] memory;
         private readonly byte[] crtcRegisters = new byte[CrtcRegisterCount];
         private readonly byte[] paletteRegisters = new byte[PaletteRegisterCount];
-        private readonly byte[] mode4PaletteRegisters = new byte[PaletteRegisterCount];
-        private readonly byte[] mode5PaletteRegisters = new byte[PaletteRegisterCount];
-        private readonly object frameSnapshotLock = new object();
-        private readonly byte[] frameMemory = new byte[0x10000];
-        private readonly byte[] frameCrtcRegisters = new byte[CrtcRegisterCount];
-        private readonly byte[] framePaletteRegisters = new byte[PaletteRegisterCount];
-        private readonly byte[] frameMode4PaletteRegisters = new byte[PaletteRegisterCount];
-        private readonly byte[] frameMode5PaletteRegisters = new byte[PaletteRegisterCount];
-        private readonly List<VideoRasterEvent> rasterEvents = new List<VideoRasterEvent>();
-        private readonly List<VideoRasterEvent> frameRasterEvents = new List<VideoRasterEvent>();
-        private readonly List<VideoRasterEvent> activeRasterEvents = new List<VideoRasterEvent>();
-        private byte[] activeMemory;
-        private byte[] activeCrtcRegisters;
-        private byte[] activePaletteRegisters;
-        private byte[] activeMode4PaletteRegisters;
-        private byte[] activeMode5PaletteRegisters;
+        private readonly object beamFrameLock = new object();
+        private readonly uint[] beamRenderFrame = new uint[BeamFramebufferWidth * BeamFramebufferHeight];
+        private readonly uint[] beamCompletedFrame = new uint[BeamFramebufferWidth * BeamFramebufferHeight];
+        private readonly bool splitTraceEnabled;
         private ScreenMemoryWindow screenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
-        private ScreenMemoryWindow frameScreenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
-        private ScreenMemoryWindow activeScreenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
         private byte selectedCrtcRegister;
         private byte lastPaletteWrite;
-        private bool crtcCursorAddressWritten;
-        private bool frameCrtcCursorAddressWritten;
-        private bool hasFrameSnapshot;
-        private byte frameUlaControl;
-        private BbcScreenMode frameMode;
-        private byte activeUlaControl;
-        private BbcScreenMode activeMode;
-        private bool activeCrtcCursorAddressWritten;
-        private bool sawMode4ThisFrame;
-        private bool sawMode5ThisFrame;
-        private bool frameSawMode4;
-        private bool frameSawMode5;
-        private bool activeSawMode4;
-        private bool activeSawMode5;
-        private bool frameInterlaceFieldOdd;
-        private bool activeInterlaceFieldOdd;
-        private int frameNumber;
-        private int activeFrameNumber;
-        private int lastMode4Mode5SplitLine = 192;
-        private bool hasLastMode4Mode5SplitLine;
-        private int capturedFrameCounter;
-
-        // Stability tracking: the CRTC-derived vsync period and the gapped-text-mode decision
-        // both fire only after the relevant CRTC registers have been observed unchanged for an
-        // entire frame, so a single mid-frame rupture cannot retarget rendering or vsync.
-        private int previousFrameCrtcSignature;
-        private int stableCrtcSignature;
-        private int previousFrameR9;
-        private int stableR9;
+        private bool beamHasCompletedFrame;
+        private int beamActiveMinX;
+        private int beamActiveMinY;
+        private int beamActiveMaxX;
+        private int beamActiveMaxY;
+        private int beamCompletedMinX;
+        private int beamCompletedMinY;
+        private int beamCompletedMaxX;
+        private int beamCompletedMaxY;
+        private int beamMode4To5X;
+        private int beamMode4To5Y;
+        private int beamMode4To5HorizontalCounter;
+        private int beamMode4To5VerticalCounter;
+        private int beamCompletedMode4To5X;
+        private int beamCompletedMode4To5Y;
+        private int beamCompletedMode4To5HorizontalCounter;
+        private int beamCompletedMode4To5VerticalCounter;
+        private int lastSplitTraceFrame = -1;
+        private bool beamOddClock;
+        private bool beamHalfClock = true;
+        private bool beamFirstScanline = true;
+        private bool beamInHSync;
+        private bool beamInVSync;
+        private bool beamHadVSyncThisRow;
+        private bool beamCheckVertAdjust;
+        private bool beamEndOfMainLatched;
+        private bool beamEndOfVertAdjustLatched;
+        private bool beamEndOfFrameLatched;
+        private bool beamInVertAdjust;
+        private bool beamInDummyRaster;
+        private bool beamInterlacedSyncAndVideo;
+        private bool beamDoEvenFrameLogic;
+        private bool beamIsEvenRender = true;
+        private bool beamLastRenderWasEven;
+        private int beamBitmapX;
+        private int beamBitmapY;
+        private int beamFrameCount;
+        private int beamCompletedFrameCount;
+        private int beamHpulseWidth;
+        private int beamVpulseWidth;
+        private int beamHpulseCounter;
+        private int beamVpulseCounter;
+        private int beamDisplayEnabled = FrameSkipEnable | UserDisplayEnable;
+        private int beamHorizontalCounter;
+        private int beamVerticalCounter;
+        private int beamScanlineCounter;
+        private int beamVerticalAdjustCounter;
+        private int beamAddress;
+        private int beamLineStartAddress;
+        private int beamNextLineStartAddress;
+        private byte beamUlaControl;
+        private byte beamPixelUlaControlOverride;
+        private bool beamPixelUlaControlOverrideValid;
+        private readonly TeletextChip beamTeletext = new TeletextChip(BbcColours);
+        private int beamPixelsPerCharacter = 16;
+        private int beamDisplayEnableSkew;
+        private int beamCursorPos;
+        private int beamCursorDrawIndex;
+        private bool beamCursorOn;
+        private bool beamCursorOff;
+        private bool beamCursorOnThisFrame = true;
 
         /// <summary>Gets the currently selected BBC screen mode.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
@@ -123,20 +148,8 @@ namespace BBC
         /// <summary>Gets the current Video ULA control register value.</summary>
         public byte UlaControl { get; private set; }
 
-        /// <summary>Gets whether a stable, displayable frame snapshot is available.</summary>
-        public bool HasStableDisplaySnapshot
-        {
-            get
-            {
-                lock (frameSnapshotLock)
-                {
-                    return hasFrameSnapshot
-                        && stableCrtcSignature != 0
-                        && frameCrtcRegisters[CrtcHorizontalDisplayedRegister] > 0
-                        && frameCrtcRegisters[CrtcVerticalDisplayedRegister] > 0;
-                }
-            }
-        }
+        /// <summary>Raised when the emulated CRTC VSYNC output changes state.</summary>
+        public event Action<bool>? VsyncChanged;
 
         /// <summary>Returns whether a SHEILA address belongs to the video hardware.</summary>
         /// <param name="address">The CPU-visible address.</param>
@@ -152,69 +165,20 @@ namespace BBC
         public Video(byte[] memory)
         {
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
-            activeMemory = memory;
-            activeCrtcRegisters = crtcRegisters;
-            activePaletteRegisters = paletteRegisters;
-            activeMode4PaletteRegisters = mode4PaletteRegisters;
-            activeMode5PaletteRegisters = mode5PaletteRegisters;
-            activeUlaControl = UlaControl;
-            activeMode = CurrentMode;
-            ResetPaletteArray(mode4PaletteRegisters);
-            ResetPaletteArray(mode5PaletteRegisters);
-            AddRasterEvent(0);
+            splitTraceEnabled = Environment.GetEnvironmentVariable("BBC_VIDEO_SPLIT_TRACE") == "1";
+            ResetBeamState();
         }
 
         /// <summary>Resets video device state.</summary>
         public void Reset()
         {
-            lock (frameSnapshotLock)
-            {
-                Array.Clear(crtcRegisters);
-                ResetPalette();
-                selectedCrtcRegister = 0;
-                crtcCursorAddressWritten = false;
-                frameCrtcCursorAddressWritten = false;
-                hasFrameSnapshot = false;
-                sawMode4ThisFrame = false;
-                sawMode5ThisFrame = false;
-                frameSawMode4 = false;
-                frameSawMode5 = false;
-                frameInterlaceFieldOdd = false;
-                activeInterlaceFieldOdd = false;
-                frameNumber = 0;
-                activeFrameNumber = 0;
-                rasterEvents.Clear();
-                frameRasterEvents.Clear();
-                activeRasterEvents.Clear();
-                lastMode4Mode5SplitLine = 192;
-                hasLastMode4Mode5SplitLine = false;
-                capturedFrameCounter = 0;
-                previousFrameCrtcSignature = 0;
-                stableCrtcSignature = 0;
-                previousFrameR9 = 0;
-                stableR9 = 0;
-                CurrentMode = BbcScreenMode.Mode7;
-                UlaControl = 0;
-                screenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
-                frameScreenMemoryWindow = screenMemoryWindow;
-                frameUlaControl = UlaControl;
-                frameMode = CurrentMode;
-                AddRasterEvent(0);
-            }
-        }
-
-        /// <summary>Discards the current frame snapshot so rendering can wait for a fresh coherent frame.</summary>
-        public void InvalidateFrameSnapshot()
-        {
-            lock (frameSnapshotLock)
-            {
-                hasFrameSnapshot = false;
-                frameRasterEvents.Clear();
-                previousFrameCrtcSignature = 0;
-                stableCrtcSignature = 0;
-                previousFrameR9 = 0;
-                stableR9 = 0;
-            }
+            Array.Clear(crtcRegisters);
+            ResetPalette();
+            selectedCrtcRegister = 0;
+            CurrentMode = BbcScreenMode.Mode7;
+            UlaControl = 0;
+            screenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
+            ResetBeamState();
         }
 
         /// <summary>Sets the BBC video RAM window used by hardware scrolling wraparound.</summary>
@@ -230,99 +194,659 @@ namespace BBC
             screenMemoryWindow = window;
         }
 
-        /// <summary>Computes the frame period implied by the live CRTC programming, expressed in 1 MHz peripheral cycles.</summary>
-        /// <remarks>
-        /// The 6845 generates one frame every:
-        ///   characters_per_line * total_lines characters
-        /// where total_lines = (R4 + 1) * (R9 + 1) + R5.
-        /// The Video ULA's "high clock" bit selects 2 MHz (1 byte per char) vs 1 MHz (2 bytes per char) character rate.
-        /// On the BBC, the 6845 is clocked at the character rate so one CRTC character equals 1 (1 MHz mode)
-        /// or 0.5 (2 MHz mode) microseconds at the peripheral 1 MHz clock.
-        /// Returns 0 if the registers are clearly unprogrammed or out of range, so callers fall back to default 50 Hz.
-        /// </remarks>
-        public int GetCrtcFramePeriodPeripheralCycles()
+        /// <summary>Advances the beam-driven CRTC/ULA renderer by the supplied CPU cycles.</summary>
+        /// <param name="cycles">The number of 2 MHz CPU cycles to advance.</param>
+        public void Tick(int cycles)
         {
-            int horizontalTotal = crtcRegisters[CrtcHorizontalTotalRegister];   // R0: characters per scanline minus 1
-            int verticalTotal = crtcRegisters[CrtcVerticalTotalRegister];       // R4: character rows minus 1
-            int scanlinesPerRow = GetCrtcScanlinesPerCharacter(crtcRegisters); // R9 + 1
-            int totalScanlines = GetCrtcTotalScanlines(crtcRegisters);
-
-            if (horizontalTotal <= 0 || verticalTotal <= 0 || totalScanlines <= 0 || scanlinesPerRow <= 0)
-                return 0;
-
-            // Stability gate: do not push a CRTC-derived period unless the current programming
-            // matches what we saw at the end of the previous frame. Mid-frame ruptures that
-            // briefly retarget R0/R4/R5/R9 (Tricky's Frogger trick) must not steer vsync.
-            if (stableCrtcSignature == 0 || ComputeCrtcSignature() != stableCrtcSignature)
-                return 0;
-
-            int charactersPerScanline = horizontalTotal + 1;
-            int totalCharacters = charactersPerScanline * totalScanlines;
-
-            // Determine character clock: high clock bit on the ULA selects 2 MHz character rate.
-            bool highClock = (UlaControl & UlaClockHigh) != 0;
-            // peripheral cycles per CRTC character: 1 at 1 MHz character clock, 0.5 at 2 MHz.
-            // Express the result in integer 1 MHz cycles: high-clock => totalCharacters / 2 (rounded).
-            int peripheralCycles = highClock ? (totalCharacters + 1) / 2 : totalCharacters;
-            return peripheralCycles;
+            for (int i = 0; i < cycles; i++)
+                TickBeamClock();
         }
 
-        /// <summary>Captures a coherent frame of BBC-visible video state at emulated vsync.</summary>
-        public void CaptureVisibleFrame()
+        private void ResetBeamState()
         {
-            lock (frameSnapshotLock)
+            lock (beamFrameLock)
             {
-                memory.CopyTo(frameMemory, 0);
-                crtcRegisters.CopyTo(frameCrtcRegisters, 0);
-                paletteRegisters.CopyTo(framePaletteRegisters, 0);
-                mode4PaletteRegisters.CopyTo(frameMode4PaletteRegisters, 0);
-                mode5PaletteRegisters.CopyTo(frameMode5PaletteRegisters, 0);
-                frameCrtcCursorAddressWritten = crtcCursorAddressWritten;
-                frameUlaControl = UlaControl;
-                frameMode = CurrentMode;
-                frameScreenMemoryWindow = screenMemoryWindow;
-                frameSawMode4 = sawMode4ThisFrame;
-                frameSawMode5 = sawMode5ThisFrame;
-                frameNumber = capturedFrameCounter++;
-                frameInterlaceFieldOdd = (frameNumber & 1) != 0;
-                frameRasterEvents.Clear();
-                frameRasterEvents.AddRange(rasterEvents);
-                rasterEvents.Clear();
-                AddRasterEvent(0);
-                sawMode4ThisFrame = CurrentMode == BbcScreenMode.Mode4;
-                sawMode5ThisFrame = CurrentMode == BbcScreenMode.Mode5;
-                hasFrameSnapshot = true;
+                Array.Fill(beamRenderFrame, Background);
+                Array.Fill(beamCompletedFrame, Background);
+                beamHasCompletedFrame = false;
+            }
 
-                // Stability gating: only treat the CRTC programming as "settled" when the same
-                // signature has been observed for two consecutive frames. This prevents mid-frame
-                // ruptures (e.g. Tricky's per-row R12/R13 writes in Frogger) from being mistaken
-                // for a permanent reprogramming.
-                int currentSignature = ComputeCrtcSignature();
-                if (currentSignature == previousFrameCrtcSignature)
-                    stableCrtcSignature = currentSignature;
-                previousFrameCrtcSignature = currentSignature;
+            ResetBeamActiveBounds();
+            beamCompletedMinX = 0;
+            beamCompletedMinY = 0;
+            beamCompletedMaxX = 0;
+            beamCompletedMaxY = 0;
+            beamMode4To5X = -1;
+            beamMode4To5Y = -1;
+            beamMode4To5HorizontalCounter = -1;
+            beamMode4To5VerticalCounter = -1;
+            beamCompletedMode4To5X = -1;
+            beamCompletedMode4To5Y = -1;
+            beamCompletedMode4To5HorizontalCounter = -1;
+            beamCompletedMode4To5VerticalCounter = -1;
+            lastSplitTraceFrame = -1;
+            beamOddClock = false;
+            beamHalfClock = true;
+            beamFirstScanline = true;
+            beamInHSync = false;
+            beamInVSync = false;
+            beamHadVSyncThisRow = false;
+            beamCheckVertAdjust = false;
+            beamEndOfMainLatched = false;
+            beamEndOfVertAdjustLatched = false;
+            beamEndOfFrameLatched = false;
+            beamInVertAdjust = false;
+            beamInDummyRaster = false;
+            beamInterlacedSyncAndVideo = false;
+            beamDoEvenFrameLogic = false;
+            beamIsEvenRender = true;
+            beamLastRenderWasEven = false;
+            beamBitmapX = 0;
+            beamBitmapY = 0;
+            beamFrameCount = 0;
+            beamHpulseWidth = 0;
+            beamVpulseWidth = 0;
+            beamHpulseCounter = 0;
+            beamVpulseCounter = 0;
+            beamDisplayEnabled = FrameSkipEnable | UserDisplayEnable | HDisplayEnable | VDisplayEnable | ScanlineDisplayEnable;
+            beamHorizontalCounter = 0;
+            beamVerticalCounter = 0;
+            beamScanlineCounter = 0;
+            beamVerticalAdjustCounter = 0;
+            beamAddress = 0;
+            beamLineStartAddress = 0;
+            beamNextLineStartAddress = 0;
+            beamUlaControl = 0;
+            beamPixelUlaControlOverride = 0;
+            beamPixelUlaControlOverrideValid = false;
+            beamTeletext.Reset();
+            beamPixelsPerCharacter = 16;
+            beamDisplayEnableSkew = 0;
+            beamCursorPos = 0;
+            beamCursorDrawIndex = 0;
+            beamCursorOn = false;
+            beamCursorOff = false;
+            beamCursorOnThisFrame = true;
+            VsyncChanged?.Invoke(false);
+        }
 
-                int currentR9 = (crtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
-                if (currentR9 == previousFrameR9)
-                    stableR9 = currentR9;
-                previousFrameR9 = currentR9;
+        private void UpdateBeamUlaControl(byte control)
+        {
+            BbcScreenMode previousBeamMode = DecodeModeFromUlaControl(beamUlaControl);
+            BbcScreenMode nextBeamMode = DecodeModeFromUlaControl(control);
+
+            if (ShouldHoldPreviousPixelUlaControl(previousBeamMode, nextBeamMode))
+            {
+                beamPixelUlaControlOverride = beamUlaControl;
+                beamPixelUlaControlOverrideValid = true;
+            }
+
+            beamUlaControl = control;
+            beamPixelsPerCharacter = (control & UlaClockHigh) != 0 ? 8 : 16;
+            beamHalfClock = (control & UlaClockHigh) == 0;
+
+            if (previousBeamMode == BbcScreenMode.Mode4
+                && nextBeamMode == BbcScreenMode.Mode5
+                && beamMode4To5Y < 0
+                && !beamPixelUlaControlOverrideValid)
+            {
+                beamMode4To5X = beamBitmapX;
+                beamMode4To5Y = beamBitmapY;
+                beamMode4To5HorizontalCounter = beamHorizontalCounter;
+                beamMode4To5VerticalCounter = beamVerticalCounter;
             }
         }
 
-        private int ComputeCrtcSignature()
+        private bool ShouldHoldPreviousPixelUlaControl(BbcScreenMode previousBeamMode, BbcScreenMode nextBeamMode)
         {
-            // 32-bit packing of the CRTC registers that determine frame timing and layout.
-            // R0 (horizontal total), R4 (vertical total), R5 (vertical adjust), R6 (vertical displayed),
-            // R9 (scanlines per row), plus the ULA high-clock bit. Anything else can change without
-            // invalidating the period or gapped-text decision.
-            int sig = crtcRegisters[CrtcHorizontalTotalRegister];
-            sig |= crtcRegisters[CrtcVerticalTotalRegister] << 8;
-            sig |= (crtcRegisters[CrtcVerticalAdjustRegister] & 0x1F) << 16;
-            sig |= (crtcRegisters[CrtcVerticalDisplayedRegister] & 0x7F) << 21;
-            sig |= ((crtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) << 28);
-            sig ^= (UlaControl & UlaClockHigh) != 0 ? unchecked((int)0x80000000) : 0;
-            return sig;
+            if (previousBeamMode != BbcScreenMode.Mode4 || nextBeamMode != BbcScreenMode.Mode5)
+                return false;
+
+            if (!BeamVerticalDisplayEnabled)
+                return false;
+
+            return beamScanlineCounter != 0;
         }
+
+        private byte GetBeamPixelUlaControl()
+        {
+            return beamPixelUlaControlOverrideValid ? beamPixelUlaControlOverride : beamUlaControl;
+        }
+
+        private void UpdateBeamCrtcDerivedState(int register, byte value)
+        {
+            switch (register)
+            {
+                case 3:
+                    beamHpulseWidth = value & 0x0F;
+                    beamVpulseWidth = (value >> 4) & 0x0F;
+                    break;
+
+                case CrtcInterlaceAndSkewRegister:
+                    beamInterlacedSyncAndVideo = (value & 0x03) == 0x03;
+                    int skew = (value >> 4) & 0x03;
+                    if (skew < 3)
+                    {
+                        beamDisplayEnableSkew = skew;
+                        BeamDisplayEnableSet(UserDisplayEnable);
+                    }
+                    else
+                    {
+                        BeamDisplayEnableClear(UserDisplayEnable);
+                    }
+                    break;
+
+                case CrtcCursorHighRegister:
+                case CrtcCursorLowRegister:
+                    beamCursorPos = (crtcRegisters[CrtcCursorLowRegister]
+                        | (crtcRegisters[CrtcCursorHighRegister] << 8)) & 0x3FFF;
+                    break;
+            }
+        }
+
+        private void TickBeamClock()
+        {
+            _ = beamInDummyRaster;
+            beamOddClock = !beamOddClock;
+            beamBitmapX += 8;
+
+            if (beamHalfClock && !beamOddClock)
+                return;
+
+            if (beamInHSync)
+                HandleBeamHSync();
+
+            int displayEnablePos = GetBeamDisplayEnablePosition();
+            if (beamHorizontalCounter == displayEnablePos)
+                BeamDisplayEnableSet(SkewDisplayEnable);
+
+            if (beamHorizontalCounter == crtcRegisters[CrtcHorizontalDisplayedRegister])
+                beamNextLineStartAddress = beamAddress;
+
+            if (beamHorizontalCounter == crtcRegisters[CrtcHorizontalDisplayedRegister] + displayEnablePos
+                || beamHorizontalCounter == crtcRegisters[CrtcHorizontalTotalRegister] + displayEnablePos)
+                BeamDisplayEnableClear(HDisplayEnable | SkewDisplayEnable);
+
+            if (beamHorizontalCounter == crtcRegisters[2] && !beamInHSync)
+            {
+                beamInHSync = true;
+                beamHpulseCounter = 0;
+            }
+
+            TickBeamVSync();
+            RenderBeamCharacter();
+
+            if (!BeamHorizontalDisplayEnabled && BeamVerticalDisplayEnabled)
+            {
+                beamTeletext.FetchData((byte)(ReadBeamVideoMemory() | 0x40));
+            }
+
+            beamAddress = (beamAddress + 1) & 0x3FFF;
+            TickBeamVerticalAdjust();
+            LatchBeamEndOfMainFrame();
+
+            if (beamHorizontalCounter == crtcRegisters[CrtcHorizontalTotalRegister])
+            {
+                EndBeamScanline();
+                beamHorizontalCounter = 0;
+                BeamDisplayEnableSet(HDisplayEnable);
+            }
+            else
+            {
+                beamHorizontalCounter = (beamHorizontalCounter + 1) & 0xFF;
+            }
+
+            bool r6Hit = beamVerticalCounter == crtcRegisters[CrtcVerticalDisplayedRegister];
+            if (r6Hit && !beamFirstScanline && BeamVerticalDisplayEnabled)
+            {
+                BeamDisplayEnableClear(VDisplayEnable);
+                beamFrameCount++;
+            }
+
+            bool r7Hit = beamVerticalCounter == crtcRegisters[CrtcVerticalSyncRegister];
+            if (r6Hit || r7Hit)
+                beamDoEvenFrameLogic = (beamFrameCount & 1) != 0;
+        }
+
+        private void TickBeamVSync()
+        {
+            bool isInterlace = (crtcRegisters[CrtcInterlaceAndSkewRegister] & 0x01) != 0;
+            bool halfR0Hit = beamHorizontalCounter == (crtcRegisters[CrtcHorizontalTotalRegister] >> 1);
+            bool isVsyncPoint = !isInterlace || !beamDoEvenFrameLogic || halfR0Hit;
+            bool vSyncEnding = false;
+            bool vSyncStarting = false;
+
+            if (beamInVSync && beamVpulseCounter == beamVpulseWidth && isVsyncPoint)
+            {
+                vSyncEnding = true;
+                beamInVSync = false;
+            }
+
+            if (beamVerticalCounter == crtcRegisters[CrtcVerticalSyncRegister]
+                && !beamInVSync
+                && !beamHadVSyncThisRow
+                && isVsyncPoint)
+            {
+                vSyncStarting = true;
+                beamInVSync = true;
+            }
+
+            if (vSyncStarting && !vSyncEnding)
+            {
+                beamHadVSyncThisRow = true;
+                beamVpulseCounter = 0;
+                if (crtcRegisters[CrtcHorizontalTotalRegister] != 0 && crtcRegisters[CrtcVerticalTotalRegister] != 0)
+                    PaintAndClearBeamFrame();
+            }
+
+            if (vSyncStarting || vSyncEnding)
+            {
+                VsyncChanged?.Invoke(beamInVSync);
+                beamTeletext.SetDEW(beamInVSync);
+            }
+        }
+
+        private void RenderBeamCharacter()
+        {
+            bool insideBorder = BeamHorizontalDisplayEnabled && BeamVerticalDisplayEnabled;
+            if (!insideBorder && beamCursorDrawIndex == 0)
+                return;
+
+            byte data = ReadBeamVideoMemory();
+            if (insideBorder)
+                beamTeletext.FetchData(data);
+
+            if (insideBorder && beamAddress == beamCursorPos && beamCursorOn && !beamCursorOff && beamHorizontalCounter < crtcRegisters[CrtcHorizontalDisplayedRegister])
+                beamCursorDrawIndex = 3 - ((crtcRegisters[CrtcInterlaceAndSkewRegister] >> 6) & 0x03);
+
+            if ((uint)beamBitmapX >= BeamFramebufferWidth || (uint)beamBitmapY >= BeamFramebufferHeight)
+                return;
+
+            bool doubledLines = false;
+            int y = beamBitmapY;
+            if ((!beamInterlacedSyncAndVideo) || beamIsEvenRender == beamLastRenderWasEven)
+            {
+                doubledLines = true;
+                y &= ~1;
+            }
+
+            int offset = (y * BeamFramebufferWidth) + beamBitmapX;
+            if ((beamDisplayEnabled & EverythingEnabled) == EverythingEnabled)
+            {
+                if (IsBeamTeletextMode)
+                {
+                    RenderBeamTeletextCharacter(offset, y);
+                }
+                else
+                {
+                    RecordBeamActiveRun(beamBitmapX, y, beamPixelsPerCharacter, doubledLines);
+                    BlitBeamBitmap(data, offset, beamPixelsPerCharacter);
+                }
+
+                if (doubledLines && y + 1 < BeamFramebufferHeight)
+                    Array.Copy(beamRenderFrame, offset, beamRenderFrame, offset + BeamFramebufferWidth, Math.Min(beamPixelsPerCharacter, BeamFramebufferWidth - beamBitmapX));
+            }
+
+            if (beamCursorDrawIndex != 0)
+                HandleBeamCursor(offset, doubledLines);
+        }
+
+        private int GetBeamDisplayEnablePosition()
+        {
+            return beamDisplayEnableSkew + (IsBeamTeletextMode ? 2 : 0);
+        }
+
+        private void RenderBeamTeletextCharacter(int offset, int y)
+        {
+            beamTeletext.Render(beamRenderFrame, offset, BeamFramebufferWidth, BeamFramebufferHeight);
+            RecordBeamActiveRun(beamBitmapX, y, beamPixelsPerCharacter, doubledLines: false);
+        }
+
+        private byte ReadBeamVideoMemory()
+        {
+            if ((beamAddress & 0x2000) != 0)
+            {
+                int memoryAddress = beamAddress & 0x03FF;
+                memoryAddress |= (beamAddress & 0x0800) != 0 ? Mode7ScreenStart : 0x3C00;
+                return memory[memoryAddress & 0xFFFF];
+            }
+
+            int ma = beamAddress & 0x1FFF;
+            int adjustedHigh = (ma >> 8) & 0x0F;
+            if ((ma & 0x1000) != 0)
+                adjustedHigh = (adjustedHigh - screenMemoryWindow.AddressSubtract) & 0x0F;
+
+            int address = ((adjustedHigh << 11) | ((ma & 0xFF) << 3) | (beamScanlineCounter & 0x07)) & 0x7FFF;
+            return memory[address];
+        }
+
+        private void BlitBeamBitmap(byte data, int offset, int pixelCount)
+        {
+            int visiblePixels = Math.Min(pixelCount, BeamFramebufferWidth - beamBitmapX);
+            for (int i = 0; i < visiblePixels; i++)
+            {
+                int paletteIndex = DecodeBeamPaletteIndex(data, i);
+                beamRenderFrame[offset + i] = ResolveBeamPhysicalColour(paletteRegisters[paletteIndex & 0x0F]);
+            }
+        }
+
+        private int DecodeBeamPaletteIndex(byte value, int pixel)
+        {
+            int ulaMode = (GetBeamPixelUlaControl() >> 2) & 0x03;
+            int sample = ulaMode switch
+            {
+                3 => pixel,
+                2 => pixel >> 1,
+                1 => pixel >> 2,
+                _ => pixel >> 3
+            };
+
+            int shifted = ((value << sample) | ((1 << Math.Min(sample, 8)) - 1)) & 0xFF;
+            int index = 0;
+            if ((shifted & 0x02) != 0) index |= 0x01;
+            if ((shifted & 0x08) != 0) index |= 0x02;
+            if ((shifted & 0x20) != 0) index |= 0x04;
+            if ((shifted & 0x80) != 0) index |= 0x08;
+            return index;
+        }
+
+        private uint ResolveBeamPhysicalColour(byte physicalColour)
+        {
+            int colour = physicalColour & 0x0F;
+            if (colour >= 8 && (GetBeamPixelUlaControl() & 0x01) != 0)
+                colour &= 0x07;
+            else
+                colour &= 0x07;
+
+            return BbcColours[colour];
+        }
+
+        private void FillBeamRun(int offset, int pixelCount, uint colour)
+        {
+            int visiblePixels = Math.Min(pixelCount, BeamFramebufferWidth - beamBitmapX);
+            for (int i = 0; i < visiblePixels; i++)
+                beamRenderFrame[offset + i] = colour;
+        }
+
+        private void HandleBeamCursor(int offset, bool doubledLines)
+        {
+            if (beamCursorOnThisFrame && (beamUlaControl & GetBeamCursorMask()) != 0)
+            {
+                int visiblePixels = Math.Min(beamPixelsPerCharacter, BeamFramebufferWidth - beamBitmapX);
+                for (int i = 0; i < visiblePixels; i++)
+                    beamRenderFrame[offset + i] ^= 0x00FFFFFF;
+
+                if (doubledLines && !beamInterlacedSyncAndVideo && offset + BeamFramebufferWidth < beamRenderFrame.Length)
+                {
+                    for (int i = 0; i < visiblePixels; i++)
+                        beamRenderFrame[offset + BeamFramebufferWidth + i] ^= 0x00FFFFFF;
+                }
+            }
+
+            if (++beamCursorDrawIndex == 7)
+                beamCursorDrawIndex = 0;
+        }
+
+        private int GetBeamCursorMask()
+        {
+            return beamCursorDrawIndex switch
+            {
+                3 => 0x80,
+                4 => 0x40,
+                5 or 6 => 0x20,
+                _ => 0x00
+            };
+        }
+
+        private void HandleBeamHSync()
+        {
+            beamHpulseCounter = (beamHpulseCounter + 1) & 0x0F;
+            if (beamHpulseCounter == (beamHpulseWidth >> 1))
+            {
+                beamBitmapX = -8;
+                if ((beamHpulseWidth & 1) != 0)
+                    beamBitmapX -= 4;
+
+                beamBitmapY += 2;
+                if (beamBitmapY >= 768)
+                    PaintAndClearBeamFrame();
+            }
+            else if (beamHpulseCounter == beamHpulseWidth)
+            {
+                beamInHSync = false;
+            }
+        }
+
+        private void EndBeamScanline()
+        {
+            beamFirstScanline = false;
+            if (beamScanlineCounter == crtcRegisters[CrtcCursorEndRegister])
+                beamCursorOff = true;
+
+            beamVpulseCounter = (beamVpulseCounter + 1) & 0x0F;
+            bool r9Hit = beamScanlineCounter == crtcRegisters[CrtcScanLinesPerCharacterRegister];
+            if (r9Hit)
+                beamLineStartAddress = beamNextLineStartAddress;
+
+            if (beamInterlacedSyncAndVideo)
+                beamScanlineCounter = (beamScanlineCounter + 2) & 0x1E;
+            else
+                beamScanlineCounter = (beamScanlineCounter + 1) & 0x1F;
+
+            if (!IsBeamTeletextMode)
+            {
+                if (((beamScanlineCounter >> 3) & 1) != 0)
+                    BeamDisplayEnableClear(ScanlineDisplayEnable);
+                else
+                    BeamDisplayEnableSet(ScanlineDisplayEnable);
+            }
+
+            if (!beamInVertAdjust && r9Hit)
+                EndBeamCharacterLine();
+
+            if (beamEndOfMainLatched && !beamEndOfVertAdjustLatched)
+                beamInVertAdjust = true;
+
+            bool endOfFrame = beamEndOfFrameLatched;
+            if (beamEndOfVertAdjustLatched)
+            {
+                beamInVertAdjust = false;
+                if ((crtcRegisters[CrtcInterlaceAndSkewRegister] & 0x01) != 0 && beamDoEvenFrameLogic)
+                {
+                    beamInDummyRaster = true;
+                    beamEndOfFrameLatched = true;
+                }
+                else
+                {
+                    endOfFrame = true;
+                }
+            }
+
+            if (endOfFrame)
+            {
+                beamEndOfMainLatched = false;
+                beamEndOfVertAdjustLatched = false;
+                beamEndOfFrameLatched = false;
+                beamInDummyRaster = false;
+                EndBeamCharacterLine();
+                EndBeamFrame();
+            }
+
+            beamAddress = beamLineStartAddress;
+            if (beamScanlineCounter == (crtcRegisters[CrtcCursorStartRegister] & 0x1F))
+                beamCursorOn = true;
+
+            int externalScanline = beamScanlineCounter;
+            if (beamInterlacedSyncAndVideo && (beamFrameCount & 1) != 0)
+                externalScanline++;
+            beamTeletext.SetRA0((externalScanline & 1) != 0);
+        }
+
+        private void EndBeamCharacterLine()
+        {
+            beamVerticalCounter = (beamVerticalCounter + 1) & 0x7F;
+            beamScanlineCounter = 0;
+            if (beamPixelUlaControlOverrideValid)
+            {
+                beamPixelUlaControlOverrideValid = false;
+                if (DecodeModeFromUlaControl(beamUlaControl) == BbcScreenMode.Mode5 && beamMode4To5Y < 0)
+                {
+                    beamMode4To5X = beamBitmapX;
+                    beamMode4To5Y = beamBitmapY;
+                    beamMode4To5HorizontalCounter = beamHorizontalCounter;
+                    beamMode4To5VerticalCounter = beamVerticalCounter;
+                }
+            }
+            beamHadVSyncThisRow = false;
+            BeamDisplayEnableSet(ScanlineDisplayEnable);
+            beamCursorOn = false;
+            beamCursorOff = false;
+        }
+
+        private void EndBeamFrame()
+        {
+            beamVerticalCounter = 0;
+            beamFirstScanline = true;
+            beamNextLineStartAddress = (crtcRegisters[CrtcDisplayStartLowRegister]
+                | (crtcRegisters[CrtcDisplayStartHighRegister] << 8)) & 0x3FFF;
+            beamLineStartAddress = beamNextLineStartAddress;
+            BeamDisplayEnableSet(VDisplayEnable);
+
+            int cursorFlash = (crtcRegisters[CrtcCursorStartRegister] >> 5) & 0x03;
+            int flashMask = cursorFlash switch { 2 => 0x08, 3 => 0x10, _ => 0x00 };
+            beamCursorOnThisFrame = cursorFlash == 0 || (flashMask != 0 && (beamFrameCount & flashMask) != 0);
+            beamLastRenderWasEven = beamIsEvenRender;
+            beamIsEvenRender = (beamFrameCount & 1) == 0;
+            if (!beamInVSync)
+                beamDoEvenFrameLogic = false;
+        }
+
+        private void TickBeamVerticalAdjust()
+        {
+            if (!beamCheckVertAdjust)
+                return;
+
+            beamCheckVertAdjust = false;
+            if (!beamEndOfMainLatched)
+                return;
+
+            if (beamVerticalAdjustCounter == (crtcRegisters[CrtcVerticalAdjustRegister] & 0x1F))
+                beamEndOfVertAdjustLatched = true;
+            beamVerticalAdjustCounter = (beamVerticalAdjustCounter + 1) & 0x1F;
+        }
+
+        private void LatchBeamEndOfMainFrame()
+        {
+            if (beamHorizontalCounter != 1)
+                return;
+
+            if (beamVerticalCounter == crtcRegisters[CrtcVerticalTotalRegister]
+                && beamScanlineCounter == crtcRegisters[CrtcScanLinesPerCharacterRegister])
+            {
+                beamEndOfMainLatched = true;
+                beamVerticalAdjustCounter = 0;
+            }
+
+            beamCheckVertAdjust = true;
+        }
+
+        private void PaintAndClearBeamFrame()
+        {
+            lock (beamFrameLock)
+            {
+                Array.Copy(beamRenderFrame, beamCompletedFrame, beamCompletedFrame.Length);
+                beamCompletedMinX = beamActiveMinX;
+                beamCompletedMinY = beamActiveMinY;
+                beamCompletedMaxX = beamActiveMaxX;
+                beamCompletedMaxY = beamActiveMaxY;
+                beamCompletedMode4To5X = beamMode4To5X;
+                beamCompletedMode4To5Y = beamMode4To5Y;
+                beamCompletedMode4To5HorizontalCounter = beamMode4To5HorizontalCounter;
+                beamCompletedMode4To5VerticalCounter = beamMode4To5VerticalCounter;
+                beamCompletedFrameCount = beamFrameCount;
+                beamHasCompletedFrame = true;
+                ClearBeamRenderFrame();
+                ResetBeamActiveBounds();
+                beamMode4To5X = -1;
+                beamMode4To5Y = -1;
+                beamMode4To5HorizontalCounter = -1;
+                beamMode4To5VerticalCounter = -1;
+            }
+
+            beamDisplayEnabled &= ~FrameSkipEnable;
+            beamDisplayEnabled |= FrameSkipEnable;
+            beamBitmapY = 0;
+            if ((crtcRegisters[CrtcInterlaceAndSkewRegister] & 0x01) != 0 && (beamFrameCount & 1) != 0)
+                beamBitmapY = -1;
+        }
+
+        private void ClearBeamRenderFrame()
+        {
+            if (beamInterlacedSyncAndVideo)
+            {
+                int line = beamFrameCount & 1;
+                while (line < BeamFramebufferHeight)
+                {
+                    Array.Fill(beamRenderFrame, Background, line * BeamFramebufferWidth, BeamFramebufferWidth);
+                    line += 2;
+                }
+            }
+            else
+            {
+                Array.Fill(beamRenderFrame, Background);
+            }
+        }
+
+        private void BeamDisplayEnableSet(int flags)
+        {
+            beamDisplayEnabled |= flags;
+            UpdateBeamTeletextDisplayTiming();
+        }
+
+        private void BeamDisplayEnableClear(int flags)
+        {
+            beamDisplayEnabled &= ~flags;
+            UpdateBeamTeletextDisplayTiming();
+        }
+
+        private void UpdateBeamTeletextDisplayTiming()
+        {
+            const int displayTimingMask = HDisplayEnable | VDisplayEnable | UserDisplayEnable;
+            beamTeletext.SetDISPTMG((beamDisplayEnabled & displayTimingMask) == displayTimingMask);
+        }
+
+        private void ResetBeamActiveBounds()
+        {
+            beamActiveMinX = BeamFramebufferWidth;
+            beamActiveMinY = BeamFramebufferHeight;
+            beamActiveMaxX = 0;
+            beamActiveMaxY = 0;
+        }
+
+        private void RecordBeamActiveRun(int x, int y, int width, bool doubledLines)
+        {
+            if (x >= BeamFramebufferWidth || y >= BeamFramebufferHeight)
+                return;
+
+            int x0 = Math.Clamp(x, 0, BeamFramebufferWidth);
+            int x1 = Math.Clamp(x + width, 0, BeamFramebufferWidth);
+            int y0 = Math.Clamp(y, 0, BeamFramebufferHeight);
+            int y1 = Math.Clamp(y + (doubledLines ? 2 : 1), 0, BeamFramebufferHeight);
+
+            if (x1 <= x0 || y1 <= y0)
+                return;
+
+            beamActiveMinX = Math.Min(beamActiveMinX, x0);
+            beamActiveMinY = Math.Min(beamActiveMinY, y0);
+            beamActiveMaxX = Math.Max(beamActiveMaxX, x1);
+            beamActiveMaxY = Math.Max(beamActiveMaxY, y1);
+        }
+
+        private bool BeamHorizontalDisplayEnabled => (beamDisplayEnabled & HDisplayEnable) != 0;
+
+        private bool BeamVerticalDisplayEnabled => (beamDisplayEnabled & VDisplayEnable) != 0;
+
+        private bool IsBeamTeletextMode => (beamUlaControl & UlaTeletext) != 0;
 
         /// <summary>Reads a byte from the CRTC or Video ULA register area.</summary>
         /// <param name="address">The CPU-visible address.</param>
@@ -353,23 +877,9 @@ namespace BBC
                 case 0xFE01:
                     {
                         int regIndex = selectedCrtcRegister & 0x1F;
+                        value = (byte)(value & CrtcRegisterMasks[regIndex]);
                         crtcRegisters[regIndex] = value;
-                        if (regIndex is CrtcCursorHighRegister or CrtcCursorLowRegister)
-                            crtcCursorAddressWritten = true;
-                        // Mid-frame display-start and horizontal-displayed writes can alter the
-                        // row stream. R6/R9 writes are still captured for timing/state history, but
-                        // they must not be treated as R12/R13 latches or they can make short bitmap
-                        // displays wrap back to the top of screen memory.
-                        VideoRasterEventKind eventKind = regIndex switch
-                        {
-                            CrtcDisplayStartHighRegister or CrtcDisplayStartLowRegister => VideoRasterEventKind.DisplayStart,
-                            CrtcHorizontalDisplayedRegister => VideoRasterEventKind.HorizontalDisplayed,
-                            CrtcScanLinesPerCharacterRegister or CrtcVerticalDisplayedRegister => VideoRasterEventKind.VerticalLayout,
-                            _ => VideoRasterEventKind.State
-                        };
-
-                        if (eventKind != VideoRasterEventKind.State)
-                            AddRasterEvent(frameCpuCycle, eventKind);
+                        UpdateBeamCrtcDerivedState(regIndex, value);
                     }
                     break;
 
@@ -377,11 +887,7 @@ namespace BBC
                 case 0xFE22:
                     UlaControl = value;
                     CurrentMode = DecodeModeFromUlaControl(value);
-                    if (CurrentMode == BbcScreenMode.Mode4)
-                        sawMode4ThisFrame = true;
-                    else if (CurrentMode == BbcScreenMode.Mode5)
-                        sawMode5ThisFrame = true;
-                    AddRasterEvent(frameCpuCycle);
+                    UpdateBeamUlaControl(value);
                     break;
 
                 case 0xFE21:
@@ -390,11 +896,6 @@ namespace BBC
                     int paletteIndex = (value >> 4) & 0x0F;
                     byte physicalColour = DecodePhysicalColour(value);
                     paletteRegisters[paletteIndex] = physicalColour;
-                    if (CurrentMode == BbcScreenMode.Mode4)
-                        mode4PaletteRegisters[paletteIndex] = physicalColour;
-                    else if (CurrentMode == BbcScreenMode.Mode5)
-                        mode5PaletteRegisters[paletteIndex] = physicalColour;
-                    AddRasterEvent(frameCpuCycle);
                     break;
             }
         }
@@ -403,99 +904,94 @@ namespace BBC
         /// <param name="display">The SDL-backed display to render into.</param>
         public void Render(Display display)
         {
-            lock (frameSnapshotLock)
+            TraceSplitDiagnostics();
+
+            if (!TryCopyBeamFrameToDisplay(display))
+                Array.Fill(display.FrameBuffer, Background);
+        }
+
+        private void TraceSplitDiagnostics()
+        {
+            if (!splitTraceEnabled)
+                return;
+
+            int frame;
+            int r1;
+            int r6;
+            int r9;
+            int r12r13;
+            byte ula;
+            int beamX;
+            int beamY;
+            int beamH;
+            int beamV;
+            int minX;
+            int minY;
+            int maxX;
+            int maxY;
+            lock (beamFrameLock)
             {
-                if (hasFrameSnapshot)
-                {
-                    activeMemory = frameMemory;
-                    activeCrtcRegisters = frameCrtcRegisters;
-                    activePaletteRegisters = framePaletteRegisters;
-                    activeMode4PaletteRegisters = frameMode4PaletteRegisters;
-                    activeMode5PaletteRegisters = frameMode5PaletteRegisters;
-                    activeCrtcCursorAddressWritten = frameCrtcCursorAddressWritten;
-                    activeUlaControl = frameUlaControl;
-                    activeMode = frameMode;
-                    activeScreenMemoryWindow = frameScreenMemoryWindow;
-                    activeSawMode4 = frameSawMode4;
-                    activeSawMode5 = frameSawMode5;
-                    activeInterlaceFieldOdd = frameInterlaceFieldOdd;
-                    activeFrameNumber = frameNumber;
-                    activeRasterEvents.Clear();
-                    activeRasterEvents.AddRange(frameRasterEvents);
-                }
-                else
-                {
-                    activeMemory = memory;
-                    activeCrtcRegisters = crtcRegisters;
-                    activePaletteRegisters = paletteRegisters;
-                    activeMode4PaletteRegisters = mode4PaletteRegisters;
-                    activeMode5PaletteRegisters = mode5PaletteRegisters;
-                    activeCrtcCursorAddressWritten = crtcCursorAddressWritten;
-                    activeUlaControl = UlaControl;
-                    activeMode = CurrentMode;
-                    activeScreenMemoryWindow = screenMemoryWindow;
-                    activeSawMode4 = sawMode4ThisFrame;
-                    activeSawMode5 = sawMode5ThisFrame;
-                    activeInterlaceFieldOdd = false;
-                    activeFrameNumber = capturedFrameCounter;
-                    activeRasterEvents.Clear();
-                    activeRasterEvents.AddRange(rasterEvents);
-                }
-
-                if (IsDisplayDisabledByCrtcSkew())
-                {
-                    Array.Fill(display.FrameBuffer, Background);
+                frame = beamCompletedFrameCount;
+                if (frame == lastSplitTraceFrame)
                     return;
-                }
 
-                if (!IsDisplayProgrammed())
+                beamX = beamCompletedMode4To5X;
+                beamY = beamCompletedMode4To5Y;
+                beamH = beamCompletedMode4To5HorizontalCounter;
+                beamV = beamCompletedMode4To5VerticalCounter;
+                minX = beamCompletedMinX;
+                minY = beamCompletedMinY;
+                maxX = beamCompletedMaxX;
+                maxY = beamCompletedMaxY;
+                lastSplitTraceFrame = frame;
+            }
+
+            if (beamY < 0)
+                return;
+
+            r1 = crtcRegisters[CrtcHorizontalDisplayedRegister];
+            r6 = crtcRegisters[CrtcVerticalDisplayedRegister];
+            r9 = GetCrtcScanlinesPerCharacter(crtcRegisters);
+            r12r13 = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
+                | crtcRegisters[CrtcDisplayStartLowRegister];
+            ula = UlaControl;
+
+            Console.WriteLine(
+                $"VIDEO_SPLIT frame={frame} renderer=beam beamMode4To5=({beamX},{beamY}) beamCounters=({beamH},{beamV}) beamBounds=({minX},{minY})-({maxX},{maxY}) " +
+                $"R1={r1} R6={r6} R9lines={r9} R12R13=${r12r13:X4} ULA=${ula:X2}");
+        }
+
+        private bool TryCopyBeamFrameToDisplay(Display display)
+        {
+            lock (beamFrameLock)
+            {
+                if (!beamHasCompletedFrame)
+                    return false;
+
+                uint[] destination = display.FrameBuffer;
+                Array.Fill(destination, Background);
+
+                if (beamCompletedMaxX <= beamCompletedMinX || beamCompletedMaxY <= beamCompletedMinY)
+                    return true;
+
+                int sourceMinY = beamCompletedMinY & ~1;
+                int sourceMaxY = Math.Min(BeamFramebufferHeight, (beamCompletedMaxY + 1) & ~1);
+                int sourceWidth = beamCompletedMaxX - beamCompletedMinX;
+                int sourceHeight = sourceMaxY - sourceMinY;
+                int copyWidth = Math.Min(display.Width, sourceWidth);
+                int copyHeight = Math.Min(display.Height, sourceHeight);
+                int destinationX = Math.Max(0, (display.Width - copyWidth) / 2);
+
+                for (int y = 0; y < copyHeight; y++)
                 {
-                    Array.Fill(display.FrameBuffer, Background);
-                    return;
+                    int sourceY = sourceMinY + y;
+                    int sourceRow = sourceY * BeamFramebufferWidth;
+                    int destinationRow = (y * display.Width) + destinationX;
+
+                    Array.Copy(beamCompletedFrame, sourceRow + beamCompletedMinX, destination, destinationRow, copyWidth);
                 }
 
-                if (ShouldRenderMode4Mode5Split())
-                {
-                    RenderMode4Mode5Split(display);
-                    return;
-                }
-
-                switch (activeMode)
-                {
-                    case BbcScreenMode.Mode7:
-                        RenderMode7TextScreen(display);
-                        break;
-
-                    case BbcScreenMode.Mode0:
-                        if (IsGappedTextRow())
-                            RenderBitmapMode3(display);
-                        else
-                            RenderBitmapMode0(display);
-                        break;
-
-                    case BbcScreenMode.Mode1:
-                        RenderBitmapMode1(display);
-                        break;
-
-                    case BbcScreenMode.Mode2:
-                        RenderBitmapMode2(display);
-                        break;
-
-                    case BbcScreenMode.Mode4:
-                        if (IsGappedTextRow())
-                            RenderBitmapMode6(display);
-                        else
-                            RenderBitmapMode4(display);
-                        break;
-
-                    case BbcScreenMode.Mode5:
-                        RenderBitmapMode5(display);
-                        break;
-
-                    default:
-                        RenderMode7TextScreen(display);
-                        break;
-                }
+                return true;
             }
         }
 
@@ -515,1213 +1011,9 @@ namespace BBC
             return count;
         }
 
-        private void RenderMode7TextScreen(Display display)
-        {
-            const int cellWidth = Display.DefaultWidth / Mode7Columns;
-            const int cellHeight = Display.DefaultHeight / Mode7Rows;
-
-            uint[] pixels = display.FrameBuffer;
-            Array.Fill(pixels, Background);
-            if (IsTeletextOutputSuppressed())
-                return;
-
-            int xOffset = 0;
-            bool flashVisible = (Environment.TickCount64 / 320 & 1) == 0;
-
-            for (int row = 0; row < Mode7Rows; row++)
-            {
-                int cellY = row * cellHeight;
-                TeletextState state = new TeletextState();
-
-                for (int column = 0; column < Mode7Columns; column++)
-                {
-                    byte character = ReadMode7DisplayCharacter(row, column);
-                    int cellX = xOffset + (column * cellWidth);
-
-                    int control = character & 0x7F;
-                    bool isControl = control < 0x20;
-
-                    // Save the rendering attributes that apply to THIS cell (Set-After semantics:
-                    // most attributes change AFTER this cell; the cell itself is rendered as a
-                    // space using the attributes that were active before the control code).
-                    bool wasGraphicsMode = state.GraphicsMode;
-                    bool wasSeparated = state.SeparatedGraphics;
-                    bool wasHoldGraphics = state.HoldGraphics;
-                    bool wasDoubleHeight = state.DoubleHeight;
-                    bool wasConcealed = state.Concealed;
-                    uint cellForeground = state.ForegroundColour;
-                    uint cellBackground = state.BackgroundColour;
-                    byte? cellHeldMosaic = state.HeldMosaic;
-
-                    if (isControl)
-                    {
-                        // Update state for following cells. NEW-BACKGROUND (0x1D) is "Set-At" and
-                        // takes effect on the current cell — handled inside ApplyTeletextControl.
-                        ApplyTeletextControl(control, state);
-
-                        // Background colour is Set-At — re-read it for this cell.
-                        if (control == 0x1C || control == 0x1D)
-                            cellBackground = state.BackgroundColour;
-                    }
-
-                    // Fill the cell with current background colour.
-                    if (cellBackground != Background)
-                        FillRect(pixels, display.Width, display.Height, cellX, cellY, cellX + cellWidth, cellY + cellHeight, cellBackground);
-
-                    if (state.Flashing && !flashVisible)
-                        continue;
-                    if (cellConcealedForRender(state) || wasConcealed)
-                        continue;
-
-                    if (isControl)
-                    {
-                        // Hold-Graphics: draw the most recent mosaic in graphics mode using the
-                        // attributes that were active *before* this control code.
-                        if (wasGraphicsMode && wasHoldGraphics && cellHeldMosaic.HasValue)
-                            DrawTeletextMosaic(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, cellHeldMosaic.Value, cellForeground, wasSeparated);
-                        continue;
-                    }
-
-                    if (wasGraphicsMode && IsTeletextMosaicCharacter(character))
-                    {
-                        state.HeldMosaic = character;
-                        DrawTeletextMosaic(pixels, display.Width, display.Height, cellX, cellY, cellWidth, cellHeight, character, cellForeground, wasSeparated);
-                    }
-                    else
-                    {
-                        bool doubleHeightBottom = wasDoubleHeight && IsDoubleHeightBottomRow(row, column, character);
-                        Saa5050Font.Draw(pixels, display.Width, display.Height, cellX, cellY, cellHeight, character, cellForeground, wasDoubleHeight, doubleHeightBottom);
-                    }
-                }
-            }
-
-            RenderMode7Cursor(display);
-
-            // Conceal helper: only conceal once a Conceal (0x18) code has been seen on this row.
-            // Wrapped here as a local fn so we can use it above without leaking it from the class.
-            static bool cellConcealedForRender(TeletextState s) => s.Concealed;
-        }
-
-        private static void ApplyTeletextControl(int control, TeletextState state)
-        {
-            switch (control)
-            {
-                case >= 0x01 and <= 0x07:
-                    state.GraphicsMode = false;
-                    state.Concealed = false;
-                    state.ForegroundColour = BbcColours[control & 0x07];
-                    state.HeldMosaic = null;
-                    break;
-
-                case 0x08:
-                    state.Flashing = true;
-                    break;
-
-                case 0x09:
-                    state.Flashing = false;
-                    break;
-
-                case 0x0C:
-                    state.DoubleHeight = false;
-                    break;
-
-                case 0x0D:
-                    state.DoubleHeight = true;
-                    break;
-
-                case >= 0x11 and <= 0x17:
-                    state.GraphicsMode = true;
-                    state.Concealed = false;
-                    state.ForegroundColour = BbcColours[control & 0x07];
-                    break;
-
-                case 0x10:
-                    // 0x10 is reserved/black-graphics on some teletext variants; treat as switch
-                    // to graphics mode with the current foreground colour.
-                    state.GraphicsMode = true;
-                    break;
-
-                case 0x18:
-                    state.Concealed = true;
-                    break;
-
-                case 0x19:
-                    state.SeparatedGraphics = false;
-                    break;
-
-                case 0x1A:
-                    state.SeparatedGraphics = true;
-                    break;
-
-                case 0x1C:
-                    state.BackgroundColour = Background;
-                    break;
-
-                case 0x1D:
-                    state.BackgroundColour = state.ForegroundColour;
-                    break;
-
-                case 0x1E:
-                    state.HoldGraphics = true;
-                    break;
-
-                case 0x1F:
-                    state.HoldGraphics = false;
-                    state.HeldMosaic = null;
-                    break;
-            }
-        }
-
-        private bool TryApplyTeletextControl(byte character, TeletextState state)
-        {
-            int control = character & 0x7F;
-            if (control >= 0x20)
-                return false;
-
-            ApplyTeletextControl(control, state);
-            return true;
-        }
-
-        private bool IsDoubleHeightBottomRow(int row, int column, byte character)
-        {
-            if (row <= 0)
-                return false;
-
-            TeletextState previousState = new TeletextState();
-            byte previousCharacter = 32;
-
-            for (int previousColumn = 0; previousColumn <= column; previousColumn++)
-            {
-                previousCharacter = ReadMode7DisplayCharacter(row - 1, previousColumn);
-                if (TryApplyTeletextControl(previousCharacter, previousState))
-                    continue;
-            }
-
-            return previousState.DoubleHeight && (previousCharacter & 0x7F) == (character & 0x7F);
-        }
-
-        private static void DrawTeletextMosaic(uint[] pixels, int width, int height, int cellX, int cellY, int cellWidth, int cellHeight, byte character, uint colour, bool separated)
-        {
-            int value = character & 0x7F;
-            int pattern = (value & 0x1F) | ((value & 0x40) >> 1);
-            for (int sourceY = 0; sourceY < 10; sourceY++)
-            {
-                for (int sourceX = 0; sourceX < 6; sourceX++)
-                {
-                    int block = (sourceY < 3 ? 0 : sourceY < 7 ? 2 : 4) + (sourceX < 3 ? 0 : 1);
-                    if ((pattern & (1 << block)) == 0)
-                        continue;
-
-                    if (separated)
-                    {
-                        int blockStartX = sourceX < 3 ? 0 : 3;
-                        int blockStartY = sourceY < 3 ? 0 : sourceY < 7 ? 3 : 7;
-                        int blockEndY = sourceY < 3 ? 2 : sourceY < 7 ? 6 : 9;
-                        if (sourceX == blockStartX || sourceY == blockEndY)
-                            continue;
-                    }
-
-                    int x0 = cellX + (sourceX * cellWidth / 6);
-                    int x1 = cellX + ((sourceX + 1) * cellWidth / 6);
-                    int y0 = cellY + (sourceY * cellHeight / 10);
-                    int y1 = cellY + ((sourceY + 1) * cellHeight / 10);
-                    FillRect(pixels, width, height, x0, y0, x1, y1, colour);
-                }
-            }
-        }
-
-        private static bool IsTeletextMosaicCharacter(byte character)
-        {
-            int value = character & 0x7F;
-            return value is >= 0x20 and <= 0x3F
-                or >= 0x60 and <= 0x7F;
-        }
-
-        private void RenderBitmapMode0(Display display)
-        {
-            uint[] pixels = display.FrameBuffer;
-            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
-            int height = GetBitmapHeight();
-            int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
-            int yOffset = GetBitmapYOffset(height);
-            int defaultStart = GetBitmapDisplayStart();
-            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
-            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
-
-            for (int charRow = 0; charRow < characterRows; charRow++)
-            {
-                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow20K);
-                int rowCrtcStart = snapshots[charRow].CrtcStart;
-
-                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
-                {
-                    int y = (charRow * 8) + rasterLine;
-                    if (y >= height)
-                        return;
-                    int targetY = yOffset + (y * 2);
-
-                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
-                    {
-                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
-
-                        for (int bit = 0; bit < 8; bit++)
-                        {
-                            int logicalColour = (value >> (7 - bit)) & 0x01;
-                            uint colour = GetPaletteColour(logicalColour);
-                            int targetX = xOffset + (byteX * 8) + bit;
-
-                            WriteScaledPixel1x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                        }
-                    }
-                }
-            }
-        }
-
-        private void RenderBitmapMode1(Display display)
-        {
-            uint[] pixels = display.FrameBuffer;
-            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
-            int height = GetBitmapHeight();
-            int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
-            int yOffset = GetBitmapYOffset(height);
-            int defaultStart = GetBitmapDisplayStart();
-            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
-            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
-
-            for (int charRow = 0; charRow < characterRows; charRow++)
-            {
-                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow20K);
-                int rowCrtcStart = snapshots[charRow].CrtcStart;
-
-                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
-                {
-                    int y = (charRow * 8) + rasterLine;
-                    if (y >= height)
-                        return;
-                    int targetY = yOffset + (y * 2);
-
-                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
-                    {
-                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
-
-                        for (int pixel = 0; pixel < 4; pixel++)
-                        {
-                            int logicalColour = DecodeTwoBitPixel(value, pixel);
-                            uint colour = GetPaletteColour(logicalColour);
-                            int targetX = xOffset + (((byteX * 4) + pixel) * 2);
-
-                            WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                        }
-                    }
-                }
-            }
-        }
-
-        private void RenderBitmapMode2(Display display)
-        {
-            uint[] pixels = display.FrameBuffer;
-            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
-            int height = GetBitmapHeight();
-            int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
-            int yOffset = GetBitmapYOffset(height);
-
-            for (int y = 0; y < height; y++)
-            {
-                int targetY = yOffset + (y * 2);
-
-                for (int byteX = 0; byteX < bytesPerRow; byteX++)
-                {
-                    byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow)];
-
-                    for (int pixel = 0; pixel < 2; pixel++)
-                    {
-                        int logicalColour = DecodeFourBitPixel(value, pixel);
-                        uint colour = GetPaletteColour(logicalColour);
-                        int targetX = xOffset + (((byteX * 2) + pixel) * 4);
-
-                        WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                    }
-                }
-            }
-        }
-
-        private void RenderBitmapMode4(Display display)
-        {
-            uint[] pixels = display.FrameBuffer;
-            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
-            int height = GetBitmapHeight();
-            int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
-            int yOffset = GetBitmapYOffset(height);
-            int defaultStart = GetBitmapDisplayStart();
-            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
-            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
-            int eventIndex = 0;
-            byte[] currentPalette = activePaletteRegisters;
-
-            for (int charRow = 0; charRow < characterRows; charRow++)
-            {
-                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow10K);
-                int rowCrtcStart = snapshots[charRow].CrtcStart;
-
-                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
-                {
-                    int y = (charRow * 8) + rasterLine;
-                    if (y >= height)
-                        return;
-                    currentPalette = GetPaletteForVisibleLine(y, ref eventIndex, currentPalette);
-                    int targetY = yOffset + (y * 2);
-
-                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
-                    {
-                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
-
-                        for (int bit = 0; bit < 8; bit++)
-                        {
-                            int logicalColour = (value >> (7 - bit)) & 0x01;
-                            int targetX = xOffset + (((byteX * 8) + bit) * 2);
-                            uint colour = GetPaletteColour(BbcScreenMode.Mode4, currentPalette, logicalColour);
-
-                            WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                        }
-                    }
-                }
-            }
-        }
-
-        private void RenderBitmapMode5(Display display)
-        {
-            uint[] pixels = display.FrameBuffer;
-            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int defaultBytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
-            int height = GetBitmapHeight();
-            int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
-            int yOffset = GetBitmapYOffset(height);
-            int defaultStart = GetBitmapDisplayStart();
-            int characterRows = GetEffectiveCharacterRows((int)activeCrtcRegisters[CrtcVerticalDisplayedRegister], 8);
-            var snapshots = BuildCharacterRowSnapshots(characterRows, 8, defaultStart, defaultBytesPerRow);
-            int eventIndex = 0;
-            byte[] currentPalette = activePaletteRegisters;
-            for (int charRow = 0; charRow < characterRows; charRow++)
-            {
-                int bytesPerRow = Math.Clamp(snapshots[charRow].BytesPerRow, 1, BitmapBytesPerRow10K);
-                int rowCrtcStart = snapshots[charRow].CrtcStart;
-
-                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
-                {
-                    int y = (charRow * 8) + rasterLine;
-                    if (y >= height)
-                        return;
-                    currentPalette = GetPaletteForVisibleLine(y, ref eventIndex, currentPalette);
-                    int targetY = yOffset + (y * 2);
-
-                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
-                    {
-                        byte value = activeMemory[GetCharacterRowBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, rowCrtcStart)];
-
-                        for (int pixel = 0; pixel < 4; pixel++)
-                        {
-                            int logicalColour = DecodeTwoBitPixel(value, pixel);
-                            int targetX = xOffset + (((byteX * 4) + pixel) * 4);
-                            uint colour = GetPaletteColour(BbcScreenMode.Mode5, currentPalette, logicalColour);
-
-                            WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                        }
-                    }
-                }
-            }
-        }
-
-        /// <summary>True when the current CRTC programming describes the BBC's gapped text modes
-        /// (Modes 3 or 6): the ULA selects a Mode 0/4 character clock but R9 selects 9 (so each
-        /// character row spans 10 scanlines instead of 8), and only 25 character rows are
-        /// displayed. The last two scanlines of each row are blanked, producing the characteristic
-        /// gappy text look.
-        /// Stability gate: R9 must be ≥ 9 for two consecutive frames before we dispatch as Mode 3/6,
-        /// otherwise a single mid-frame R9 rupture (used as a CRTC trick by some games such as
-        /// Tricky's Frogger) would briefly retarget rendering and corrupt the screen.</summary>
-        private bool IsGappedTextRow()
-        {
-            int displayedRows = activeCrtcRegisters[CrtcVerticalDisplayedRegister];
-            return stableR9 >= 9 && displayedRows > 0 && displayedRows <= 32;
-        }
-
-        private void RenderBitmapMode3(Display display)
-        {
-            uint[] pixels = display.FrameBuffer;
-            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow20K);
-            int displayedRows = Math.Max(1, (int)activeCrtcRegisters[CrtcVerticalDisplayedRegister]);
-            int scanlinesPerRow = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
-            int height = Math.Clamp(displayedRows * scanlinesPerRow, 1, BitmapHeight);
-            int xOffset = GetBitmapXOffset(BitmapBytesPerRow20K, 8);
-            int yOffset = GetBitmapYOffset(height);
-            int defaultStart = GetBitmapDisplayStart();
-            int eventCursor = 0;
-
-            // Mode 3: each character cell holds 8 pixel rows but the CRTC reserves
-            // scanlinesPerRow lines per character row, leaving (scanlinesPerRow - 8) blank.
-            for (int charRow = 0; charRow < displayedRows; charRow++)
-            {
-                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
-                {
-                    int y = (charRow * 8) + rasterLine;
-                    if (y >= BitmapHeight)
-                        return;
-
-                    int displayLine = (charRow * scanlinesPerRow) + rasterLine;
-                    int crtcStart = GetCrtcStartForScanline(displayLine, scanlinesPerRow, ref eventCursor, defaultStart);
-                    int targetY = yOffset + (displayLine * 2);
-
-                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
-                    {
-                        byte value = activeMemory[GetGappedBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, crtcStart)];
-
-                        for (int bit = 0; bit < 8; bit++)
-                        {
-                            int logicalColour = (value >> (7 - bit)) & 0x01;
-                            uint colour = GetPaletteColour(logicalColour);
-                            int targetX = xOffset + (byteX * 8) + bit;
-
-                            WriteScaledPixel1x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                        }
-                    }
-                }
-            }
-        }
-
-        private void RenderBitmapMode6(Display display)
-        {
-            uint[] pixels = display.FrameBuffer;
-            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
-            int displayedRows = Math.Max(1, (int)activeCrtcRegisters[CrtcVerticalDisplayedRegister]);
-            int scanlinesPerRow = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
-            int height = Math.Clamp(displayedRows * scanlinesPerRow, 1, BitmapHeight);
-            int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
-            int yOffset = GetBitmapYOffset(height);
-            int defaultStart = GetBitmapDisplayStart();
-            int eventCursor = 0;
-
-            for (int charRow = 0; charRow < displayedRows; charRow++)
-            {
-                for (int rasterLine = 0; rasterLine < 8; rasterLine++)
-                {
-                    int y = (charRow * 8) + rasterLine;
-                    if (y >= BitmapHeight)
-                        return;
-
-                    int displayLine = (charRow * scanlinesPerRow) + rasterLine;
-                    int crtcStart = GetCrtcStartForScanline(displayLine, scanlinesPerRow, ref eventCursor, defaultStart);
-                    int targetY = yOffset + (displayLine * 2);
-
-                    for (int byteX = 0; byteX < bytesPerRow; byteX++)
-                    {
-                        byte value = activeMemory[GetGappedBitmapAddress(charRow, rasterLine, byteX, bytesPerRow, crtcStart)];
-
-                        for (int bit = 0; bit < 8; bit++)
-                        {
-                            int logicalColour = (value >> (7 - bit)) & 0x01;
-                            uint colour = GetPaletteColour(logicalColour);
-                            int targetX = xOffset + (((byteX * 8) + bit) * 2);
-
-                            WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                        }
-                    }
-                }
-            }
-        }
-
-        /// <summary>Address fetch for gapped text modes (Modes 3 and 6). Memory layout matches
-        /// Modes 0/4 but only the first 8 raster lines of each character row contain pixel data.</summary>
-        private int GetGappedBitmapAddress(int characterRow, int rasterLine, int byteX, int bytesPerRow, int crtcStart)
-        {
-            int ma = crtcStart + (characterRow * bytesPerRow) + byteX;
-            return TranslateBitmapAddress(ma, rasterLine);
-        }
-
-
-        private bool ShouldRenderMode4Mode5Split()
-        {
-            if (activeRasterEvents.Count == 0)
-                return activeSawMode4 && activeSawMode5;
-
-            bool hasMode4 = false;
-            bool hasMode5 = false;
-
-            foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
-            {
-                hasMode4 |= rasterEvent.Mode == BbcScreenMode.Mode4;
-                hasMode5 |= rasterEvent.Mode == BbcScreenMode.Mode5;
-
-                if (hasMode4 && hasMode5)
-                    return true;
-            }
-
-            return IsCarriedOverMode5SplitFrame();
-        }
-
-        private void RenderMode4Mode5Split(Display display)
-        {
-            uint[] pixels = display.FrameBuffer;
-            ClearBitmapFrameBuffer(pixels, display.Width, display.Height);
-            int bytesPerRow = GetBitmapBytesPerRow(BitmapBytesPerRow10K);
-            int height = GetBitmapHeight();
-            int xOffset = GetBitmapXOffset(BitmapBytesPerRow10K, 16);
-
-            if (TryRenderCarriedOverMode5Split(display, height, bytesPerRow, xOffset))
-                return;
-
-            int eventIndex = 0;
-            int initialCrtcStart = ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
-                | activeCrtcRegisters[CrtcDisplayStartLowRegister];
-            VideoRasterEvent state = activeRasterEvents.Count > 0
-                ? activeRasterEvents[0]
-                : new VideoRasterEvent(0, 0, 0, activeMode, activeUlaControl, activePaletteRegisters, initialCrtcStart, activeCrtcRegisters[CrtcHorizontalDisplayedRegister], VideoRasterEventKind.State);
-
-            for (int y = 0; y < height; y++)
-            {
-                while (eventIndex < activeRasterEvents.Count && activeRasterEvents[eventIndex].VisibleLine <= y)
-                    state = activeRasterEvents[eventIndex++];
-
-                if (state.Mode == BbcScreenMode.Mode5)
-                    RenderMode5BitmapRow(display, y, bytesPerRow, xOffset, state.Palette);
-                else
-                    RenderMode4BitmapRow(display, y, bytesPerRow, xOffset, state.Palette);
-            }
-
-            if (TryGetFirstVisibleMode5Line(out int splitLine))
-            {
-                lastMode4Mode5SplitLine = splitLine;
-                hasLastMode4Mode5SplitLine = true;
-            }
-        }
-
-        private bool TryRenderCarriedOverMode5Split(Display display, int height, int bytesPerRow, int xOffset)
-        {
-            if (!IsCarriedOverMode5SplitFrame())
-                return false;
-
-            int splitLine = Math.Clamp(lastMode4Mode5SplitLine, 1, height - 1);
-            for (int y = 0; y < height; y++)
-            {
-                if (y < splitLine)
-                    RenderMode4BitmapRow(display, y, bytesPerRow, xOffset, activeMode4PaletteRegisters);
-                else
-                    RenderMode5BitmapRow(display, y, bytesPerRow, xOffset, activeMode5PaletteRegisters);
-            }
-
-            return true;
-        }
-
-        private bool IsCarriedOverMode5SplitFrame()
-        {
-            if (!hasLastMode4Mode5SplitLine || !activeSawMode5 || activeSawMode4 || activeMode != BbcScreenMode.Mode5)
-                return false;
-
-            return activeCrtcRegisters[CrtcHorizontalDisplayedRegister] == 32
-                && GetBitmapDisplayStart() == 0x0C00;
-        }
-
-        private bool TryGetFirstVisibleMode5Line(out int splitLine)
-        {
-            splitLine = 0;
-
-            foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
-            {
-                if (rasterEvent.Mode != BbcScreenMode.Mode5 || rasterEvent.VisibleLine < 0)
-                    continue;
-
-                splitLine = rasterEvent.VisibleLine;
-                return true;
-            }
-
-            return false;
-        }
-
-        private byte[] GetPaletteForVisibleLine(int visibleLine, ref int eventIndex, byte[] currentPalette)
-        {
-            while (eventIndex < activeRasterEvents.Count && activeRasterEvents[eventIndex].VisibleLine <= visibleLine)
-            {
-                if (activeRasterEvents[eventIndex].VisibleLine >= 0)
-                    currentPalette = activeRasterEvents[eventIndex].Palette;
-
-                eventIndex++;
-            }
-
-            return currentPalette;
-        }
-
-        private void RenderMode4BitmapRow(Display display, int y, int bytesPerRow, int xOffset, byte[] palette)
-        {
-            uint[] pixels = display.FrameBuffer;
-            int targetY = y * 2;
-            int crtcStart = GetBitmapDisplayStart();
-
-            for (int byteX = 0; byteX < bytesPerRow; byteX++)
-            {
-                byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow, crtcStart)];
-
-                for (int bit = 0; bit < 8; bit++)
-                {
-                    int logicalColour = (value >> (7 - bit)) & 0x01;
-                    uint colour = GetPaletteColour(BbcScreenMode.Mode4, palette, logicalColour);
-                    int targetX = xOffset + (((byteX * 8) + bit) * 2);
-
-                    WriteScaledPixel2x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                }
-            }
-        }
-
-        private void RenderMode5BitmapRow(Display display, int y, int bytesPerRow, int xOffset, byte[] palette)
-        {
-            uint[] pixels = display.FrameBuffer;
-            int targetY = y * 2;
-            int crtcStart = GetBitmapDisplayStart();
-
-            for (int byteX = 0; byteX < bytesPerRow; byteX++)
-            {
-                byte value = activeMemory[GetBitmapAddress(y, byteX, bytesPerRow, crtcStart)];
-
-                for (int pixel = 0; pixel < 4; pixel++)
-                {
-                    int logicalColour = DecodeTwoBitPixel(value, pixel);
-                    uint colour = GetPaletteColour(BbcScreenMode.Mode5, palette, logicalColour);
-                    int targetX = xOffset + (((byteX * 4) + pixel) * 4);
-
-                    WriteScaledPixel4x2(pixels, display.Width, display.Height, targetX, targetY, colour);
-                }
-            }
-        }
-
-        private void RenderMode7Cursor(Display display)
-        {
-            if (!IsCursorVisible())
-                return;
-
-            int cursorOffset = GetCursorDisplayOffset();
-
-            if ((uint)cursorOffset >= (uint)(Mode7Columns * Mode7Rows))
-                return;
-
-            const int cellWidth = Display.DefaultWidth / Mode7Columns;
-            const int cellHeight = Display.DefaultHeight / Mode7Rows;
-            const int crtcScanlinesPerCell = 10;
-            int xOffset = 0;
-
-            int column = cursorOffset % Mode7Columns;
-            int row = cursorOffset / Mode7Columns;
-            (int shapeStart, int shapeEnd) = GetCursorShape(crtcScanlinesPerCell);
-
-            if (shapeEnd < shapeStart)
-                return;
-
-            int startX = xOffset + (column * cellWidth);
-            int startY = (row * cellHeight) + (shapeStart * cellHeight / crtcScanlinesPerCell);
-            int endX = Math.Min(startX + cellWidth, display.Width);
-            int endY = Math.Min((row * cellHeight) + ((shapeEnd + 1) * cellHeight / crtcScanlinesPerCell), display.Height);
-
-            uint[] pixels = display.FrameBuffer;
-            for (int y = startY; y < endY; y++)
-            {
-                int offset = y * display.Width;
-                for (int x = startX; x < endX; x++)
-                    pixels[offset + x] ^= Foreground;
-            }
-        }
-
-        private bool IsCursorVisible()
-        {
-            byte cursorStart = activeCrtcRegisters[CrtcCursorStartRegister];
-            int cursorMode = (cursorStart >> 5) & 0x03;
-
-            if (cursorMode == 0)
-                return true;
-
-            // 6845 cursor mode 1 disables the cursor. Modes 2 and 3 flash at
-            // frame-derived rates; jsbeeb uses frame masks 0x08 and 0x10.
-            int flashMask = cursorMode switch
-            {
-                2 => 0x08,
-                3 => 0x10,
-                _ => 0
-            };
-
-            return flashMask != 0 && (activeFrameNumber & flashMask) != 0;
-        }
-
-        private (int Start, int End) GetCursorShape(int scanlinesPerCell)
-        {
-            if (activeCrtcRegisters[CrtcCursorStartRegister] == 0 && activeCrtcRegisters[CrtcCursorEndRegister] == 0)
-                return (0, scanlinesPerCell - 1);
-
-            int start = Math.Clamp(activeCrtcRegisters[CrtcCursorStartRegister] & 0x1F, 0, scanlinesPerCell - 1);
-            int end = Math.Clamp(activeCrtcRegisters[CrtcCursorEndRegister] & 0x1F, 0, scanlinesPerCell - 1);
-            return (start, end);
-        }
-
-        private int GetCursorDisplayOffset()
-        {
-            if (activeCrtcCursorAddressWritten)
-            {
-                int cursorAddress = ((activeCrtcRegisters[CrtcCursorHighRegister] & 0x3F) << 8)
-                    | activeCrtcRegisters[CrtcCursorLowRegister];
-                return (cursorAddress - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
-            }
-
-            ushort cursorAddressFallback = (ushort)(activeMemory[TextCursorAddressLow] | (activeMemory[TextCursorAddressHigh] << 8));
-            return ((cursorAddressFallback - Mode7ScreenStart) - GetMode7DisplayStartOffset()) & (Mode7ScreenBytes - 1);
-        }
-
-        private byte ReadMode7DisplayCharacter(int row, int column)
-        {
-            int crtcAddress = GetMode7DisplayStartAddress()
-                + (row * GetMode7BytesPerRow())
-                + column;
-            return activeMemory[TranslateMode7Address(crtcAddress)];
-        }
-
-        private int GetMode7DisplayStartOffset()
-        {
-            return GetMode7DisplayStartAddress() & (Mode7ScreenBytes - 1);
-        }
-
-        private int GetMode7DisplayStartAddress()
-        {
-            int crtcStart = ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
-                | activeCrtcRegisters[CrtcDisplayStartLowRegister];
-            return crtcStart;
-        }
-
-        private int GetMode7BytesPerRow()
-        {
-            int displayed = activeCrtcRegisters[CrtcHorizontalDisplayedRegister];
-            if (displayed <= 0)
-                return Mode7Columns;
-
-            return Math.Clamp(displayed, 1, 128);
-        }
-
-        private int TranslateMode7Address(int crtcMemoryAddress)
-        {
-            int ma = crtcMemoryAddress & 0x3FFF;
-
-            if ((ma & 0x2000) != 0)
-            {
-                // BBC Model B teletext "chunky" addressing: when MA13 is set, the
-                // 1K offset comes from MA9..MA0. MA11 selects &7C00 when set, but
-                // on a Model B the clear case maps to &3C00 rather than &7C00.
-                int offset = ma & (Mode7ScreenBytes - 1);
-                int baseAddress = (ma & 0x0800) != 0 ? Mode7ScreenStart : 0x3C00;
-                return baseAddress + offset;
-            }
-
-            return TranslateBitmapAddress(ma, 0);
-        }
-
-        private int GetBitmapAddress(int y, int byteX, int bytesPerRow)
-        {
-            int crtcStart = GetBitmapDisplayStart();
-            int characterRow = y >> 3;
-            int rasterLine = y & 0x07;
-            int ma = crtcStart + (characterRow * bytesPerRow) + byteX;
-            return TranslateBitmapAddress(ma, rasterLine);
-        }
-
-        /// <summary>Address overload that allows the caller to supply a per-scanline CRTC start address
-        /// (derived from raster events captured during the frame). This is what enables hardware
-        /// vertical scrolling and split screens that re-program R12/R13 mid-frame.</summary>
-        private int GetBitmapAddress(int y, int byteX, int bytesPerRow, int crtcStart)
-        {
-            int characterRow = y >> 3;
-            int rasterLine = y & 0x07;
-            int ma = crtcStart + (characterRow * bytesPerRow) + byteX;
-            return TranslateBitmapAddress(ma, rasterLine);
-        }
-
-        /// <summary>Address fetch addressed per character row using a row-specific CRTC start
-        /// (R12:R13) and bytes-per-row (R1). The supplied <paramref name="rowCrtcStart"/> already
-        /// reflects either the explicit per-row latched value or the natural sequential address
-        /// (computed by <see cref="BuildCharacterRowSnapshots"/>), so we never apply an additional
-        /// per-row stride here. This is the address pattern produced by the real 6845 when a game
-        /// performs per-character-row "vertical rupture" reprogramming or hardware scrolling.</summary>
-        private int GetCharacterRowBitmapAddress(int characterRow, int rasterLine, int byteX, int bytesPerRow, int rowCrtcStart)
-        {
-            _ = characterRow;
-            _ = bytesPerRow;
-            int ma = rowCrtcStart + byteX;
-            return TranslateBitmapAddress(ma, rasterLine);
-        }
-
-        /// <summary>Returns the CRTC start address (R12:R13) effective for the given visible scanline.
-        /// Walks the captured raster events and snaps to the most recent event whose visible-line
-        /// position is at or before <paramref name="y"/>. The caller may supply <paramref name="eventCursor"/>
-        /// initialised to 0 and re-use it across scanlines for O(N+R) total cost.</summary>
-        private int GetCrtcStartForScanline(int y, int scanlinesPerRow, ref int eventCursor, int defaultStart)
-        {
-            int start = defaultStart;
-            bool applyVisibleRuptures = ShouldApplyVisibleCrtcRuptures(scanlinesPerRow);
-            // activeRasterEvents is already in time-order; walk forward while events apply to y or earlier.
-            // Snap each event's effective scanline to the next character-row boundary, matching real
-            // 6845 behaviour: R12/R13 latches only at the start of a character row, not mid-row.
-            // Only events caused by actual R12/R13 writes are honoured; mode/ULA/palette events
-            // carry an incidental CRTC snapshot only and must not retarget addressing.
-            while (eventCursor < activeRasterEvents.Count)
-            {
-                int eventVisibleLine = activeRasterEvents[eventCursor].VisibleLine;
-                int snappedLine = SnapToNextCharacterRow(eventVisibleLine, scanlinesPerRow);
-                if (snappedLine > y)
-                    break;
-                if (activeRasterEvents[eventCursor].CrtcAddressLatch
-                    && (activeRasterEvents[eventCursor].VisibleLine <= 0 || applyVisibleRuptures))
-                    start = activeRasterEvents[eventCursor].CrtcStartAddress;
-                eventCursor++;
-            }
-            return start;
-        }
-
-        /// <summary>Snaps a write-time visible scanline up to the start of the next character row,
-        /// matching the 6845 latch behaviour for R12/R13/R1. Writes that occur within a character
-        /// row only take effect at the start of the following row, never partway through. Writes
-        /// that occur exactly on a row boundary are treated as latching at the start of that row,
-        /// because games typically issue the write just before vsync/HBL crosses the boundary and
-        /// our cycle-based scanline estimate is coarse enough that exact-boundary writes should
-        /// be honoured by the row that is just beginning.</summary>
-        private static int SnapToNextCharacterRow(int visibleLine, int scanlinesPerRow)
-        {
-            scanlinesPerRow = Math.Max(1, scanlinesPerRow);
-
-            // Writes before the first visible row programme the very first character row.
-            if (visibleLine <= 0)
-                return 0;
-            // Standard "round up to next character row". Boundary values map to themselves so a
-            // write timed at the start of row N latches into row N (not row N+1).
-            return ((visibleLine + scanlinesPerRow - 1) / scanlinesPerRow) * scanlinesPerRow;
-        }
-
-        /// <summary>Returns the effective number of character rows that the CRTC actually
-        /// displays this frame. Normally this is just R6 (vertical displayed), but Tricky's
-        /// Frogger trick programs R6 = 1 and instead repaints the screen by rewriting R12:R13
-        /// at every character-row boundary, relying on a recurring vertical rupture rather than
-        /// on R6. In that case R6 alone would clip the display down to a single character row,
-        /// so we additionally count how far down the visible region the CRTC address-latch events
-        /// reach and use whichever is greater. The result is clamped to the maximum bitmap
-        /// height so we never render more rows than the screen can show.</summary>
-        /// <param name="defaultRows">The starting estimate (typically R6 from the frame snapshot).</param>
-        /// <param name="scanlinesPerRow">The CRTC scanlines per character row (R9 + 1).</param>
-        private int GetEffectiveCharacterRows(int defaultRows, int scanlinesPerRow)
-        {
-            int maxRows = Math.Max(1, BitmapHeight / Math.Max(1, scanlinesPerRow));
-            int rows = Math.Clamp(defaultRows, 1, maxRows);
-
-            if (activeRasterEvents.Count == 0 || scanlinesPerRow <= 0)
-                return rows;
-
-            if (!ShouldApplyVisibleCrtcRuptures(scanlinesPerRow))
-                return rows;
-
-            // Find the deepest visible scanline that is targeted by an actual R12/R13
-            // address-latch event. Latches advance the rendered character-row index, so the
-            // effective row count must be at least one more than that latch's row index.
-            int highestLatchedRow = -1;
-            for (int i = 0; i < activeRasterEvents.Count; i++)
-            {
-                if (!activeRasterEvents[i].CrtcAddressLatch)
-                    continue;
-                int visibleLine = activeRasterEvents[i].VisibleLine;
-                if (visibleLine < 0 || visibleLine >= BitmapHeight)
-                    continue;
-                int rowIndex = visibleLine / scanlinesPerRow;
-                if (rowIndex > highestLatchedRow)
-                    highestLatchedRow = rowIndex;
-            }
-
-            if (highestLatchedRow + 1 > rows)
-                rows = Math.Min(maxRows, highestLatchedRow + 1);
-
-            return rows;
-        }
-
-        /// <summary>Builds a per-character-row map of (crtcStart, bytesPerRow) snapshots derived
-        /// from the time-ordered raster events. Each entry describes what R12:R13 and R1 looked
-        /// like at the moment the CRTC latched a new character row, with the natural memory stride
-        /// applied between rows that have no explicit event of their own. This is what enables the
-        /// per-character-row "vertical rupture" trick used by games such as Tricky's Frogger, where
-        /// R12:R13 (and sometimes R1) are reprogrammed once for every character row.
-        /// The default start/bytes-per-row from the frame snapshot are always used as the starting
-        /// state, and explicit raster events only override when they target a visible scanline.
-        /// Pre-visible events (e.g. the synthetic frame-start event captured at vsync) are ignored
-        /// here because their captured state may be transient and not representative of what the
-        /// frame actually uses.</summary>
-        /// <param name="characterRowCount">The number of character rows to populate (typically R6).</param>
-        /// <param name="scanlinesPerRow">The CRTC scanlines per character row (R9 + 1).</param>
-        /// <param name="defaultStart">Fallback R12:R13 to use before the first event.</param>
-        /// <param name="defaultBytesPerRow">Fallback R1 to use before the first event.</param>
-        private (int CrtcStart, int BytesPerRow)[] BuildCharacterRowSnapshots(int characterRowCount, int scanlinesPerRow, int defaultStart, int defaultBytesPerRow)
-        {
-            var snapshots = new (int CrtcStart, int BytesPerRow)[characterRowCount];
-            int currentStart = defaultStart;
-            int currentBytesPerRow = defaultBytesPerRow;
-            bool applyVisibleRuptures = ShouldApplyVisibleCrtcRuptures(scanlinesPerRow);
-
-            // Process any pre-visible (VisibleLine <= 0) events that occurred between vsync and
-            // the start of the active region. We honour real display-start events (R12/R13
-            // writes) because games such as Tricky's Frogger reprogram R12/R13 during VBL to
-            // point at the first playfield row before scan 0. We skip non-latch events because
-            // their captured CRTC state is incidental (palette/ULA writes that just snapshot
-            // the current registers, which may carry the previous frame's end-of-frame values).
-            int eventIndex = 0;
-            while (eventIndex < activeRasterEvents.Count && activeRasterEvents[eventIndex].VisibleLine <= 0)
-            {
-                if (activeRasterEvents[eventIndex].CrtcAddressLatch)
-                    currentStart = activeRasterEvents[eventIndex].CrtcStartAddress;
-                if (activeRasterEvents[eventIndex].HorizontalDisplayedLatch && activeRasterEvents[eventIndex].HorizontalDisplayed > 0)
-                    currentBytesPerRow = activeRasterEvents[eventIndex].HorizontalDisplayed;
-                eventIndex++;
-            }
-
-            for (int row = 0; row < characterRowCount; row++)
-            {
-                int rowFirstScanline = row * scanlinesPerRow;
-                bool rowExplicitlyLatched = false;
-
-                // Walk every event whose snapped scanline matches the start of this character row.
-                // The 6845 latches at character-row boundaries, so writes within a row only take
-                // effect at the start of the next row. Only R12/R13 writes may change the address;
-                // R1 may change the stride. Mode/ULA/palette and R6/R9 events carry incidental
-                // snapshots and are not authoritative row-address latches.
-                while (eventIndex < activeRasterEvents.Count)
-                {
-                    int snappedLine = SnapToNextCharacterRow(activeRasterEvents[eventIndex].VisibleLine, scanlinesPerRow);
-                    if (snappedLine > rowFirstScanline)
-                        break;
-                    bool visibleRuptureAllowed = activeRasterEvents[eventIndex].VisibleLine <= 0 || applyVisibleRuptures;
-                    if (visibleRuptureAllowed && (activeRasterEvents[eventIndex].CrtcAddressLatch || activeRasterEvents[eventIndex].HorizontalDisplayedLatch))
-                    {
-                        if (activeRasterEvents[eventIndex].CrtcAddressLatch)
-                            currentStart = activeRasterEvents[eventIndex].CrtcStartAddress;
-                        if (activeRasterEvents[eventIndex].HorizontalDisplayedLatch && activeRasterEvents[eventIndex].HorizontalDisplayed > 0)
-                            currentBytesPerRow = activeRasterEvents[eventIndex].HorizontalDisplayed;
-                        rowExplicitlyLatched = true;
-                    }
-                    eventIndex++;
-                }
-
-                if (rowExplicitlyLatched || row == 0)
-                {
-                    // Either an explicit R12/R13 write landed on this row, or we are at the first
-                    // row of the frame: use the currently latched start address directly.
-                    snapshots[row] = (currentStart, currentBytesPerRow);
-                }
-                else
-                {
-                    // No explicit event for this row: advance naturally from the previous row by
-                    // its bytes-per-row stride, mirroring the 6845 address generator.
-                    int previousStart = snapshots[row - 1].CrtcStart;
-                    int previousStride = snapshots[row - 1].BytesPerRow;
-                    snapshots[row] = (previousStart + previousStride, currentBytesPerRow);
-                }
-            }
-
-            return snapshots;
-        }
-
-        private int GetBitmapDisplayStart()
-        {
-            return ((activeCrtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
-                | activeCrtcRegisters[CrtcDisplayStartLowRegister];
-        }
-
-        private int TranslateBitmapAddress(int crtcMemoryAddress, int rasterLine)
-        {
-            // BBC bitmap addressing routes CRTC MA and RA through IC32/IC39 rather than
-            // using a simple linear CRTC-address << 3 window wrap.
-            int ma = crtcMemoryAddress & 0x1FFF;
-            int adjustedHigh = (ma >> 8) & 0x0F;
-
-            if ((ma & 0x1000) != 0)
-                adjustedHigh = (adjustedHigh - activeScreenMemoryWindow.AddressSubtract) & 0x0F;
-
-            return ((adjustedHigh << 11) | ((ma & 0xFF) << 3) | (rasterLine & 0x07)) & 0x7FFF;
-        }
-
-        private int GetBitmapBytesPerRow(int defaultBytesPerRow)
-        {
-            int displayed = activeCrtcRegisters[CrtcHorizontalDisplayedRegister];
-            if (displayed <= 0)
-                return defaultBytesPerRow;
-
-            return Math.Clamp(displayed, 1, defaultBytesPerRow);
-        }
-
-        private int GetBitmapHeight()
-        {
-            int displayedRows = activeCrtcRegisters[CrtcVerticalDisplayedRegister];
-            int scanlinesPerCharacter = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
-            // Honour Tricky's Frogger trick: when the game programs R6 = 1 but uses mid-frame
-            // R12/R13 latches to repaint additional rows, the effective number of displayed rows
-            // is greater than R6. Use the same heuristic as the per-row snapshot builder so the
-            // renderer's `y >= height` early-out matches the actual painted height.
-            int effectiveRows = GetEffectiveCharacterRows(displayedRows, scanlinesPerCharacter);
-            int height = effectiveRows * scanlinesPerCharacter;
-
-            if (height <= 0)
-                return BitmapHeight;
-
-            return Math.Clamp(height, 1, BitmapHeight);
-        }
-
-        private int GetBitmapXOffset(int defaultBytesPerRow, int displayPixelsPerByte)
-        {
-            int bytesPerRow = GetBitmapBytesPerRow(defaultBytesPerRow);
-            int unusedBytes = defaultBytesPerRow - bytesPerRow;
-            int offset = unusedBytes > 0 ? unusedBytes * displayPixelsPerByte / 2 : 0;
-
-            return offset + GetDisplayEnableSkewPixels(displayPixelsPerByte);
-        }
-
-        private int GetBitmapYOffset(int activeBitmapHeight)
-        {
-            if (HasVisibleRasterLayoutEvents())
-                return 0;
-
-            int unusedLines = BitmapHeight - activeBitmapHeight;
-            return unusedLines > 0 ? unusedLines : 0;
-        }
-
-        private bool HasVisibleRasterLayoutEvents()
-        {
-            int scanlinesPerCharacter = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
-            if (!ShouldApplyVisibleCrtcRuptures(scanlinesPerCharacter))
-                return false;
-
-            foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
-            {
-                if (rasterEvent.CrtcAddressLatch && rasterEvent.VisibleLine >= 0)
-                    return true;
-            }
-
-            return false;
-        }
-
-        private bool ShouldApplyVisibleCrtcRuptures(int scanlinesPerRow)
-        {
-            if (activeRasterEvents.Count == 0 || scanlinesPerRow <= 0)
-                return false;
-
-            Span<int> rows = stackalloc int[32];
-            int rowCount = 0;
-
-            foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
-            {
-                if (!rasterEvent.CrtcAddressLatch)
-                    continue;
-
-                int visibleLine = rasterEvent.VisibleLine;
-                if (visibleLine <= 0 || visibleLine >= BitmapHeight)
-                    continue;
-
-                int row = SnapToNextCharacterRow(visibleLine, scanlinesPerRow) / scanlinesPerRow;
-                bool alreadySeen = false;
-                for (int i = 0; i < rowCount; i++)
-                {
-                    if (rows[i] == row)
-                    {
-                        alreadySeen = true;
-                        break;
-                    }
-                }
-
-                if (alreadySeen)
-                    continue;
-
-                if (rowCount < rows.Length)
-                    rows[rowCount] = row;
-                rowCount++;
-
-                if (rowCount >= 4)
-                    return true;
-            }
-
-            return false;
-        }
-
-        private bool IsDisplayDisabledByCrtcSkew()
-        {
-            return GetCrtcDisplayEnableSkew() == 3;
-        }
-
-        private bool IsDisplayProgrammed()
-        {
-            return activeCrtcRegisters[CrtcHorizontalDisplayedRegister] > 0
-                && activeCrtcRegisters[CrtcVerticalDisplayedRegister] > 0;
-        }
-
-        private int GetDisplayEnableSkewPixels(int pixelsPerCharacter)
-        {
-            int skew = GetCrtcDisplayEnableSkew();
-            if (skew >= 3)
-                return 0;
-
-            return skew * pixelsPerCharacter;
-        }
-
-        private bool IsTeletextOutputSuppressed()
-        {
-            // The SAA5050 is still fed by the video bus, but with the teletext bit set
-            // in a 2 MHz ULA mode (the "TTX trick") its display enable is forced off.
-            return activeMode == BbcScreenMode.Mode7 && (activeUlaControl & UlaClockHigh) != 0;
-        }
-
-        private int GetCrtcDisplayEnableSkew()
-        {
-            return (activeCrtcRegisters[CrtcInterlaceAndSkewRegister] >> 4) & 0x03;
-        }
-
-        private bool IsCrtcInterlacedSyncAndVideo()
-        {
-            return (activeCrtcRegisters[CrtcInterlaceAndSkewRegister] & 0x03) == 0x03;
-        }
-
-        private uint GetPaletteColour(int logicalColour)
-        {
-            int paletteIndex = activeMode switch
-            {
-                BbcScreenMode.Mode0 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
-                BbcScreenMode.Mode1 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
-                    | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
-                BbcScreenMode.Mode2 => logicalColour & 0x0F,
-                BbcScreenMode.Mode4 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
-                BbcScreenMode.Mode5 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
-                    | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
-                _ => logicalColour & 0x0F
-            };
-
-            return ResolvePhysicalColour(activePaletteRegisters[paletteIndex]);
-        }
-
-        private uint GetPaletteColour(BbcScreenMode mode, byte[] palette, int logicalColour)
-        {
-            int paletteIndex = mode switch
-            {
-                BbcScreenMode.Mode4 => (logicalColour & 0x01) == 0 ? 0x00 : 0x08,
-                BbcScreenMode.Mode5 => ((logicalColour & 0x01) != 0 ? 0x02 : 0x00)
-                    | ((logicalColour & 0x02) != 0 ? 0x08 : 0x00),
-                _ => logicalColour & 0x0F
-            };
-
-            return ResolvePhysicalColour(palette[paletteIndex]);
-        }
-
         private void ResetPalette()
         {
             ResetPaletteArray(paletteRegisters);
-            ResetPaletteArray(mode4PaletteRegisters);
-            ResetPaletteArray(mode5PaletteRegisters);
-
             lastPaletteWrite = 0;
         }
 
@@ -1731,135 +1023,9 @@ namespace BBC
                 palette[i] = (byte)(i & 0x07);
         }
 
-        private uint ResolvePhysicalColour(byte physicalColour)
-        {
-            int colour = physicalColour & 0x0F;
-
-            if (colour >= 8 && (activeUlaControl & 0x01) != 0)
-            {
-                bool alternate = (Environment.TickCount64 / 500 & 1) != 0;
-                colour = alternate ? (colour & 0x07) ^ 0x07 : colour & 0x07;
-            }
-            else
-            {
-                colour &= 0x07;
-            }
-
-            return BbcColours[colour];
-        }
-
         private static byte DecodePhysicalColour(byte paletteRegisterValue)
         {
             return (byte)((paletteRegisterValue & 0x0F) ^ 0x07);
-        }
-
-        private static int DecodeTwoBitPixel(byte value, int pixel)
-        {
-            int highBit = 7 - pixel;
-            int lowBit = 3 - pixel;
-            return (((value >> highBit) & 0x01) << 1) | ((value >> lowBit) & 0x01);
-        }
-
-        private static int DecodeFourBitPixel(byte value, int pixel)
-        {
-            int offset = pixel == 0 ? 0 : 1;
-            return ((value >> (1 - offset)) & 0x01)
-                | (((value >> (3 - offset)) & 0x01) << 1)
-                | (((value >> (5 - offset)) & 0x01) << 2)
-                | (((value >> (7 - offset)) & 0x01) << 3);
-        }
-
-        private void ClearBitmapFrameBuffer(uint[] pixels, int width, int height)
-        {
-            if (!IsCrtcInterlacedSyncAndVideo())
-            {
-                Array.Fill(pixels, Background);
-                return;
-            }
-
-            int field = activeInterlaceFieldOdd ? 1 : 0;
-            for (int y = field; y < height; y += 2)
-                Array.Fill(pixels, Background, y * width, width);
-        }
-
-        private void WriteScaledPixel1x2(uint[] pixels, int width, int height, int x, int y, uint colour)
-        {
-            if (IsCrtcInterlacedSyncAndVideo())
-            {
-                WriteInterlacedPixelRun(pixels, width, height, x, y, 1, colour);
-                return;
-            }
-
-            if ((uint)x >= (uint)width || (uint)(y + 1) >= (uint)height)
-                return;
-
-            int offset = y * width + x;
-            pixels[offset] = colour;
-            pixels[offset + width] = colour;
-        }
-
-        private void WriteScaledPixel2x2(uint[] pixels, int width, int height, int x, int y, uint colour)
-        {
-            if (IsCrtcInterlacedSyncAndVideo())
-            {
-                WriteInterlacedPixelRun(pixels, width, height, x, y, 2, colour);
-                return;
-            }
-
-            if ((uint)(x + 1) >= (uint)width || (uint)(y + 1) >= (uint)height)
-                return;
-
-            int offset = y * width + x;
-            pixels[offset] = colour;
-            pixels[offset + 1] = colour;
-            pixels[offset + width] = colour;
-            pixels[offset + width + 1] = colour;
-        }
-
-        private void WriteScaledPixel4x2(uint[] pixels, int width, int height, int x, int y, uint colour)
-        {
-            if (IsCrtcInterlacedSyncAndVideo())
-            {
-                WriteInterlacedPixelRun(pixels, width, height, x, y, 4, colour);
-                return;
-            }
-
-            if ((uint)(x + 3) >= (uint)width || (uint)(y + 1) >= (uint)height)
-                return;
-
-            int offset = y * width + x;
-            for (int i = 0; i < 4; i++)
-            {
-                pixels[offset + i] = colour;
-                pixels[offset + width + i] = colour;
-            }
-        }
-
-        private void WriteInterlacedPixelRun(uint[] pixels, int width, int height, int x, int y, int runWidth, uint colour)
-        {
-            int targetY = y + (activeInterlaceFieldOdd ? 1 : 0);
-            if ((uint)x >= (uint)width || (uint)targetY >= (uint)height)
-                return;
-
-            int visibleRunWidth = Math.Min(runWidth, width - x);
-            int offset = targetY * width + x;
-            for (int i = 0; i < visibleRunWidth; i++)
-                pixels[offset + i] = colour;
-        }
-
-        private static void FillRect(uint[] pixels, int width, int height, int x0, int y0, int x1, int y1, uint colour)
-        {
-            x0 = Math.Clamp(x0, 0, width);
-            x1 = Math.Clamp(x1, 0, width);
-            y0 = Math.Clamp(y0, 0, height);
-            y1 = Math.Clamp(y1, 0, height);
-
-            for (int y = y0; y < y1; y++)
-            {
-                int offset = y * width;
-                for (int x = x0; x < x1; x++)
-                    pixels[offset + x] = colour;
-            }
         }
 
         private static BbcScreenMode DecodeModeFromUlaControl(byte control)
@@ -1882,95 +1048,299 @@ namespace BBC
             };
         }
 
-        private void AddRasterEvent(int frameCpuCycle, VideoRasterEventKind eventKind = VideoRasterEventKind.State)
-        {
-            int scanline = Math.Clamp(frameCpuCycle, 0, VideoFrameCpuCycles - 1) * VideoFrameScanlines / VideoFrameCpuCycles;
-            int visibleLine = scanline - VisibleStartScanline;
-            int crtcStart = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
-                | crtcRegisters[CrtcDisplayStartLowRegister];
-            int horizontalDisplayed = crtcRegisters[CrtcHorizontalDisplayedRegister];
-            rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters, crtcStart, horizontalDisplayed, eventKind));
-        }
-
         private static int GetCrtcScanlinesPerCharacter(byte[] registers)
         {
             return (registers[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
         }
 
-        private static int GetCrtcTotalScanlines(byte[] registers)
+        private sealed class TeletextChip
         {
-            int verticalTotal = registers[CrtcVerticalTotalRegister];
-            int verticalAdjust = registers[CrtcVerticalAdjustRegister] & 0x1F;
-            int scanlinesPerRow = GetCrtcScanlinesPerCharacter(registers);
-            int totalScanlines = ((verticalTotal + 1) * scanlinesPerRow) + verticalAdjust;
-
-            if (totalScanlines < 200 || totalScanlines > 400)
-                return VideoFrameScanlines;
-
-            return totalScanlines;
-        }
-
-        private enum VideoRasterEventKind
-        {
-            State,
-            DisplayStart,
-            HorizontalDisplayed,
-            VerticalLayout
-        }
-
-        private readonly struct VideoRasterEvent
-        {
-            public VideoRasterEvent(int frameCpuCycle, int scanline, int visibleLine, BbcScreenMode mode, byte ulaControl, byte[] palette, int crtcStartAddress, int horizontalDisplayed, VideoRasterEventKind eventKind)
+            private enum GlyphSet
             {
-                FrameCpuCycle = frameCpuCycle;
-                Scanline = scanline;
-                VisibleLine = visibleLine;
-                Mode = mode;
-                UlaControl = ulaControl;
-                CrtcStartAddress = crtcStartAddress;
-                HorizontalDisplayed = horizontalDisplayed;
-                EventKind = eventKind;
-                Palette = new byte[PaletteRegisterCount];
-                Array.Copy(palette, Palette, Palette.Length);
+                Normal,
+                Graphics,
+                Separated
             }
 
-            public int FrameCpuCycle { get; }
+            private readonly uint[] colours;
+            private readonly byte[] dataQueue = new byte[4];
+            private int previousColour;
+            private int foregroundColour;
+            private int backgroundColour;
+            private bool separatedGraphics;
+            private bool doubleHeight;
+            private bool previousDoubleHeight;
+            private bool secondHalfOfDoubleHeight;
+            private bool sawDoubleHeight;
+            private bool graphicsMode;
+            private bool flash;
+            private bool flashOn;
+            private int flashTime;
+            private byte heldCharacter;
+            private bool holdCharacter;
+            private int scanlineCounter;
+            private bool dewLevel;
+            private bool displayTimingLevel;
+            private bool rowAddressBit0;
+            private GlyphSet nextGlyphSet;
+            private GlyphSet currentGlyphSet;
+            private GlyphSet heldGlyphSet;
 
-            public int Scanline { get; }
+            public TeletextChip(uint[] colours)
+            {
+                this.colours = colours;
+                Reset();
+            }
 
-            public int VisibleLine { get; }
+            public void Reset()
+            {
+                Array.Clear(dataQueue);
+                previousColour = 0;
+                foregroundColour = 7;
+                backgroundColour = 0;
+                separatedGraphics = false;
+                doubleHeight = false;
+                previousDoubleHeight = false;
+                secondHalfOfDoubleHeight = false;
+                sawDoubleHeight = false;
+                graphicsMode = false;
+                flash = false;
+                flashOn = false;
+                flashTime = 0;
+                heldCharacter = 0x20;
+                holdCharacter = false;
+                scanlineCounter = 0;
+                dewLevel = false;
+                displayTimingLevel = false;
+                rowAddressBit0 = false;
+                nextGlyphSet = GlyphSet.Normal;
+                currentGlyphSet = GlyphSet.Normal;
+                heldGlyphSet = GlyphSet.Normal;
+            }
 
-            public BbcScreenMode Mode { get; }
+            public void FetchData(byte data)
+            {
+                dataQueue[0] = dataQueue[1];
+                dataQueue[1] = dataQueue[2];
+                dataQueue[2] = dataQueue[3];
+                dataQueue[3] = (byte)(data & 0x7F);
+            }
 
-            public int CrtcStartAddress { get; }
+            public void SetDEW(bool level)
+            {
+                bool oldLevel = dewLevel;
+                dewLevel = level;
+                if (!oldLevel || level)
+                    return;
 
-            /// <summary>R1 (horizontal displayed = characters per row, i.e. memory bytes per row).</summary>
-            public int HorizontalDisplayed { get; }
+                scanlineCounter = 0;
+                secondHalfOfDoubleHeight = false;
 
-            public VideoRasterEventKind EventKind { get; }
+                flashTime = (flashTime + 1) & 0x3F;
+                flashOn = flashTime < 16;
+            }
 
-            /// <summary>True when this event was emitted by a write to R12/R13.</summary>
-            public bool CrtcAddressLatch => EventKind == VideoRasterEventKind.DisplayStart;
+            public void SetDISPTMG(bool level)
+            {
+                bool oldLevel = displayTimingLevel;
+                displayTimingLevel = level;
+                if (!oldLevel || level)
+                    return;
 
-            /// <summary>True when this event was emitted by a write to R1.</summary>
-            public bool HorizontalDisplayedLatch => EventKind == VideoRasterEventKind.HorizontalDisplayed;
+                foregroundColour = 7;
+                backgroundColour = 0;
+                holdCharacter = false;
+                heldCharacter = 0x20;
+                nextGlyphSet = GlyphSet.Normal;
+                heldGlyphSet = GlyphSet.Normal;
+                flash = false;
+                separatedGraphics = false;
+                graphicsMode = false;
+                doubleHeight = false;
 
-            public byte UlaControl { get; }
+                scanlineCounter++;
+                if (scanlineCounter == 10)
+                {
+                    scanlineCounter = 0;
+                    if (secondHalfOfDoubleHeight)
+                        secondHalfOfDoubleHeight = false;
+                    else
+                        secondHalfOfDoubleHeight = sawDoubleHeight;
+                }
 
-            public byte[] Palette { get; }
-        }
+                sawDoubleHeight = false;
+            }
 
-        private sealed class TeletextState
-        {
-            public bool GraphicsMode { get; set; }
-            public bool SeparatedGraphics { get; set; }
-            public bool HoldGraphics { get; set; }
-            public bool DoubleHeight { get; set; }
-            public bool Flashing { get; set; }
-            public bool Concealed { get; set; }
-            public byte? HeldMosaic { get; set; }
-            public uint ForegroundColour { get; set; } = Foreground;
-            public uint BackgroundColour { get; set; } = Background;
+            public void SetRA0(bool level)
+            {
+                rowAddressBit0 = level;
+            }
+
+            public void Render(uint[] buffer, int offset, int width, int height)
+            {
+                if (offset < 0 || offset >= buffer.Length)
+                    return;
+
+                byte data = dataQueue[0];
+                int scanline = scanlineCounter << 1;
+                if (rowAddressBit0)
+                    scanline++;
+
+                previousDoubleHeight = doubleHeight;
+                previousColour = foregroundColour;
+                currentGlyphSet = nextGlyphSet;
+
+                bool flashThisCell = flash;
+                if (data < 0x20)
+                {
+                    data = HandleControlCode(data);
+                }
+                else if (graphicsMode)
+                {
+                    if ((data & 0x20) != 0)
+                    {
+                        heldCharacter = data;
+                        heldGlyphSet = currentGlyphSet;
+                    }
+                }
+                else
+                {
+                    heldCharacter = 0x20;
+                }
+
+                if (previousDoubleHeight)
+                {
+                    scanline >>= 1;
+                    if (secondHalfOfDoubleHeight)
+                        scanline += 10;
+                }
+
+                if (flashThisCell && !flash)
+                    flashThisCell = false;
+
+                uint background = colours[backgroundColour & 0x07];
+                if ((flashThisCell && flashOn) || (secondHalfOfDoubleHeight && !doubleHeight))
+                {
+                    FillRun(buffer, offset, width, height, background);
+                    return;
+                }
+
+                ushort mask = GetRowMask(data, scanline, currentGlyphSet);
+                uint foreground = colours[previousColour & 0x07];
+                int rowStart = offset - (offset % width);
+                int maxOffset = Math.Min(rowStart + width, buffer.Length);
+                for (int pixel = 0; pixel < 16 && offset + pixel < maxOffset; pixel++)
+                    buffer[offset + pixel] = (mask & (1 << (15 - pixel))) != 0 ? foreground : background;
+            }
+
+            private byte HandleControlCode(byte data)
+            {
+                bool wasGraphics = graphicsMode;
+                bool wasHoldCharacter = holdCharacter;
+
+                switch (data)
+                {
+                    case >= 1 and <= 7:
+                        graphicsMode = false;
+                        foregroundColour = data;
+                        SetNextGlyphSet();
+                        break;
+
+                    case 8:
+                        flash = true;
+                        break;
+
+                    case 9:
+                        flash = false;
+                        break;
+
+                    case 12:
+                    case 13:
+                        doubleHeight = (data & 1) != 0;
+                        if (doubleHeight)
+                            sawDoubleHeight = true;
+                        break;
+
+                    case >= 17 and <= 23:
+                        graphicsMode = true;
+                        foregroundColour = data & 7;
+                        SetNextGlyphSet();
+                        break;
+
+                    case 24:
+                        foregroundColour = previousColour = backgroundColour;
+                        break;
+
+                    case 25:
+                        separatedGraphics = false;
+                        SetNextGlyphSet();
+                        break;
+
+                    case 26:
+                        separatedGraphics = true;
+                        SetNextGlyphSet();
+                        break;
+
+                    case 28:
+                        backgroundColour = 0;
+                        break;
+
+                    case 29:
+                        backgroundColour = foregroundColour;
+                        break;
+
+                    case 30:
+                        holdCharacter = true;
+                        break;
+
+                    case 31:
+                        holdCharacter = false;
+                        break;
+                }
+
+                if (wasGraphics && (wasHoldCharacter || holdCharacter) && doubleHeight == previousDoubleHeight)
+                {
+                    data = heldCharacter;
+                    if (data >= 0x40 && data < 0x60)
+                        data = 0x20;
+                    currentGlyphSet = heldGlyphSet;
+                }
+                else
+                {
+                    heldCharacter = 0x20;
+                    data = 0x20;
+                }
+
+                return data;
+            }
+
+            private void SetNextGlyphSet()
+            {
+                nextGlyphSet = graphicsMode
+                    ? separatedGraphics ? GlyphSet.Separated : GlyphSet.Graphics
+                    : GlyphSet.Normal;
+            }
+
+            private static ushort GetRowMask(byte data, int scanline, GlyphSet glyphSet)
+            {
+                if ((uint)scanline >= 20)
+                    return 0;
+
+                return glyphSet switch
+                {
+                    GlyphSet.Graphics => Saa5050Font.GetMosaicRowMask(data, scanline, separated: false),
+                    GlyphSet.Separated => Saa5050Font.GetMosaicRowMask(data, scanline, separated: true),
+                    _ => Saa5050Font.GetAlphanumericRowMask(data, scanline)
+                };
+            }
+
+            private static void FillRun(uint[] buffer, int offset, int width, int height, uint colour)
+            {
+                int rowStart = offset - (offset % width);
+                int maxOffset = Math.Min(rowStart + width, buffer.Length);
+                for (int pixel = 0; pixel < 16 && offset + pixel < maxOffset; pixel++)
+                    buffer[offset + pixel] = colour;
+            }
         }
     }
 

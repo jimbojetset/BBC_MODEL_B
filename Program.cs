@@ -217,7 +217,6 @@ namespace BBC
         private bool capsLockTapPressed;
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
-        private bool blankDisplayUntilStableVideo;
 
         /// <summary>Gets the 64 KiB CPU-visible memory bus.</summary>
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -252,6 +251,8 @@ namespace BBC
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
             discController = new DiscController8271();
             Video = new Video(Memory.Memory);
+            systemVia.ExternalVsyncLineEnabled = true;
+            Video.VsyncChanged += systemVia.SetVsyncLine;
             systemVia.ScreenMemoryWindowChanged += Video.SetScreenMemoryWindow;
             Cpu = new CPU_6502(Memory, CpuClockHz);
             discController.NmiRequested += () => Cpu.InitiateNMI(0xFFFA);
@@ -279,7 +280,6 @@ namespace BBC
             if (createDisplay)
             {
                 Display = new Display();
-                BlankDisplayUntilStableVideo(Display, presentNow: false);
             }
 
             pendingBreak = default;
@@ -296,7 +296,6 @@ namespace BBC
             if (Display is null)
             {
                 Display = new Display();
-                BlankDisplayUntilStableVideo(Display, presentNow: false);
             }
 
             Sound.Start();
@@ -452,6 +451,7 @@ namespace BBC
             Sound.Reset();
             systemVia.Reset();
             userVia.Reset();
+            systemVia.ExternalVsyncLineEnabled = true;
             Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
             discController.Reset();
             joystickState = default;
@@ -479,41 +479,19 @@ namespace BBC
 
         private void RenderDisplayFrame(Display display)
         {
-            if (blankDisplayUntilStableVideo)
-            {
-                if (!Video.HasStableDisplaySnapshot)
-                {
-                    Array.Fill(display.FrameBuffer, DisplayBlack);
-                    return;
-                }
-
-                blankDisplayUntilStableVideo = false;
-            }
-
             Video.Render(display);
-        }
-
-        private void BlankDisplayUntilStableVideo(Display display, bool presentNow)
-        {
-            blankDisplayUntilStableVideo = true;
-            Video.InvalidateFrameSnapshot();
-            Array.Fill(display.FrameBuffer, DisplayBlack);
-            if (presentNow)
-                display.Present();
         }
 
         private void AdvanceDeviceCycles(int cycles)
         {
             Cpu.PacingEnabled = !discController.TransferActive;
-            int previousFrame = systemVia.FrameCounter;
             Sound.Tick(cycles);
             systemVia.Tick(cycles);
+            Video.Tick(cycles);
             userVia.Tick(cycles);
             discController.Tick(cycles);
             adc.Tick(cycles);
             TickCapsLockTap(cycles);
-            if (systemVia.FrameCounter != previousFrame)
-                Video.CaptureVisibleFrame();
 
             UpdateCpuIrqLine();
         }
@@ -1045,7 +1023,8 @@ namespace BBC
                 pendingBreak = new BreakKeyPress(false, pendingBreak.Control);
             }
 
-            BlankDisplayUntilStableVideo(display, presentNow: true);
+            Array.Fill(display.FrameBuffer, DisplayBlack);
+            display.Present();
             Cpu.RequestReset();
         }
 
@@ -1350,9 +1329,6 @@ namespace BBC
             if (Video.IsSheilaAddress(address))
             {
                 Video.WriteSheila(address, value, systemVia.FrameCpuCycle);
-                // CRTC programming or ULA clock-rate changes alter the frame period; push the
-                // latest CRTC-derived period so the SystemVia vsync timer tracks reality.
-                systemVia.SetVsyncPeriod(Video.GetCrtcFramePeriodPeripheralCycles());
                 return;
             }
 

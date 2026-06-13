@@ -49,7 +49,8 @@ namespace BBC
         private int peripheralCycleRemainder;
         private int vsyncCycleCounter;
         private int frameCounter;
-        private int vsyncPeriodOverride;
+        private bool vsyncLineActive;
+        private bool externalVsyncLineEnabled;
 
         /// <summary>Initializes a new system VIA shim.</summary>
         /// <param name="sound">The sound generator connected to the VIA slow bus.</param>
@@ -91,28 +92,15 @@ namespace BBC
             peripheralCycleRemainder = 0;
             vsyncCycleCounter = 0;
             frameCounter = 0;
-            vsyncPeriodOverride = 0;
+            vsyncLineActive = false;
+            externalVsyncLineEnabled = false;
         }
-
-        /// <summary>Sets a CRTC-derived vsync period in 1 MHz peripheral cycles.</summary>
-        /// <param name="peripheralCycles">The frame period in peripheral cycles, or 0 to use the default 50 Hz timing.</param>
-        public void SetVsyncPeriod(int peripheralCycles)
-        {
-            // Clamp to a sane range so a half-programmed CRTC can't stall vsync entirely.
-            // 30 Hz to 100 Hz covers every realistic BBC mode while rejecting nonsense values.
-            if (peripheralCycles >= 10_000 && peripheralCycles <= 33_333)
-                vsyncPeriodOverride = peripheralCycles;
-            else
-                vsyncPeriodOverride = 0;
-        }
-
-        private int CurrentVsyncPeriod => vsyncPeriodOverride > 0 ? vsyncPeriodOverride : VsyncPeripheralCycles;
 
         /// <summary>Gets the number of emulated 50 Hz video frames since reset.</summary>
         public int FrameCounter => Volatile.Read(ref frameCounter);
 
         /// <summary>Gets the approximate CPU cycles elapsed since the current 50 Hz frame started.</summary>
-        public int FrameCpuCycle => Math.Clamp((vsyncCycleCounter * 2) + peripheralCycleRemainder, 0, (CurrentVsyncPeriod * 2) - 1);
+        public int FrameCpuCycle => Math.Clamp((vsyncCycleCounter * 2) + peripheralCycleRemainder, 0, (VsyncPeripheralCycles * 2) - 1);
 
         /// <summary>Gets the currently selected video RAM start address.</summary>
         public int ScreenMemoryStart => CurrentScreenMemoryWindow.Start;
@@ -161,6 +149,30 @@ namespace BBC
         /// <summary>Gets whether the VIA IRQ output is currently asserted.</summary>
         public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;
 
+        /// <summary>Sets whether VSYNC is driven by the video beam instead of the internal frame timer.</summary>
+        public bool ExternalVsyncLineEnabled
+        {
+            get => externalVsyncLineEnabled;
+            set => externalVsyncLineEnabled = value;
+        }
+
+        /// <summary>Updates the CRTC-driven vertical sync input to the system VIA.</summary>
+        /// <param name="active">Whether the video VSYNC line is currently active.</param>
+        public void SetVsyncLine(bool active)
+        {
+            if (vsyncLineActive == active)
+                return;
+
+            vsyncLineActive = active;
+            if (active)
+            {
+                vsyncCycleCounter = 0;
+                peripheralCycleRemainder = 0;
+                Interlocked.Increment(ref frameCounter);
+                SetInterrupt(InterruptFlagVsync);
+            }
+        }
+
         /// <summary>Advances VIA timers by the supplied number of CPU cycles.</summary>
         /// <param name="cycles">The elapsed 6502 cycles.</param>
         public void Tick(int cycles)
@@ -180,7 +192,8 @@ namespace BBC
             if (timer2Running)
                 TickTimer2(peripheralCycles);
 
-            TickVsync(peripheralCycles);
+            if (!externalVsyncLineEnabled)
+                TickVsync(peripheralCycles);
         }
 
         /// <summary>Reads a system VIA register.</summary>
@@ -333,13 +346,12 @@ namespace BBC
         {
             vsyncCycleCounter += peripheralCycles;
 
-            int period = CurrentVsyncPeriod;
+            int period = VsyncPeripheralCycles;
             while (vsyncCycleCounter >= period)
             {
                 vsyncCycleCounter -= period;
                 Interlocked.Increment(ref frameCounter);
                 SetInterrupt(InterruptFlagVsync);
-                period = CurrentVsyncPeriod;
             }
         }
 

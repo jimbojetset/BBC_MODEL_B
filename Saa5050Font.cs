@@ -95,6 +95,58 @@ namespace BBC
             }
         }
 
+        public static ushort GetAlphanumericRowMask(byte character, int row)
+        {
+            character = (byte)(character & 0x7F);
+            if (character < 32)
+                character = 32;
+
+            row = Math.Clamp(row, 0, RoundedHeight - 1);
+            ushort glyphRow = GetRoundedRow((character - 32) * GlyphRowsPerCharacter, row);
+            ushort result = 0;
+
+            for (int outputX = 0; outputX < RoundedWidth; outputX++)
+            {
+                if ((glyphRow & (0x800 >> outputX)) == 0)
+                    continue;
+
+                int pixel = GlyphXOffset + outputX;
+                result |= (ushort)(1 << (15 - pixel));
+            }
+
+            return result;
+        }
+
+        public static ushort GetMosaicRowMask(byte character, int row, bool separated)
+        {
+            int value = character & 0x7F;
+            int pattern = (value & 0x1F) | ((value & 0x40) >> 1);
+            row = Math.Clamp(row, 0, RoundedHeight - 1);
+            int sourceY = row >> 1;
+            ushort result = 0;
+
+            for (int outputX = 0; outputX < RoundedWidth; outputX++)
+            {
+                int sourceX = outputX >> 1;
+                int block = (sourceY < 3 ? 0 : sourceY < 7 ? 2 : 4) + (sourceX < 3 ? 0 : 1);
+                if ((pattern & (1 << block)) == 0)
+                    continue;
+
+                if (separated)
+                {
+                    int blockStartX = sourceX < 3 ? 0 : 3;
+                    int blockEndY = sourceY < 3 ? 2 : sourceY < 7 ? 6 : 9;
+                    if (sourceX == blockStartX || sourceY == blockEndY)
+                        continue;
+                }
+
+                int pixel = GlyphXOffset + outputX;
+                result |= (ushort)(1 << (15 - pixel));
+            }
+
+            return result;
+        }
+
         private static ushort GetRoundedRow(int glyphOffset, int outputY)
         {
             int sourceY = outputY >> 1;
