@@ -27,12 +27,13 @@ namespace BBC
         private const int SamplesPerBuffer = 1024;
         private const int MaxQueuedSamples = SampleRate / 10;
         private const int GeneratedQueueSamples = SampleRate / 2;
+        private const int GeneratedQueueHighWaterSamples = GeneratedQueueSamples - SamplesPerBuffer;
         private const int PsgWriteEnableDelayCycles = 14;
         private const ushort AudioFormatS16 = 0x8010;
         private const double PowerOnToneFrequencyHz = 120.0;
         private const double PowerOnToneDurationSeconds = 0.35;
         private const double PowerOnToneAmplitude = 0.1;
-        private readonly Lock syncRoot = new Lock();
+        private readonly object syncRoot = new object();
         private readonly int[] tonePeriods = [0, 0, 0];
         private readonly int[] volumes = [15, 15, 15, 15];
         private readonly double[] toneCounters = new double[3];
@@ -50,6 +51,7 @@ namespace BBC
         private int generatedReadIndex;
         private int generatedWriteIndex;
         private int generatedCount;
+        private short lastGeneratedSample;
         private byte noiseControl;
         private double noiseCounter;
         private int noisePolarity = 1;
@@ -94,6 +96,7 @@ namespace BBC
                 generatedReadIndex = 0;
                 generatedWriteIndex = 0;
                 generatedCount = 0;
+                lastGeneratedSample = 0;
                 noiseControl = 0;
                 noiseCounter = 0;
                 noisePolarity = 0;
@@ -171,6 +174,8 @@ namespace BBC
             if (cycles <= 0)
                 return;
 
+            WaitForGeneratedHeadroom();
+
             lock (syncRoot)
             {
                 long targetCycle = emulatedCycle + cycles;
@@ -242,12 +247,14 @@ namespace BBC
                     if (generatedCount > 0)
                     {
                         samples[i] = generatedSamples[generatedReadIndex];
+                        lastGeneratedSample = samples[i];
                         generatedReadIndex = (generatedReadIndex + 1) % generatedSamples.Length;
                         generatedCount--;
+                        Monitor.PulseAll(syncRoot);
                     }
                     else
                     {
-                        samples[i] = GenerateSample();
+                        samples[i] = lastGeneratedSample;
                     }
                 }
             }
@@ -345,16 +352,25 @@ namespace BBC
 
         private void EnqueueGeneratedSample(short sample)
         {
+            if (generatedCount >= generatedSamples.Length)
+                return;
+
+            lastGeneratedSample = sample;
             generatedSamples[generatedWriteIndex] = sample;
             generatedWriteIndex = (generatedWriteIndex + 1) % generatedSamples.Length;
+            generatedCount++;
+        }
 
-            if (generatedCount < generatedSamples.Length)
-            {
-                generatedCount++;
+        private void WaitForGeneratedHeadroom()
+        {
+            if (audioDevice == 0 || !Volatile.Read(ref running))
                 return;
-            }
 
-            generatedReadIndex = (generatedReadIndex + 1) % generatedSamples.Length;
+            lock (syncRoot)
+            {
+                while (Volatile.Read(ref running) && generatedCount >= GeneratedQueueHighWaterSamples)
+                    Monitor.Wait(syncRoot, 20);
+            }
         }
 
         private double AdvanceTone(int channel, int period)

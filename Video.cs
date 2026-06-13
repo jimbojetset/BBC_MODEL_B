@@ -76,7 +76,6 @@ namespace BBC
         private readonly object beamFrameLock = new object();
         private readonly uint[] beamRenderFrame = new uint[BeamFramebufferWidth * BeamFramebufferHeight];
         private readonly uint[] beamCompletedFrame = new uint[BeamFramebufferWidth * BeamFramebufferHeight];
-        private readonly bool splitTraceEnabled;
         private ScreenMemoryWindow screenMemoryWindow = new ScreenMemoryWindow(0x3000, 0x5000, 2, 10);
         private byte selectedCrtcRegister;
         private byte lastPaletteWrite;
@@ -93,11 +92,6 @@ namespace BBC
         private int beamMode4To5Y;
         private int beamMode4To5HorizontalCounter;
         private int beamMode4To5VerticalCounter;
-        private int beamCompletedMode4To5X;
-        private int beamCompletedMode4To5Y;
-        private int beamCompletedMode4To5HorizontalCounter;
-        private int beamCompletedMode4To5VerticalCounter;
-        private int lastSplitTraceFrame = -1;
         private bool beamOddClock;
         private bool beamHalfClock = true;
         private bool beamFirstScanline = true;
@@ -165,7 +159,6 @@ namespace BBC
         public Video(byte[] memory)
         {
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
-            splitTraceEnabled = Environment.GetEnvironmentVariable("BBC_VIDEO_SPLIT_TRACE") == "1";
             ResetBeamState();
         }
 
@@ -220,11 +213,6 @@ namespace BBC
             beamMode4To5Y = -1;
             beamMode4To5HorizontalCounter = -1;
             beamMode4To5VerticalCounter = -1;
-            beamCompletedMode4To5X = -1;
-            beamCompletedMode4To5Y = -1;
-            beamCompletedMode4To5HorizontalCounter = -1;
-            beamCompletedMode4To5VerticalCounter = -1;
-            lastSplitTraceFrame = -1;
             beamOddClock = false;
             beamHalfClock = true;
             beamFirstScanline = true;
@@ -759,10 +747,6 @@ namespace BBC
                 beamCompletedMinY = beamActiveMinY;
                 beamCompletedMaxX = beamActiveMaxX;
                 beamCompletedMaxY = beamActiveMaxY;
-                beamCompletedMode4To5X = beamMode4To5X;
-                beamCompletedMode4To5Y = beamMode4To5Y;
-                beamCompletedMode4To5HorizontalCounter = beamMode4To5HorizontalCounter;
-                beamCompletedMode4To5VerticalCounter = beamMode4To5VerticalCounter;
                 beamCompletedFrameCount = beamFrameCount;
                 beamHasCompletedFrame = true;
                 ClearBeamRenderFrame();
@@ -904,61 +888,8 @@ namespace BBC
         /// <param name="display">The SDL-backed display to render into.</param>
         public void Render(Display display)
         {
-            TraceSplitDiagnostics();
-
             if (!TryCopyBeamFrameToDisplay(display))
                 Array.Fill(display.FrameBuffer, Background);
-        }
-
-        private void TraceSplitDiagnostics()
-        {
-            if (!splitTraceEnabled)
-                return;
-
-            int frame;
-            int r1;
-            int r6;
-            int r9;
-            int r12r13;
-            byte ula;
-            int beamX;
-            int beamY;
-            int beamH;
-            int beamV;
-            int minX;
-            int minY;
-            int maxX;
-            int maxY;
-            lock (beamFrameLock)
-            {
-                frame = beamCompletedFrameCount;
-                if (frame == lastSplitTraceFrame)
-                    return;
-
-                beamX = beamCompletedMode4To5X;
-                beamY = beamCompletedMode4To5Y;
-                beamH = beamCompletedMode4To5HorizontalCounter;
-                beamV = beamCompletedMode4To5VerticalCounter;
-                minX = beamCompletedMinX;
-                minY = beamCompletedMinY;
-                maxX = beamCompletedMaxX;
-                maxY = beamCompletedMaxY;
-                lastSplitTraceFrame = frame;
-            }
-
-            if (beamY < 0)
-                return;
-
-            r1 = crtcRegisters[CrtcHorizontalDisplayedRegister];
-            r6 = crtcRegisters[CrtcVerticalDisplayedRegister];
-            r9 = GetCrtcScanlinesPerCharacter(crtcRegisters);
-            r12r13 = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
-                | crtcRegisters[CrtcDisplayStartLowRegister];
-            ula = UlaControl;
-
-            Console.WriteLine(
-                $"VIDEO_SPLIT frame={frame} renderer=beam beamMode4To5=({beamX},{beamY}) beamCounters=({beamH},{beamV}) beamBounds=({minX},{minY})-({maxX},{maxY}) " +
-                $"R1={r1} R6={r6} R9lines={r9} R12R13=${r12r13:X4} ULA=${ula:X2}");
         }
 
         private bool TryCopyBeamFrameToDisplay(Display display)
