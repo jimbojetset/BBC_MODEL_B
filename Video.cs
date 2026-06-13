@@ -356,17 +356,20 @@ namespace BBC
                         crtcRegisters[regIndex] = value;
                         if (regIndex is CrtcCursorHighRegister or CrtcCursorLowRegister)
                             crtcCursorAddressWritten = true;
-                        // Mid-frame writes to display-start (R12/R13), scanline-per-row (R9),
-                        // vertical-displayed (R6), or
-                        // horizontal-displayed (R1) change rendering partway down the screen; capture
-                        // a raster event so the renderer can split correctly. R1 mid-frame is what
-                        // enables Tricky's per-character-row "vertical rupture" trick (used in Frogger).
-                        // R6/R9 writes are flagged as well because games can use them to alter
-                        // the effective visible height or reorder character rows.
-                        if (regIndex is CrtcDisplayStartHighRegister or CrtcDisplayStartLowRegister
-                            or CrtcScanLinesPerCharacterRegister or CrtcHorizontalDisplayedRegister
-                            or CrtcVerticalDisplayedRegister)
-                            AddRasterEvent(frameCpuCycle, crtcAddressLatch: true);
+                        // Mid-frame display-start and horizontal-displayed writes can alter the
+                        // row stream. R6/R9 writes are still captured for timing/state history, but
+                        // they must not be treated as R12/R13 latches or they can make short bitmap
+                        // displays wrap back to the top of screen memory.
+                        VideoRasterEventKind eventKind = regIndex switch
+                        {
+                            CrtcDisplayStartHighRegister or CrtcDisplayStartLowRegister => VideoRasterEventKind.DisplayStart,
+                            CrtcHorizontalDisplayedRegister => VideoRasterEventKind.HorizontalDisplayed,
+                            CrtcScanLinesPerCharacterRegister or CrtcVerticalDisplayedRegister => VideoRasterEventKind.VerticalLayout,
+                            _ => VideoRasterEventKind.State
+                        };
+
+                        if (eventKind != VideoRasterEventKind.State)
+                            AddRasterEvent(frameCpuCycle, eventKind);
                     }
                     break;
 
@@ -1077,7 +1080,7 @@ namespace BBC
                 | activeCrtcRegisters[CrtcDisplayStartLowRegister];
             VideoRasterEvent state = activeRasterEvents.Count > 0
                 ? activeRasterEvents[0]
-                : new VideoRasterEvent(0, 0, 0, activeMode, activeUlaControl, activePaletteRegisters, initialCrtcStart, activeCrtcRegisters[CrtcHorizontalDisplayedRegister], crtcAddressLatch: false);
+                : new VideoRasterEvent(0, 0, 0, activeMode, activeUlaControl, activePaletteRegisters, initialCrtcStart, activeCrtcRegisters[CrtcHorizontalDisplayedRegister], VideoRasterEventKind.State);
 
             for (int y = 0; y < height; y++)
             {
@@ -1360,6 +1363,7 @@ namespace BBC
         private int GetCrtcStartForScanline(int y, int scanlinesPerRow, ref int eventCursor, int defaultStart)
         {
             int start = defaultStart;
+            bool applyVisibleRuptures = ShouldApplyVisibleCrtcRuptures(scanlinesPerRow);
             // activeRasterEvents is already in time-order; walk forward while events apply to y or earlier.
             // Snap each event's effective scanline to the next character-row boundary, matching real
             // 6845 behaviour: R12/R13 latches only at the start of a character row, not mid-row.
@@ -1371,7 +1375,8 @@ namespace BBC
                 int snappedLine = SnapToNextCharacterRow(eventVisibleLine, scanlinesPerRow);
                 if (snappedLine > y)
                     break;
-                if (activeRasterEvents[eventCursor].CrtcAddressLatch)
+                if (activeRasterEvents[eventCursor].CrtcAddressLatch
+                    && (activeRasterEvents[eventCursor].VisibleLine <= 0 || applyVisibleRuptures))
                     start = activeRasterEvents[eventCursor].CrtcStartAddress;
                 eventCursor++;
             }
@@ -1415,7 +1420,10 @@ namespace BBC
             if (activeRasterEvents.Count == 0 || scanlinesPerRow <= 0)
                 return rows;
 
-            // Find the deepest visible scanline that is targeted by an actual R12/R13/R1/R9
+            if (!ShouldApplyVisibleCrtcRuptures(scanlinesPerRow))
+                return rows;
+
+            // Find the deepest visible scanline that is targeted by an actual R12/R13
             // address-latch event. Latches advance the rendered character-row index, so the
             // effective row count must be at least one more than that latch's row index.
             int highestLatchedRow = -1;
@@ -1457,9 +1465,10 @@ namespace BBC
             var snapshots = new (int CrtcStart, int BytesPerRow)[characterRowCount];
             int currentStart = defaultStart;
             int currentBytesPerRow = defaultBytesPerRow;
+            bool applyVisibleRuptures = ShouldApplyVisibleCrtcRuptures(scanlinesPerRow);
 
             // Process any pre-visible (VisibleLine <= 0) events that occurred between vsync and
-            // the start of the active region. We honour real address-latch events (R12/R13/R1/R9
+            // the start of the active region. We honour real display-start events (R12/R13
             // writes) because games such as Tricky's Frogger reprogram R12/R13 during VBL to
             // point at the first playfield row before scan 0. We skip non-latch events because
             // their captured CRTC state is incidental (palette/ULA writes that just snapshot
@@ -1468,11 +1477,9 @@ namespace BBC
             while (eventIndex < activeRasterEvents.Count && activeRasterEvents[eventIndex].VisibleLine <= 0)
             {
                 if (activeRasterEvents[eventIndex].CrtcAddressLatch)
-                {
                     currentStart = activeRasterEvents[eventIndex].CrtcStartAddress;
-                    if (activeRasterEvents[eventIndex].HorizontalDisplayed > 0)
-                        currentBytesPerRow = activeRasterEvents[eventIndex].HorizontalDisplayed;
-                }
+                if (activeRasterEvents[eventIndex].HorizontalDisplayedLatch && activeRasterEvents[eventIndex].HorizontalDisplayed > 0)
+                    currentBytesPerRow = activeRasterEvents[eventIndex].HorizontalDisplayed;
                 eventIndex++;
             }
 
@@ -1483,18 +1490,20 @@ namespace BBC
 
                 // Walk every event whose snapped scanline matches the start of this character row.
                 // The 6845 latches at character-row boundaries, so writes within a row only take
-                // effect at the start of the next row. Only events flagged as CrtcAddressLatch (i.e.
-                // writes to R12/R13/R1/R9 themselves) may change addressing; mode/ULA/palette events
-                // are skipped here because their CRTC state snapshot is incidental, not authoritative.
+                // effect at the start of the next row. Only R12/R13 writes may change the address;
+                // R1 may change the stride. Mode/ULA/palette and R6/R9 events carry incidental
+                // snapshots and are not authoritative row-address latches.
                 while (eventIndex < activeRasterEvents.Count)
                 {
                     int snappedLine = SnapToNextCharacterRow(activeRasterEvents[eventIndex].VisibleLine, scanlinesPerRow);
                     if (snappedLine > rowFirstScanline)
                         break;
-                    if (activeRasterEvents[eventIndex].CrtcAddressLatch)
+                    bool visibleRuptureAllowed = activeRasterEvents[eventIndex].VisibleLine <= 0 || applyVisibleRuptures;
+                    if (visibleRuptureAllowed && (activeRasterEvents[eventIndex].CrtcAddressLatch || activeRasterEvents[eventIndex].HorizontalDisplayedLatch))
                     {
-                        currentStart = activeRasterEvents[eventIndex].CrtcStartAddress;
-                        if (activeRasterEvents[eventIndex].HorizontalDisplayed > 0)
+                        if (activeRasterEvents[eventIndex].CrtcAddressLatch)
+                            currentStart = activeRasterEvents[eventIndex].CrtcStartAddress;
+                        if (activeRasterEvents[eventIndex].HorizontalDisplayedLatch && activeRasterEvents[eventIndex].HorizontalDisplayed > 0)
                             currentBytesPerRow = activeRasterEvents[eventIndex].HorizontalDisplayed;
                         rowExplicitlyLatched = true;
                     }
@@ -1585,9 +1594,55 @@ namespace BBC
 
         private bool HasVisibleRasterLayoutEvents()
         {
+            int scanlinesPerCharacter = (activeCrtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
+            if (!ShouldApplyVisibleCrtcRuptures(scanlinesPerCharacter))
+                return false;
+
             foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
             {
                 if (rasterEvent.CrtcAddressLatch && rasterEvent.VisibleLine >= 0)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool ShouldApplyVisibleCrtcRuptures(int scanlinesPerRow)
+        {
+            if (activeRasterEvents.Count == 0 || scanlinesPerRow <= 0)
+                return false;
+
+            Span<int> rows = stackalloc int[32];
+            int rowCount = 0;
+
+            foreach (VideoRasterEvent rasterEvent in activeRasterEvents)
+            {
+                if (!rasterEvent.CrtcAddressLatch)
+                    continue;
+
+                int visibleLine = rasterEvent.VisibleLine;
+                if (visibleLine <= 0 || visibleLine >= BitmapHeight)
+                    continue;
+
+                int row = SnapToNextCharacterRow(visibleLine, scanlinesPerRow) / scanlinesPerRow;
+                bool alreadySeen = false;
+                for (int i = 0; i < rowCount; i++)
+                {
+                    if (rows[i] == row)
+                    {
+                        alreadySeen = true;
+                        break;
+                    }
+                }
+
+                if (alreadySeen)
+                    continue;
+
+                if (rowCount < rows.Length)
+                    rows[rowCount] = row;
+                rowCount++;
+
+                if (rowCount >= 4)
                     return true;
             }
 
@@ -1827,14 +1882,14 @@ namespace BBC
             };
         }
 
-        private void AddRasterEvent(int frameCpuCycle, bool crtcAddressLatch = false)
+        private void AddRasterEvent(int frameCpuCycle, VideoRasterEventKind eventKind = VideoRasterEventKind.State)
         {
             int scanline = Math.Clamp(frameCpuCycle, 0, VideoFrameCpuCycles - 1) * VideoFrameScanlines / VideoFrameCpuCycles;
             int visibleLine = scanline - VisibleStartScanline;
             int crtcStart = ((crtcRegisters[CrtcDisplayStartHighRegister] & 0x3F) << 8)
                 | crtcRegisters[CrtcDisplayStartLowRegister];
             int horizontalDisplayed = crtcRegisters[CrtcHorizontalDisplayedRegister];
-            rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters, crtcStart, horizontalDisplayed, crtcAddressLatch));
+            rasterEvents.Add(new VideoRasterEvent(frameCpuCycle, scanline, visibleLine, CurrentMode, UlaControl, paletteRegisters, crtcStart, horizontalDisplayed, eventKind));
         }
 
         private static int GetCrtcScanlinesPerCharacter(byte[] registers)
@@ -1855,9 +1910,17 @@ namespace BBC
             return totalScanlines;
         }
 
+        private enum VideoRasterEventKind
+        {
+            State,
+            DisplayStart,
+            HorizontalDisplayed,
+            VerticalLayout
+        }
+
         private readonly struct VideoRasterEvent
         {
-            public VideoRasterEvent(int frameCpuCycle, int scanline, int visibleLine, BbcScreenMode mode, byte ulaControl, byte[] palette, int crtcStartAddress, int horizontalDisplayed, bool crtcAddressLatch)
+            public VideoRasterEvent(int frameCpuCycle, int scanline, int visibleLine, BbcScreenMode mode, byte ulaControl, byte[] palette, int crtcStartAddress, int horizontalDisplayed, VideoRasterEventKind eventKind)
             {
                 FrameCpuCycle = frameCpuCycle;
                 Scanline = scanline;
@@ -1866,7 +1929,7 @@ namespace BBC
                 UlaControl = ulaControl;
                 CrtcStartAddress = crtcStartAddress;
                 HorizontalDisplayed = horizontalDisplayed;
-                CrtcAddressLatch = crtcAddressLatch;
+                EventKind = eventKind;
                 Palette = new byte[PaletteRegisterCount];
                 Array.Copy(palette, Palette, Palette.Length);
             }
@@ -1884,10 +1947,13 @@ namespace BBC
             /// <summary>R1 (horizontal displayed = characters per row, i.e. memory bytes per row).</summary>
             public int HorizontalDisplayed { get; }
 
-            /// <summary>True when this event was emitted by a write to R12/R13/R1 (display-start
-            /// high/low or horizontal-displayed). Other events (mode/ULA/palette writes) snapshot
-            /// these values for context only and must not be treated as a per-row CRTC latch.</summary>
-            public bool CrtcAddressLatch { get; }
+            public VideoRasterEventKind EventKind { get; }
+
+            /// <summary>True when this event was emitted by a write to R12/R13.</summary>
+            public bool CrtcAddressLatch => EventKind == VideoRasterEventKind.DisplayStart;
+
+            /// <summary>True when this event was emitted by a write to R1.</summary>
+            public bool HorizontalDisplayedLatch => EventKind == VideoRasterEventKind.HorizontalDisplayed;
 
             public byte UlaControl { get; }
 
