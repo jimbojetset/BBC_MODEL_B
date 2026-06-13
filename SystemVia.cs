@@ -239,6 +239,7 @@ namespace BBC
                 case 0x1:
                 case 0xF:
                     portA = value;
+                    UpdateSoundSlowDataBus();
                     ClearInterrupt(InterruptFlagVsync);
                     if (dataDirectionA == 0x7F && !IsKeyboardAutoScanEnabled())
                         UpdateKeyboardColumnInterrupt();
@@ -359,7 +360,6 @@ namespace BBC
         {
             int latchBit = value & 0x07;
             bool latchValue = (value & 0x08) != 0;
-            bool previousSoundWriteEnable = (addressableLatch & (1 << SoundWriteEnableLatchBit)) != 0;
             ScreenMemoryWindow previousWindow = GetScreenMemoryWindow(addressableLatch);
 
             if (latchValue)
@@ -367,10 +367,8 @@ namespace BBC
             else
                 addressableLatch &= unchecked((byte)~(1 << latchBit));
 
-            bool currentSoundWriteEnable = (addressableLatch & (1 << SoundWriteEnableLatchBit)) != 0;
-
-            if (latchBit == SoundWriteEnableLatchBit && previousSoundWriteEnable && !currentSoundWriteEnable)
-                sound.WriteData(portA);
+            if (latchBit == SoundWriteEnableLatchBit)
+                UpdateSoundSlowDataBus();
 
             if (latchBit is ScreenAddressLatchLowBit or ScreenAddressLatchHighBit)
             {
@@ -378,6 +376,11 @@ namespace BBC
                 if (currentWindow != previousWindow)
                     ScreenMemoryWindowChanged?.Invoke(currentWindow);
             }
+        }
+
+        private void UpdateSoundSlowDataBus()
+        {
+            sound.UpdateSlowDataBus(portA, (addressableLatch & (1 << SoundWriteEnableLatchBit)) == 0);
         }
 
         private static ScreenMemoryWindow GetScreenMemoryWindow(byte latch)

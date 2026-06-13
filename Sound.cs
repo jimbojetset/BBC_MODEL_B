@@ -26,7 +26,8 @@ namespace BBC
         private const int SampleRate = 48_000;
         private const int SamplesPerBuffer = 1024;
         private const int MaxQueuedSamples = SampleRate / 10;
-        private const int GeneratedQueueSamples = SampleRate / 5;
+        private const int GeneratedQueueSamples = SampleRate / 2;
+        private const int PsgWriteEnableDelayCycles = 14;
         private const ushort AudioFormatS16 = 0x8010;
         private const double PowerOnToneFrequencyHz = 120.0;
         private const double PowerOnToneDurationSeconds = 0.35;
@@ -38,9 +39,14 @@ namespace BBC
         private readonly int[] tonePolarity = [-1, -1, -1];
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
         private readonly short[] generatedSamples = new short[GeneratedQueueSamples];
+        private readonly Queue<ScheduledPsgEvent> scheduledEvents = new Queue<ScheduledPsgEvent>();
         private static readonly double[] VolumeTable = CreateVolumeTable();
         private double sampleCycleRemainder;
         private double chipSampleRemainder;
+        private long emulatedCycle;
+        private byte slowDataBus;
+        private bool writeEnableActive;
+        private bool writeEnableSampleScheduled;
         private int generatedReadIndex;
         private int generatedWriteIndex;
         private int generatedCount;
@@ -78,8 +84,13 @@ namespace BBC
                 Array.Clear(toneCounters);
                 Array.Fill(tonePolarity, -1);
                 Array.Clear(generatedSamples);
+                scheduledEvents.Clear();
                 sampleCycleRemainder = 0;
                 chipSampleRemainder = 0;
+                emulatedCycle = 0;
+                slowDataBus = 0;
+                writeEnableActive = false;
+                writeEnableSampleScheduled = false;
                 generatedReadIndex = 0;
                 generatedWriteIndex = 0;
                 generatedCount = 0;
@@ -131,38 +142,24 @@ namespace BBC
         {
             lock (syncRoot)
             {
-                if ((value & 0x80) != 0)
-                {
-                    latchedChannel = (value >> 5) & 0x03;
-                    latchedVolume = (value & 0x10) != 0;
+                scheduledEvents.Enqueue(ScheduledPsgEvent.ForLatchedValue(emulatedCycle + PsgWriteEnableDelayCycles, value));
+            }
+        }
 
-                    if (latchedVolume)
-                    {
-                        volumes[latchedChannel] = value & 0x0F;
-                    }
-                    else if (latchedChannel == 3)
-                    {
-                        SetNoiseControl((byte)(value & 0x0F));
-                    }
-                    else
-                    {
-                        tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x3F0) | (value & 0x0F);
-                    }
+        /// <summary>Updates the slow data bus and PSG write-enable line driven by the system VIA.</summary>
+        /// <param name="value">The current slow data bus value.</param>
+        /// <param name="active">Whether PSG write enable is active.</param>
+        public void UpdateSlowDataBus(byte value, bool active)
+        {
+            lock (syncRoot)
+            {
+                slowDataBus = value;
+                writeEnableActive = active;
 
-                    return;
-                }
-
-                if (latchedVolume)
+                if (active && !writeEnableSampleScheduled)
                 {
-                    volumes[latchedChannel] = value & 0x0F;
-                }
-                else if (latchedChannel == 3)
-                {
-                    SetNoiseControl((byte)(value & 0x0F));
-                }
-                else
-                {
-                    tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x0F) | ((value & 0x3F) << 4);
+                    scheduledEvents.Enqueue(ScheduledPsgEvent.ForSlowBusSample(emulatedCycle + PsgWriteEnableDelayCycles));
+                    writeEnableSampleScheduled = true;
                 }
             }
         }
@@ -176,12 +173,17 @@ namespace BBC
 
             lock (syncRoot)
             {
-                double exactSamples = ((cycles * (double)SampleRate) / CpuClockHz) + sampleCycleRemainder;
-                int samplesToGenerate = (int)exactSamples;
-                sampleCycleRemainder = exactSamples - samplesToGenerate;
+                long targetCycle = emulatedCycle + cycles;
+                while (scheduledEvents.Count > 0 && scheduledEvents.Peek().Cycle <= targetCycle)
+                {
+                    ScheduledPsgEvent scheduledEvent = scheduledEvents.Dequeue();
+                    GenerateSamplesForCycles((int)(scheduledEvent.Cycle - emulatedCycle));
+                    emulatedCycle = scheduledEvent.Cycle;
+                    ApplyScheduledEvent(scheduledEvent);
+                }
 
-                for (int i = 0; i < samplesToGenerate; i++)
-                    EnqueueGeneratedSample(GenerateSample());
+                GenerateSamplesForCycles((int)(targetCycle - emulatedCycle));
+                emulatedCycle = targetCycle;
             }
         }
 
@@ -264,6 +266,70 @@ namespace BBC
             mixed /= chipSamples;
             mixed += AdvancePowerOnTone();
             return (short)Math.Clamp(mixed * short.MaxValue, short.MinValue, short.MaxValue);
+        }
+
+        private void GenerateSamplesForCycles(int cycles)
+        {
+            if (cycles <= 0)
+                return;
+
+            double exactSamples = ((cycles * (double)SampleRate) / CpuClockHz) + sampleCycleRemainder;
+            int samplesToGenerate = (int)exactSamples;
+            sampleCycleRemainder = exactSamples - samplesToGenerate;
+
+            for (int i = 0; i < samplesToGenerate; i++)
+                EnqueueGeneratedSample(GenerateSample());
+        }
+
+        private void ApplyWriteData(byte value)
+        {
+            if ((value & 0x80) != 0)
+            {
+                latchedChannel = (value >> 5) & 0x03;
+                latchedVolume = (value & 0x10) != 0;
+
+                if (latchedVolume)
+                {
+                    volumes[latchedChannel] = value & 0x0F;
+                }
+                else if (latchedChannel == 3)
+                {
+                    SetNoiseControl((byte)(value & 0x0F));
+                }
+                else
+                {
+                    tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x3F0) | (value & 0x0F);
+                }
+
+                return;
+            }
+
+            if (latchedVolume)
+            {
+                volumes[latchedChannel] = value & 0x0F;
+            }
+            else if (latchedChannel == 3)
+            {
+                SetNoiseControl((byte)(value & 0x0F));
+            }
+            else
+            {
+                tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x0F) | ((value & 0x3F) << 4);
+            }
+        }
+
+        private void ApplyScheduledEvent(ScheduledPsgEvent scheduledEvent)
+        {
+            if (scheduledEvent.SampleSlowBus)
+            {
+                writeEnableSampleScheduled = false;
+                if (writeEnableActive)
+                    ApplyWriteData(slowDataBus);
+
+                return;
+            }
+
+            ApplyWriteData(scheduledEvent.Value);
         }
 
         private double GenerateChipSample()
@@ -398,6 +464,19 @@ namespace BBC
 
             table[15] = 0;
             return table;
+        }
+
+        private readonly record struct ScheduledPsgEvent(long Cycle, byte Value, bool SampleSlowBus)
+        {
+            public static ScheduledPsgEvent ForLatchedValue(long cycle, byte value)
+            {
+                return new ScheduledPsgEvent(cycle, value, SampleSlowBus: false);
+            }
+
+            public static ScheduledPsgEvent ForSlowBusSample(long cycle)
+            {
+                return new ScheduledPsgEvent(cycle, 0, SampleSlowBus: true);
+            }
         }
 
         private static void ThrowIfSdlFailed(int result, string operation)
