@@ -792,6 +792,8 @@ namespace BBC
                 beamMode4To5Y = -1;
                 beamMode4To5HorizontalCounter = -1;
                 beamMode4To5VerticalCounter = -1;
+                beamPixelUlaControlOverrideValid = false;
+                Array.Clear(pendingPaletteWrites);
             }
 
             beamDisplayEnabled &= ~FrameSkipEnable;

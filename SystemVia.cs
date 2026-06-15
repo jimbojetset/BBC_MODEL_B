@@ -206,7 +206,8 @@ namespace BBC
             return register switch
             {
                 0x0 => ReadPort(portB, dataDirectionB),
-                0x1 or 0xF => ReadPortAWithHandshake(),
+                0x1 => ReadPortAWithHandshake(),
+                0xF => ReadPortAWithoutHandshake(),
                 0x2 => dataDirectionB,
                 0x3 => dataDirectionA,
                 0x4 => ReadTimerLow(timer1Counter, InterruptFlagTimer1),
@@ -240,7 +241,6 @@ namespace BBC
                 case 0xF:
                     portA = value;
                     UpdateSoundSlowDataBus();
-                    ClearInterrupt(InterruptFlagVsync);
                     if (dataDirectionA == 0x7F && !IsKeyboardAutoScanEnabled())
                         UpdateKeyboardColumnInterrupt();
                     break;
@@ -436,6 +436,14 @@ namespace BBC
         {
             ClearInterrupt(InterruptFlagVsync);
 
+            if (dataDirectionA == 0x7F)
+                return ReadKeyboardPortA();
+
+            return ReadPort(portA, dataDirectionA);
+        }
+
+        private byte ReadPortAWithoutHandshake()
+        {
             if (dataDirectionA == 0x7F)
                 return ReadKeyboardPortA();
 
