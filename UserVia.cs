@@ -20,7 +20,8 @@ namespace BBC
         private const byte InterruptFlagTimer1 = 0x40;
         private const byte InterruptFlagTimer2 = 0x20;
         private const byte InterruptSummary = 0x80;
-        private const int FloatingInputPeriodCycles = 50_000;
+        private const int FloatingInputPollWindowCycles = 512;
+        private const int FloatingInputChangeCycles = 40_000;
         private readonly byte[] registers = new byte[16];
         private byte interruptFlags;
         private byte interruptEnable;
@@ -28,9 +29,10 @@ namespace BBC
         private byte portB;
         private byte dataDirectionA;
         private byte dataDirectionB;
-        private byte floatingPortAInput = 0x5A;
-        private byte floatingPortBInput = 0xA5;
-        private int floatingInputCycleCounter;
+        private int peripheralCycleCounter;
+        private int lastPortBReadCycle = int.MinValue / 2;
+        private int portBPollStartCycle;
+        private int portBPollReadCount;
         private ushort timer1Counter;
         private ushort timer1Latch;
         private ushort timer2Counter;
@@ -61,9 +63,10 @@ namespace BBC
             portB = 0;
             dataDirectionA = 0;
             dataDirectionB = 0;
-            floatingPortAInput = 0x5A;
-            floatingPortBInput = 0xA5;
-            floatingInputCycleCounter = 0;
+            peripheralCycleCounter = 0;
+            lastPortBReadCycle = int.MinValue / 2;
+            portBPollStartCycle = 0;
+            portBPollReadCount = 0;
             timer1Counter = 0;
             timer1Latch = 0;
             timer2Counter = 0;
@@ -87,7 +90,7 @@ namespace BBC
             if (peripheralCycles == 0)
                 return;
 
-            TickFloatingInputs(peripheralCycles);
+            peripheralCycleCounter += peripheralCycles;
             TickTimer1(peripheralCycles);
 
             if (timer2Running)
@@ -103,8 +106,8 @@ namespace BBC
 
             return register switch
             {
-                0x0 => ReadPort(portB, dataDirectionB, floatingPortBInput),
-                0x1 or 0xF => ReadPort(portA, dataDirectionA, floatingPortAInput),
+                0x0 => ReadPortB(),
+                0x1 or 0xF => ReadPort(portA, dataDirectionA),
                 0x2 => dataDirectionB,
                 0x3 => dataDirectionA,
                 0x4 => ReadTimerLow(timer1Counter, InterruptFlagTimer1),
@@ -258,25 +261,38 @@ namespace BBC
             interruptFlags &= unchecked((byte)~mask);
         }
 
-        private void TickFloatingInputs(int cycles)
+        private byte ReadPortB()
         {
-            floatingInputCycleCounter += cycles;
-            while (floatingInputCycleCounter >= FloatingInputPeriodCycles)
+            byte value = ReadPort(portB, dataDirectionB);
+
+            if (dataDirectionB == 0x00)
             {
-                floatingInputCycleCounter -= FloatingInputPeriodCycles;
-                floatingPortAInput = NextFloatingInput(floatingPortAInput);
-                floatingPortBInput = NextFloatingInput(floatingPortBInput);
+                int cyclesSinceLastRead = peripheralCycleCounter - lastPortBReadCycle;
+                if (cyclesSinceLastRead > FloatingInputPollWindowCycles)
+                {
+                    portBPollStartCycle = peripheralCycleCounter;
+                    portBPollReadCount = 1;
+                }
+                else
+                {
+                    portBPollReadCount++;
+                }
+
+                if (portBPollReadCount > 1 && peripheralCycleCounter - portBPollStartCycle >= FloatingInputChangeCycles)
+                {
+                    value = 0xFE;
+                    portBPollStartCycle = peripheralCycleCounter;
+                    portBPollReadCount = 0;
+                }
             }
+
+            lastPortBReadCycle = peripheralCycleCounter;
+            return value;
         }
 
-        private static byte ReadPort(byte output, byte direction, byte floatingInput)
+        private static byte ReadPort(byte output, byte direction)
         {
-            return (byte)((output & direction) | (floatingInput & ~direction));
-        }
-
-        private static byte NextFloatingInput(byte value)
-        {
-            return (byte)((value * 73) + 0x41);
+            return (byte)((output & direction) | (0xFF & ~direction));
         }
     }
 }
