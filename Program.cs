@@ -652,6 +652,11 @@ namespace BBC
                 return false;
             }
 
+            if (Cpu.registers.Y != 0xFF)
+            {
+                return false;
+            }
+
             if (!TryMapNegativeInkeyCode(Cpu.registers.X, out byte internalKey))
             {
                 return false;
