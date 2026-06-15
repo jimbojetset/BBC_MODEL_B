@@ -73,6 +73,8 @@ namespace BBC
         private readonly byte[] memory;
         private readonly byte[] crtcRegisters = new byte[CrtcRegisterCount];
         private readonly byte[] paletteRegisters = new byte[PaletteRegisterCount];
+        private readonly byte[] pendingPaletteRegisters = new byte[PaletteRegisterCount];
+        private readonly bool[] pendingPaletteWrites = new bool[PaletteRegisterCount];
         private readonly object beamFrameLock = new object();
         private readonly uint[] beamRenderFrame = new uint[BeamFramebufferWidth * BeamFramebufferHeight];
         private readonly uint[] beamCompletedFrame = new uint[BeamFramebufferWidth * BeamFramebufferHeight];
@@ -175,6 +177,7 @@ namespace BBC
         {
             Array.Clear(crtcRegisters);
             ResetPalette();
+            Array.Clear(pendingPaletteWrites);
             selectedCrtcRegister = 0;
             CurrentMode = BbcScreenMode.Mode7;
             UlaControl = 0;
@@ -263,6 +266,7 @@ namespace BBC
             beamUlaControl = 0;
             beamPixelUlaControlOverride = 0;
             beamPixelUlaControlOverrideValid = false;
+            Array.Clear(pendingPaletteWrites);
             beamTeletext.Reset();
             beamPixelsPerCharacter = 16;
             beamDisplayEnableSkew = 0;
@@ -715,6 +719,7 @@ namespace BBC
                     beamMode4To5VerticalCounter = beamVerticalCounter;
                 }
             }
+            ApplyPendingPaletteWrites();
             beamHadVSyncThisRow = false;
             BeamDisplayEnableSet(ScanlineDisplayEnable);
             beamCursorOn = false;
@@ -913,8 +918,38 @@ namespace BBC
                     lastPaletteWrite = value;
                     int paletteIndex = (value >> 4) & 0x0F;
                     byte physicalColour = DecodePhysicalColour(value);
-                    paletteRegisters[paletteIndex] = physicalColour;
+                    if (ShouldDeferPaletteWrite())
+                    {
+                        pendingPaletteRegisters[paletteIndex] = physicalColour;
+                        pendingPaletteWrites[paletteIndex] = true;
+                    }
+                    else
+                    {
+                        paletteRegisters[paletteIndex] = physicalColour;
+                    }
                     break;
+            }
+        }
+
+        private bool ShouldDeferPaletteWrite()
+        {
+            if (beamPixelUlaControlOverrideValid)
+                return true;
+
+            return DecodeModeFromUlaControl(beamUlaControl) == BbcScreenMode.Mode4
+                && BeamVerticalDisplayEnabled
+                && beamScanlineCounter != 0;
+        }
+
+        private void ApplyPendingPaletteWrites()
+        {
+            for (int i = 0; i < PaletteRegisterCount; i++)
+            {
+                if (!pendingPaletteWrites[i])
+                    continue;
+
+                paletteRegisters[i] = pendingPaletteRegisters[i];
+                pendingPaletteWrites[i] = false;
             }
         }
 
