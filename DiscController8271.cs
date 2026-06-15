@@ -31,9 +31,22 @@ namespace BBC
         private const byte ResultCommandError = 0x10;
         private const byte ResultDriveNotReady = 0x12;
         private const byte ResultSectorNotFound = 0x18;
-        private const int NmiReassertDelayCycles = 96;
+        private const int CpuClockHz = 2_000_000;
+        private const int DiscRotationsPerMinute = 300;
+        private const int DiscRotationsPerSecond = DiscRotationsPerMinute / 60;
+        private const int CyclesPerMillisecond = CpuClockHz / 1000;
+        private const int MotorSpinUpCycles = 500 * CyclesPerMillisecond;
+        private const int MotorSpinDownCycles = 3000 * CyclesPerMillisecond;
+        private const int TrackToTrackSeekCycles = 6 * CyclesPerMillisecond;
+        private const int HeadSettleCycles = 15 * CyclesPerMillisecond;
+        private const int RevolutionCycles = CpuClockHz / DiscRotationsPerSecond;
+        private const int SectorTransferCycles = CpuClockHz / (DiscRotationsPerSecond * SectorsPerTrack);
+        private const int NmiReassertDelayCycles = SectorTransferCycles / SectorSize;
         private readonly byte[][] drives = [[], [], [], []];
         private readonly bool[] driveMounted = new bool[4];
+        private readonly int[] currentTrack = new int[4];
+        private readonly bool[] motorSpinning = new bool[4];
+        private readonly long[] motorStartedAtCycle = new long[4];
         private readonly byte[] specialRegisters = new byte[0x40];
         private readonly Queue<byte> readData = new Queue<byte>();
         private readonly List<byte> writeData = new List<byte>();
@@ -45,8 +58,11 @@ namespace BBC
         private int selectedDrive;
         private string? mountedPath;
         private string? mountedFileName;
+        private long elapsedCycles;
         private bool nmiPending;
         private int nmiDelayCycles;
+        private int motorIdleCycles;
+        private volatile bool readLedActive;
         private bool busy;
         private bool imageDirty;
         private bool writeProtected;
@@ -81,6 +97,9 @@ namespace BBC
 
         /// <summary>Gets whether the controller is actively transferring bytes to or from the CPU.</summary>
         public bool TransferActive => readData.Count > 0 || pendingWrite is not null;
+
+        /// <summary>Gets whether a read transfer is currently lighting the drive activity LED.</summary>
+        public bool ReadLedActive => readLedActive;
 
         /// <summary>Gets the command that should be typed at BASIC after mounting.</summary>
         public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
@@ -148,6 +167,10 @@ namespace BBC
             drives[3] = [];
             driveMounted[1] = false;
             driveMounted[3] = false;
+            Array.Clear(currentTrack);
+            Array.Clear(motorSpinning);
+            Array.Clear(motorStartedAtCycle);
+            motorIdleCycles = 0;
             mountedPath = fullPath;
             mountedFileName = fileName;
             imageDirty = false;
@@ -206,6 +229,7 @@ namespace BBC
             writeData.Clear();
             parameters.Clear();
             pendingWrite = null;
+            readLedActive = false;
             command = 0;
             result = 0;
             resultAvailable = true;
@@ -220,6 +244,21 @@ namespace BBC
         /// <param name="cycles">The elapsed 6502 cycles.</param>
         public void Tick(int cycles)
         {
+            if (cycles <= 0)
+                return;
+
+            elapsedCycles += cycles;
+
+            if (motorIdleCycles > 0)
+            {
+                motorIdleCycles -= cycles;
+                if (motorIdleCycles <= 0)
+                {
+                    motorIdleCycles = 0;
+                    Array.Clear(motorSpinning);
+                }
+            }
+
             if (nmiDelayCycles <= 0)
                 return;
 
@@ -274,13 +313,13 @@ namespace BBC
         {
             byte status = 0;
 
-            if (busy)
+            if (busy || (nmiDelayCycles > 0 && resultAvailable))
                 status |= StatusBusy;
 
-            if (readData.Count > 0 || pendingWrite is not null)
+            if (nmiDelayCycles <= 0 && (readData.Count > 0 || pendingWrite is not null))
                 status |= StatusDataRequest;
 
-            if (resultAvailable)
+            if (nmiDelayCycles <= 0 && resultAvailable)
                 status |= StatusInterrupt | StatusResultFull;
 
             return status;
@@ -288,6 +327,9 @@ namespace BBC
 
         private byte ReadResult()
         {
+            if (nmiDelayCycles > 0)
+                return 0x00;
+
             resultAvailable = false;
             nmiPending = false;
             busy = readData.Count > 0 || pendingWrite is not null;
@@ -296,6 +338,9 @@ namespace BBC
 
         private byte ReadData()
         {
+            if (nmiDelayCycles > 0)
+                return 0x00;
+
             nmiPending = false;
 
             if (readData.Count == 0)
@@ -306,9 +351,14 @@ namespace BBC
             byte value = readData.Dequeue();
 
             if (readData.Count == 0)
+            {
+                readLedActive = false;
                 SetResult(ResultOk, NmiReassertDelayCycles);
+            }
             else
+            {
                 RequestNmi(NmiReassertDelayCycles);
+            }
 
             return value;
         }
@@ -319,6 +369,7 @@ namespace BBC
             if (readData.Count > 0)
             {
                readData.Clear();
+               readLedActive = false;
             }
 
             nmiPending = false;
@@ -406,17 +457,20 @@ namespace BBC
                     break;
 
                 case 0x1E:
-                    SetResult(HasSector(parameters[0], parameters[1]) ? ResultOk : ResultSectorNotFound);
+                    VerifySector(parameters[0], parameters[1]);
                     break;
 
                 case 0x1F:
-                    SetResult(HasSector(parameters[0], parameters[1]) ? ResultOk : ResultSectorNotFound);
+                    VerifySector(parameters[0], parameters[1]);
                     break;
 
                 case 0x23:
                     // Format track. Games/loaders generally only use this to probe
                     // controller capability; accept the command without modifying SSDs.
-                    SetResult(IsDriveReady(selectedDrive) ? ResultOk : ResultDriveNotReady);
+                    if (!IsDriveReady(selectedDrive))
+                        SetResult(ResultDriveNotReady);
+                    else
+                        SetResult(ResultOk, BeginMediaAccess(parameters[0], 0));
                     break;
 
                 case 0x2B:
@@ -492,7 +546,8 @@ namespace BBC
                     readData.Enqueue(image[offset + i]);
             }
 
-            RequestNmi();
+            readLedActive = readData.Count > 0;
+            RequestNmi(BeginMediaAccess(track, sector));
         }
 
         private void ScanSectors(int track, int sector, int sectorSize, int count)
@@ -517,7 +572,7 @@ namespace BBC
                 AdvanceSector(ref currentTrack, ref currentSector);
             }
 
-            SetResult(ResultOk);
+            SetResult(ResultOk, BeginMediaAccess(track, sector));
         }
 
         private void PrepareWrite(int track, int sector, int sectorSize, int count)
@@ -548,7 +603,7 @@ namespace BBC
 
             pendingWrite = new PendingWrite(selectedDrive, offsets.ToArray(), sectorSize, sectorSize * count);
             writeData.Clear();
-            RequestNmi();
+            RequestNmi(BeginMediaAccess(track, sector));
         }
 
         private void WriteSectors(PendingWrite write, List<byte> bytes)
@@ -587,12 +642,57 @@ namespace BBC
                 readData.Enqueue(1);
             }
 
-            RequestNmi();
+            readLedActive = readData.Count > 0;
+            RequestNmi(BeginMediaAccess(track, 0));
         }
 
         private bool HasSector(int track, int sector)
         {
             return TryGetOffset(selectedDrive, track, sector, out int offset) && offset + SectorSize <= drives[selectedDrive].Length;
+        }
+
+        private void VerifySector(int track, int sector)
+        {
+            if (!IsDriveReady(selectedDrive))
+            {
+                SetResult(ResultDriveNotReady);
+                return;
+            }
+
+            SetResult(HasSector(track, sector) ? ResultOk : ResultSectorNotFound, BeginMediaAccess(track, sector));
+        }
+
+        private int BeginMediaAccess(int track, int sector)
+        {
+            int delayCycles = 0;
+
+            if (!motorSpinning[selectedDrive])
+            {
+                motorSpinning[selectedDrive] = true;
+                motorStartedAtCycle[selectedDrive] = elapsedCycles;
+                delayCycles += MotorSpinUpCycles;
+            }
+
+            int seekTracks = Math.Abs(track - currentTrack[selectedDrive]);
+            if (seekTracks > 0)
+            {
+                delayCycles += (seekTracks * TrackToTrackSeekCycles) + HeadSettleCycles;
+                currentTrack[selectedDrive] = track;
+            }
+
+            motorIdleCycles = MotorSpinDownCycles;
+            return delayCycles + GetRotationalLatencyCycles(selectedDrive, sector, elapsedCycles + delayCycles);
+        }
+
+        private int GetRotationalLatencyCycles(int drive, int sector, long readyAtCycle)
+        {
+            int physicalSector = Math.Clamp(sector, 0, SectorsPerTrack - 1);
+            long phase = (readyAtCycle - motorStartedAtCycle[drive]) % RevolutionCycles;
+            if (phase < 0)
+                phase += RevolutionCycles;
+
+            int targetPhase = physicalSector * SectorTransferCycles;
+            return (int)((targetPhase - phase + RevolutionCycles) % RevolutionCycles);
         }
 
         private bool TryGetOffset(int drive, int track, int sector, out int offset)

@@ -185,6 +185,7 @@ namespace BBC
         private const byte BbcCapsLockKey = 0x40;
         private const int CapsLockTapPulseCycles = CpuClockHz / 20;
         private const int MinimumMatrixKeyPressMilliseconds = 40;
+        private const int HostDiscActivityLedMilliseconds = 180;
         private const uint DisplayBlack = 0xFF000000;
 
         private bool initialised;
@@ -213,6 +214,7 @@ namespace BBC
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
         private long keyboardInputEnabledAtTicks;
+        private long hostDiscActivityLedUntilTicks;
         private int capsLockTapPulseCycles;
         private bool capsLockTapPressed;
         private bool hostCapsLockState;
@@ -249,6 +251,7 @@ namespace BBC
             systemVia = new SystemVia(Sound);
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
+            hostFilingSystem.DiscImageLoadActivity = PulseHostDiscActivityLed;
             discController = new DiscController8271();
             Video = new Video(Memory.Memory);
             systemVia.ExternalVsyncLineEnabled = true;
@@ -319,6 +322,7 @@ namespace BBC
                 QueuePendingBootScriptLine();
                 RenderDisplayFrame(Display);
                 DrainHostScreenshotRequests(Display);
+                Display.DiscActivityLedActive = discController.ReadLedActive || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
                 Display.Present();
 
                 WaitUntil(nextFrame);
@@ -454,6 +458,7 @@ namespace BBC
             systemVia.ExternalVsyncLineEnabled = true;
             Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
             discController.Reset();
+            hostDiscActivityLedUntilTicks = 0;
             joystickState = default;
             adc.Reset();
             UpdateAdcChannels();
@@ -482,9 +487,14 @@ namespace BBC
             Video.Render(display);
         }
 
+        private void PulseHostDiscActivityLed()
+        {
+            long pulseTicks = (long)HostDiscActivityLedMilliseconds * Stopwatch.Frequency / 1000;
+            Interlocked.Exchange(ref hostDiscActivityLedUntilTicks, Stopwatch.GetTimestamp() + pulseTicks);
+        }
+
         private void AdvanceDeviceCycles(int cycles)
         {
-            Cpu.PacingEnabled = !discController.TransferActive;
             Sound.Tick(cycles);
             systemVia.Tick(cycles);
             Video.Tick(cycles);

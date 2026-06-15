@@ -29,6 +29,7 @@ namespace BBC
         private string? mountedPath;
 
         private string? mountedFileName;
+        private bool mountedDiscImage;
 
         /// <summary>Initializes a host filing system shim.</summary>
         /// <param name="memory">The CPU-visible memory bus.</param>
@@ -49,6 +50,9 @@ namespace BBC
         /// <summary>Gets or sets whether host-backed *RUN/FSCV execution shortcuts are enabled.</summary>
         public bool RunCommandInterceptionEnabled { get; set; } = true;
 
+        /// <summary>Called after a host-backed disc-image load is copied into memory.</summary>
+        public Action? DiscImageLoadActivity { get; set; }
+
         /// <summary>Queues text into the emulated keyboard buffer for soft-key expansion.</summary>
         public Action<string>? QueueKeyboardText { get; set; }
 
@@ -63,6 +67,7 @@ namespace BBC
             files = [];
             mountedPath = null;
             mountedFileName = null;
+            mountedDiscImage = false;
             RunCommandInterceptionEnabled = true;
         }
 
@@ -78,7 +83,8 @@ namespace BBC
                 throw new FileNotFoundException($"Disc/file not found: {fullPath}", fullPath);
 
             byte[] data = File.ReadAllBytes(fullPath);
-            files = IsSsdImage(fullPath, data)
+            mountedDiscImage = IsSsdImage(fullPath, data);
+            files = mountedDiscImage
                 ? ReadSsdFiles(data)
                 : [ReadRawHostFile(fullPath, data)];
 
@@ -129,6 +135,8 @@ namespace BBC
             WriteCatalogueInfo(controlBlock, file);
             cpu.registers.A = 1;
             ReturnFromSubroutine(cpu);
+            if (action == 0xFF)
+                NotifyDiscImageLoadActivity();
             return true;
         }
 
@@ -211,6 +219,7 @@ namespace BBC
                     memory.Memory[(targetAddress + i) & 0xFFFF] = loadFile.Data[i];
 
                 ReturnFromSubroutine(cpu);
+                NotifyDiscImageLoadActivity();
                 return true;
             }
 
@@ -230,6 +239,7 @@ namespace BBC
                 memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
 
             cpu.registers.PC = file.ExecutionAddress;
+            NotifyDiscImageLoadActivity();
             return true;
         }
 
@@ -256,6 +266,7 @@ namespace BBC
                 memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
 
             cpu.registers.PC = file.ExecutionAddress;
+            NotifyDiscImageLoadActivity();
             return true;
         }
 
@@ -444,6 +455,12 @@ namespace BBC
             }
 
             return files.Length == 1 ? files[0] : null;
+        }
+
+        private void NotifyDiscImageLoadActivity()
+        {
+            if (mountedDiscImage)
+                DiscImageLoadActivity?.Invoke();
         }
 
         private static string GetLeafName(string name)

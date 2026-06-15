@@ -27,6 +27,8 @@ namespace BBC
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
         private const uint ScanlineColour = 0x60000000;
+        private const int DriveLedDiameter = 8;
+        private const int DriveLedMargin = 8;
 
         private readonly uint[] frameBuffer;
         private readonly Queue<byte> pendingInput = new Queue<byte>();
@@ -66,6 +68,9 @@ namespace BBC
 
         /// <summary>Gets whether the host keyboard Caps Lock state is currently enabled.</summary>
         public bool HostCapsLockEnabled => hostCapsLockEnabled;
+
+        /// <summary>Gets or sets whether the disc activity LED overlay is lit.</summary>
+        public bool DiscActivityLedActive { get; set; }
 
         /// <summary>Initializes a new SDL display window.</summary>
         /// <param name="title">Window title.</param>
@@ -245,7 +250,27 @@ namespace BBC
             if (scanlinesEnabled && scanlineTexture != IntPtr.Zero)
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
+            if (DiscActivityLedActive)
+                DrawDriveLed();
+
             SDL_RenderPresent(renderer);
+        }
+
+        private void DrawDriveLed()
+        {
+            int radius = DriveLedDiameter / 2;
+            int centerX = viewportRect.X + viewportRect.W - DriveLedMargin - radius;
+            int centerY = viewportRect.Y + DriveLedMargin + radius;
+
+            _ = SDL_SetRenderDrawColor(renderer, 220, 0, 0, 255);
+            for (int y = -radius; y < radius; y++)
+            {
+                int halfWidth = (int)Math.Sqrt((radius * radius) - (y * y));
+                SdlRect row = new SdlRect(centerX - halfWidth, centerY + y, halfWidth * 2, 1);
+                _ = SDL_RenderFillRect(renderer, ref row);
+            }
+
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         }
 
         /// <summary>Builds a static overlay texture that darkens every other row for a CRT scanline look.</summary>
@@ -1047,6 +1072,9 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SDL_RenderCopy")]
         private static extern int SDL_RenderCopy(IntPtr renderer, IntPtr texture, IntPtr srcrect, ref SdlRect dstrect);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_RenderFillRect(IntPtr renderer, ref SdlRect rect);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_RenderPresent(IntPtr renderer);
