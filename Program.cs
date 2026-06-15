@@ -20,12 +20,6 @@ namespace BBC
     {
         private static void Main(string[] args)
         {
-            if (TestRomRunner.TryRunFromArgs(args, out int testRomExitCode))
-            {
-                Environment.ExitCode = testRomExitCode;
-                return;
-            }
-
             using Emulator emulator = new Emulator();
             StartupOptions options = ParseStartupOptions(args);
 
