@@ -446,11 +446,18 @@ namespace BBC
 
         private HostFile? FindFile(string requestedName)
         {
-            string normalized = NormalizeName(requestedName);
+            string normalized = NormalizeDiscName(requestedName).ToUpperInvariant();
 
             foreach (HostFile file in files)
             {
-                if (NormalizeName(file.Name) == normalized || NormalizeName(GetLeafName(file.Name)) == normalized)
+                if (NormalizeDiscName(file.Name).ToUpperInvariant() == normalized)
+                    return file;
+            }
+
+            string fallbackNormalized = NormalizeName(requestedName);
+            foreach (HostFile file in files)
+            {
+                if (NormalizeName(file.Name) == fallbackNormalized || NormalizeName(GetLeafName(file.Name)) == fallbackNormalized)
                     return file;
             }
 
