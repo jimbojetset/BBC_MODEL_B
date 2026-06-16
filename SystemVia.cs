@@ -101,9 +101,6 @@ namespace BBC
         /// <summary>Gets the number of emulated 50 Hz video frames since reset.</summary>
         public int FrameCounter => Volatile.Read(ref frameCounter);
 
-        /// <summary>Gets the approximate CPU cycles elapsed since the current 50 Hz frame started.</summary>
-        public int FrameCpuCycle => Math.Clamp((vsyncCycleCounter * 2) + peripheralCycleRemainder, 0, (VsyncPeripheralCycles * 2) - 1);
-
         /// <summary>Gets the currently selected video RAM start address.</summary>
         public int ScreenMemoryStart => CurrentScreenMemoryWindow.Start;
 
@@ -194,9 +191,7 @@ namespace BBC
             if (timer2Running)
                 TickTimer2(peripheralCycles);
 
-            if (externalVsyncLineEnabled)
-                vsyncCycleCounter += peripheralCycles;
-            else
+            if (!externalVsyncLineEnabled)
                 TickVsync(peripheralCycles);
         }
 

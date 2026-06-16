@@ -1343,7 +1343,7 @@ namespace BBC
         {
             if (Video.IsSheilaAddress(address))
             {
-                Video.WriteSheila(address, value, systemVia.FrameCpuCycle);
+                Video.WriteSheila(address, value);
                 return;
             }
 

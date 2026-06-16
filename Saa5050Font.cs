@@ -66,36 +66,6 @@ namespace BBC
             throw new InvalidOperationException("SAA5050 glyph table contains an invalid row code.");
         }
 
-        public static void Draw(uint[] pixels, int width, int height, int cellX, int cellY, int cellHeight, byte character, uint colour, bool doubleHeight, bool doubleHeightBottom)
-        {
-            character = (byte)(character & 0x7F);
-            if (character < 32)
-                character = 32;
-
-            int glyphOffset = (character - 32) * GlyphRowsPerCharacter;
-            int sourceYOffset = doubleHeightBottom ? cellHeight : 0;
-
-            for (int outputY = 0; outputY < RoundedHeight; outputY++)
-            {
-                ushort bits = GetRoundedRow(glyphOffset, outputY);
-
-                for (int outputX = 0; outputX < RoundedWidth; outputX++)
-                {
-                    if ((bits & (0x800 >> outputX)) == 0)
-                        continue;
-
-                    int pixelX = cellX + GlyphXOffset + outputX;
-                    int pixelY = cellY + GlyphYOffset + outputY - sourceYOffset;
-                    if (doubleHeight)
-                        pixelY = cellY + GlyphYOffset + (outputY * 2) - sourceYOffset;
-
-                    int verticalPixels = doubleHeight ? 2 : 1;
-                    for (int yy = 0; yy < verticalPixels; yy++)
-                        Plot(pixels, width, height, pixelX, pixelY + yy, colour);
-                }
-            }
-        }
-
         public static ushort GetAlphanumericRowMask(byte character, int row)
         {
             character = (byte)(character & 0x7F);
@@ -212,10 +182,5 @@ namespace BBC
             return false;
         }
 
-        private static void Plot(uint[] pixels, int width, int height, int x, int y, uint colour)
-        {
-            if ((uint)x < (uint)width && (uint)y < (uint)height)
-                pixels[(y * width) + x] = colour;
-        }
     }
 }

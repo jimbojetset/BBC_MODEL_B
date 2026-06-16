@@ -506,7 +506,7 @@ namespace BBC
 
         private void RenderBeamTeletextCharacter(int offset, int y)
         {
-            beamTeletext.Render(beamRenderFrame, offset, BeamFramebufferWidth, BeamFramebufferHeight);
+            beamTeletext.Render(beamRenderFrame, offset, BeamFramebufferWidth);
             RecordBeamActiveRun(beamBitmapX, y, beamPixelsPerCharacter, doubledLines: false);
         }
 
@@ -567,13 +567,6 @@ namespace BBC
                 colour &= 0x07;
 
             return BbcColours[colour];
-        }
-
-        private void FillBeamRun(int offset, int pixelCount, uint colour)
-        {
-            int visiblePixels = Math.Min(pixelCount, BeamFramebufferWidth - beamBitmapX);
-            for (int i = 0; i < visiblePixels; i++)
-                beamRenderFrame[offset + i] = colour;
         }
 
         private void HandleBeamCursor(int offset, bool doubledLines)
@@ -889,7 +882,7 @@ namespace BBC
         /// <summary>Writes a byte to the CRTC or Video ULA register area.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <param name="value">The value to write.</param>
-        public void WriteSheila(ushort address, byte value, int frameCpuCycle = 0)
+        public void WriteSheila(ushort address, byte value)
         {
             switch (address)
             {
@@ -1099,11 +1092,6 @@ namespace BBC
             };
         }
 
-        private static int GetCrtcScanlinesPerCharacter(byte[] registers)
-        {
-            return (registers[CrtcScanLinesPerCharacterRegister] & 0x1F) + 1;
-        }
-
         private sealed class TeletextChip
         {
             private enum GlyphSet
@@ -1228,7 +1216,7 @@ namespace BBC
                 rowAddressBit0 = level;
             }
 
-            public void Render(uint[] buffer, int offset, int width, int height)
+            public void Render(uint[] buffer, int offset, int width)
             {
                 if (offset < 0 || offset >= buffer.Length)
                     return;
@@ -1273,7 +1261,7 @@ namespace BBC
                 uint background = colours[backgroundColour & 0x07];
                 if ((flashThisCell && flashOn) || (secondHalfOfDoubleHeight && !doubleHeight))
                 {
-                    FillRun(buffer, offset, width, height, background);
+                    FillRun(buffer, offset, width, background);
                     return;
                 }
 
@@ -1387,7 +1375,7 @@ namespace BBC
                 };
             }
 
-            private static void FillRun(uint[] buffer, int offset, int width, int height, uint colour)
+            private static void FillRun(uint[] buffer, int offset, int width, uint colour)
             {
                 int rowStart = offset - (offset % width);
                 int maxOffset = Math.Min(rowStart + width, buffer.Length);

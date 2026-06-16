@@ -403,20 +403,6 @@ namespace BBC
             return noisePolarity;
         }
 
-        private void QueuePowerOnTone()
-        {
-            lock (syncRoot)
-            {
-                if (powerOnToneQueued)
-                    return;
-
-                powerOnToneTotalSamples = (int)(PowerOnToneDurationSeconds * SampleRate);
-                powerOnToneSamplesRemaining = powerOnToneTotalSamples;
-                powerOnTonePhase = 0;
-                powerOnToneQueued = true;
-            }
-        }
-
         private double AdvancePowerOnTone()
         {
             if (powerOnToneSamplesRemaining <= 0 || powerOnToneTotalSamples <= 0)
