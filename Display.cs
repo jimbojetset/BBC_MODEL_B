@@ -129,8 +129,8 @@ namespace BBC
             ThrowIfNull(texture, "SDL_CreateTexture");
 
             scanlineTexture = CreateScanlineTexture(width, height);
-            emptyDriveGlyphTexture = CreateDriveGlyphTexture(0xFF808080);
-            mountedDriveGlyphTexture = CreateDriveGlyphTexture(0xFF00A040);
+            emptyDriveGlyphTexture = CreateDriveGlyphTexture(0xFF404040);
+            mountedDriveGlyphTexture = CreateDriveGlyphTexture(0xFF005020);
 
             SDL_StartTextInput();
             hostCapsLockEnabled = IsHostCapsLockEnabled();
