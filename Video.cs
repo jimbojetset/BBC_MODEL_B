@@ -1136,6 +1136,7 @@ namespace BBC
             private GlyphSet nextGlyphSet;
             private GlyphSet currentGlyphSet;
             private GlyphSet heldGlyphSet;
+            private const int TeletextCellWidth = 16;
 
             public TeletextChip(uint[] colours)
             {
@@ -1276,11 +1277,12 @@ namespace BBC
                     return;
                 }
 
-                ushort mask = GetRowMask(data, scanline, currentGlyphSet);
                 uint foreground = colours[previousColour & 0x07];
                 int rowStart = offset - (offset % width);
                 int maxOffset = Math.Min(rowStart + width, buffer.Length);
-                for (int pixel = 0; pixel < 16 && offset + pixel < maxOffset; pixel++)
+
+                ushort mask = GetRowMask(data, scanline, currentGlyphSet);
+                for (int pixel = 0; pixel < TeletextCellWidth && offset + pixel < maxOffset; pixel++)
                     buffer[offset + pixel] = (mask & (1 << (15 - pixel))) != 0 ? foreground : background;
             }
 
@@ -1389,7 +1391,7 @@ namespace BBC
             {
                 int rowStart = offset - (offset % width);
                 int maxOffset = Math.Min(rowStart + width, buffer.Length);
-                for (int pixel = 0; pixel < 16 && offset + pixel < maxOffset; pixel++)
+                for (int pixel = 0; pixel < TeletextCellWidth && offset + pixel < maxOffset; pixel++)
                     buffer[offset + pixel] = colour;
             }
         }

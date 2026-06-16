@@ -23,8 +23,9 @@ namespace BBC
         private const int GlyphRowsPerCharacter = 10;
         private const int RoundedWidth = SourceCellWidth * 2;
         private const int RoundedHeight = SourceCellHeight * 2;
-        private const int GlyphXOffset = 2;
-        private const int GlyphYOffset = 0;
+        private const int GlyphXOffset = 1;
+        private const int GlyphYOffset = 2;
+        private const int TeletextCellWidth = 16;
 
         private const string GlyphRowsEncoded =
             "AAAAAAAAAAEEEEEAEAAAKKKAAAAAAAGJIcIIfAAAOVUOFVOAAAYZCEITDAAAIUUIVSNAAAEEEAAAAAAA" +
@@ -101,7 +102,10 @@ namespace BBC
             if (character < 32)
                 character = 32;
 
-            row = Math.Clamp(row, 0, RoundedHeight - 1);
+            row -= GlyphYOffset;
+            if ((uint)row >= RoundedHeight)
+                return 0;
+
             ushort glyphRow = GetRoundedRow((character - 32) * GlyphRowsPerCharacter, row);
             ushort result = 0;
 
@@ -112,6 +116,8 @@ namespace BBC
 
                 int pixel = GlyphXOffset + outputX;
                 result |= (ushort)(1 << (15 - pixel));
+                if (pixel + 1 < TeletextCellWidth)
+                    result |= (ushort)(1 << (14 - pixel));
             }
 
             return result;
@@ -122,26 +128,25 @@ namespace BBC
             int value = character & 0x7F;
             int pattern = (value & 0x1F) | ((value & 0x40) >> 1);
             row = Math.Clamp(row, 0, RoundedHeight - 1);
-            int sourceY = row >> 1;
             ushort result = 0;
 
-            for (int outputX = 0; outputX < RoundedWidth; outputX++)
+            for (int outputX = 0; outputX < TeletextCellWidth; outputX++)
             {
-                int sourceX = outputX >> 1;
-                int block = (sourceY < 3 ? 0 : sourceY < 7 ? 2 : 4) + (sourceX < 3 ? 0 : 1);
+                int block = (row < 6 ? 0 : row < 14 ? 2 : 4) + (outputX < 8 ? 0 : 1);
                 if ((pattern & (1 << block)) == 0)
                     continue;
 
                 if (separated)
                 {
-                    int blockStartX = sourceX < 3 ? 0 : 3;
-                    int blockEndY = sourceY < 3 ? 2 : sourceY < 7 ? 6 : 9;
-                    if (sourceX == blockStartX || sourceY == blockEndY)
+                    int blockStartX = outputX < 8 ? 0 : 8;
+                    int blockStartY = row < 6 ? 0 : row < 14 ? 6 : 14;
+                    int blockEndX = blockStartX + 7;
+                    int blockEndY = row < 6 ? 5 : row < 14 ? 13 : 19;
+                    if (outputX == blockStartX || outputX == blockEndX || row == blockStartY || row == blockEndY)
                         continue;
                 }
 
-                int pixel = GlyphXOffset + outputX;
-                result |= (ushort)(1 << (15 - pixel));
+                result |= (ushort)(1 << (15 - outputX));
             }
 
             return result;
