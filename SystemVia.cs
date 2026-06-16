@@ -28,6 +28,8 @@ namespace BBC
         // CB1 input on the system VIA carries µPD7002 EOC (negative edge = conversion complete).
         private const byte InterruptFlagAdcEoc = 0x10;
         private const int VsyncPeripheralCycles = 20_000;
+        private const int Timer1ReloadExtraCycles = 1;
+        private const int Timer1LoadExtraCycles = 128;
         private const byte InterruptSummary = 0x80;
         private readonly Sound sound;
         private readonly byte[] registers = new byte[16];
@@ -192,7 +194,9 @@ namespace BBC
             if (timer2Running)
                 TickTimer2(peripheralCycles);
 
-            if (!externalVsyncLineEnabled)
+            if (externalVsyncLineEnabled)
+                vsyncCycleCounter += peripheralCycles;
+            else
                 TickVsync(peripheralCycles);
         }
 
@@ -260,7 +264,7 @@ namespace BBC
 
                 case 0x5:
                     timer1Latch = (ushort)((value << 8) | (timer1Latch & 0x00FF));
-                    timer1Counter = timer1Latch;
+                    LoadTimer1Counter();
                     timer1Running = true;
                     registers[0x7] = value;
                     ClearInterrupt(InterruptFlagTimer1);
@@ -317,13 +321,23 @@ namespace BBC
 
                 if (IsTimer1FreeRunning())
                 {
-                    timer1Counter = timer1Latch;
+                    ReloadTimer1Counter();
                 }
                 else
                 {
                     timer1Running = false;
                 }
             }
+        }
+
+        private void ReloadTimer1Counter()
+        {
+            timer1Counter = AddTimerOffset(timer1Latch, Timer1ReloadExtraCycles);
+        }
+
+        private void LoadTimer1Counter()
+        {
+            timer1Counter = AddTimerOffset(timer1Latch, Timer1LoadExtraCycles);
         }
 
         private void TickTimer2(int cycles)
@@ -425,6 +439,11 @@ namespace BBC
         private bool IsTimer1FreeRunning()
         {
             return (registers[0xB] & 0x40) != 0;
+        }
+
+        private static ushort AddTimerOffset(ushort value, int offset)
+        {
+            return (ushort)Math.Clamp(value + offset, 0, 0xFFFF);
         }
 
         private static byte ReadPort(byte output, byte direction)

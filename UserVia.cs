@@ -22,6 +22,8 @@ namespace BBC
         private const byte InterruptSummary = 0x80;
         private const int FloatingInputPollWindowCycles = 512;
         private const int FloatingInputChangeCycles = 40_000;
+        private const int Timer1ReloadExtraCycles = 1;
+        private const int Timer1LoadExtraCycles = 128;
         private readonly byte[] registers = new byte[16];
         private byte interruptFlags;
         private byte interruptEnable;
@@ -156,7 +158,7 @@ namespace BBC
 
                 case 0x5:
                     timer1Latch = (ushort)((value << 8) | (timer1Latch & 0x00FF));
-                    timer1Counter = timer1Latch;
+                    LoadTimer1Counter();
                     timer1Running = true;
                     registers[0x7] = value;
                     ClearInterrupt(InterruptFlagTimer1);
@@ -215,8 +217,25 @@ namespace BBC
 
                 remaining -= timer1Counter + 1;
                 SetInterrupt(InterruptFlagTimer1);
-                timer1Counter = timer1Latch;
+                if (IsTimer1FreeRunning())
+                {
+                    ReloadTimer1Counter();
+                }
+                else
+                {
+                    timer1Running = false;
+                }
             }
+        }
+
+        private void ReloadTimer1Counter()
+        {
+            timer1Counter = AddTimerOffset(timer1Latch, Timer1ReloadExtraCycles);
+        }
+
+        private void LoadTimer1Counter()
+        {
+            timer1Counter = AddTimerOffset(timer1Latch, Timer1LoadExtraCycles);
         }
 
         private void TickTimer2(int cycles)
@@ -259,6 +278,16 @@ namespace BBC
         private void ClearInterrupt(byte mask)
         {
             interruptFlags &= unchecked((byte)~mask);
+        }
+
+        private static ushort AddTimerOffset(ushort value, int offset)
+        {
+            return (ushort)Math.Clamp(value + offset, 0, 0xFFFF);
+        }
+
+        private bool IsTimer1FreeRunning()
+        {
+            return (registers[0xB] & 0x40) != 0;
         }
 
         private byte ReadPortB()
