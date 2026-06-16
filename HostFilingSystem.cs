@@ -22,6 +22,7 @@ namespace BBC
     {
         private const ushort OsfileEntry = 0xFFDD;
         private const ushort OscliEntry = 0xFFF7;
+        private const ushort OsbyteEntry = 0xFFF4;
         private const ushort FscvVector = 0x021E;
         private const ushort DefaultBasicLoadAddress = 0x1900;
         private readonly FlatMemoryBus memory;
@@ -170,9 +171,11 @@ namespace BBC
                 return true;
             }
 
-            if (TryHandleFxCommand(command))
+            if (TryHandleFxCommand(command, cpu, out bool returnFromOscli))
             {
-                ReturnFromSubroutine(cpu);
+                if (returnFromOscli)
+                    ReturnFromSubroutine(cpu);
+
                 return true;
             }
 
@@ -302,14 +305,15 @@ namespace BBC
             return trimmed.StartsWith("T.", StringComparison.OrdinalIgnoreCase);
         }
 
-        private bool TryHandleFxCommand(string command)
+        private bool TryHandleFxCommand(string command, CPU_6502 cpu, out bool returnFromOscli)
         {
+            returnFromOscli = true;
             string trimmed = command.TrimStart();
             if (trimmed.Length < 2 || !string.Equals(trimmed[..2], "FX", StringComparison.OrdinalIgnoreCase))
                 return false;
 
             string arguments = trimmed.Length == 2 ? string.Empty : trimmed[2..].Trim();
-            if (!TryParseFxArguments(arguments, out int a, out _, out int y))
+            if (!TryParseFxArguments(arguments, out int a, out int x, out int y))
                 return false;
 
             // OSBYTE 16 selects how many analogue (ADC) channels the MOS samples in the
@@ -320,16 +324,22 @@ namespace BBC
             if ((a & 0xFF) == 0x10)
                 return true;
 
-            // Only the softkey-insertion OSBYTE (*FX 138) is emulated at the host
-            // level so queued keystrokes reach the emulated keyboard buffer. Every
-            // other *FX command must fall through to the real MOS so its OSBYTE side
-            // effects (enabling the vsync event, cursor-key state, escape handling,
-            // etc.) actually take place. Swallowing them broke games such as
-            // YieArKungFu, which relies on *FX 14,4 to drive its raster-split palette.
-            if ((a & 0xFF) != 0x8A)
-                return false;
+            if ((a & 0xFF) == 0x8A)
+            {
+                // Soft-key insertion is emulated at the host level so queued text
+                // reaches the emulated keyboard buffer.
+                InsertSoftKey((byte)y);
+                return true;
+            }
 
-            InsertSoftKey((byte)y);
+            // Parsed *FX commands are direct OSBYTE calls. Transfer to OSBYTE with the
+            // original OSCLI return address still on the stack, so compact forms such
+            // as *FX9,5 get real MOS side effects without relying on MOS OSCLI parsing.
+            cpu.registers.A = (byte)a;
+            cpu.registers.X = (byte)x;
+            cpu.registers.Y = (byte)y;
+            cpu.registers.PC = OsbyteEntry;
+            returnFromOscli = false;
             return true;
         }
 
