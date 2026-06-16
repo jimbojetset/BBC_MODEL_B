@@ -533,6 +533,7 @@ namespace BBC
         private bool HandleHostFirmwareHooks()
         {
             return TryHandleSidewaysRomLanguageCommand()
+                || hostFilingSystem.TryHandleOsword(Cpu)
                 || hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
                 || hostFilingSystem.TryHandleFscv(Cpu)

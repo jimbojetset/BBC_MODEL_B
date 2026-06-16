@@ -25,8 +25,12 @@ namespace BBC
         private const ushort OsbyteEntry = 0xFFF4;
         private const ushort FscvVector = 0x021E;
         private const ushort DefaultBasicLoadAddress = 0x1900;
+        private const ushort OswordEntry = 0xFFF1;
+        private const int SectorSize = 256;
+        private const int SectorsPerTrack = 10;
         private readonly FlatMemoryBus memory;
         private HostFile[] files = [];
+        private byte[] mountedImage = [];
         private string? mountedPath;
 
         private string? mountedFileName;
@@ -66,6 +70,7 @@ namespace BBC
         public void Unmount()
         {
             files = [];
+            mountedImage = [];
             mountedPath = null;
             mountedFileName = null;
             mountedDiscImage = false;
@@ -85,6 +90,7 @@ namespace BBC
 
             byte[] data = File.ReadAllBytes(fullPath);
             mountedDiscImage = IsSsdImage(fullPath, data);
+            mountedImage = mountedDiscImage ? data : [];
             files = mountedDiscImage
                 ? ReadSsdFiles(data)
                 : [ReadRawHostFile(fullPath, data)];
@@ -127,7 +133,7 @@ namespace BBC
                 uint requestedAddress = ReadDword(controlBlock + 2);
                 ushort targetAddress = memory.Memory[(controlBlock + 6) & 0xFFFF] == 0
                     ? (ushort)requestedAddress
-                    : file.LoadAddress;
+                    : ToCpuAddress(file.LoadAddress, DefaultBasicLoadAddress);
 
                 for (int i = 0; i < file.Data.Length; i++)
                     memory.Memory[(targetAddress + i) & 0xFFFF] = file.Data[i];
@@ -138,6 +144,46 @@ namespace BBC
             ReturnFromSubroutine(cpu);
             if (action == 0xFF)
                 NotifyDiscImageLoadActivity();
+            return true;
+        }
+
+        public bool TryHandleOsword(CPU_6502 cpu)
+        {
+            if ((cpu.registers.PC & 0xFFFF) != OswordEntry || cpu.registers.A != 0x7F || !mountedDiscImage || mountedImage.Length == 0)
+                return false;
+
+            ushort controlBlock = (ushort)(cpu.registers.X | (cpu.registers.Y << 8));
+            byte parameterCount = memory.Memory[(controlBlock + 5) & 0xFFFF];
+            if (parameterCount < 3)
+                return false;
+
+            byte command = memory.Memory[(controlBlock + 6) & 0xFFFF];
+            byte opcode = (byte)(command & 0x3F);
+            if (opcode is not (0x07 or 0x13 or 0x17))
+                return false;
+
+            uint dataAddress = ReadDword(controlBlock + 1);
+            int track = memory.Memory[(controlBlock + 7) & 0xFFFF];
+            int sector = memory.Memory[(controlBlock + 8) & 0xFFFF];
+            byte sectorSizeAndCount = memory.Memory[(controlBlock + 9) & 0xFFFF];
+            int sectorSize = GetSectorSize(sectorSizeAndCount);
+            int count = GetSectorCount(sectorSizeAndCount);
+            ushort targetAddress = (ushort)dataAddress;
+
+            for (int sectorIndex = 0; sectorIndex < count; sectorIndex++)
+            {
+                if (!TryGetSectorOffset(track, sector, out int offset) || offset + sectorSize > mountedImage.Length)
+                    return false;
+
+                for (int i = 0; i < sectorSize; i++)
+                    memory.Memory[(targetAddress + (sectorIndex * sectorSize) + i) & 0xFFFF] = mountedImage[offset + i];
+
+                AdvanceSector(ref track, ref sector);
+            }
+
+            cpu.registers.A = 0;
+            ReturnFromSubroutine(cpu);
+            NotifyDiscImageLoadActivity();
             return true;
         }
 
@@ -217,7 +263,7 @@ namespace BBC
                 }
 
                 HostFile loadFile = matchedLoadFile.Value;
-                ushort targetAddress = loadAddress ?? loadFile.LoadAddress;
+                ushort targetAddress = loadAddress.GetValueOrDefault(ToCpuAddress(loadFile.LoadAddress, DefaultBasicLoadAddress));
                 for (int i = 0; i < loadFile.Data.Length; i++)
                     memory.Memory[(targetAddress + i) & 0xFFFF] = loadFile.Data[i];
 
@@ -238,10 +284,11 @@ namespace BBC
             }
 
             HostFile file = matchedFile.Value;
+            ushort runLoadAddress = ToCpuAddress(file.LoadAddress, DefaultBasicLoadAddress);
             for (int i = 0; i < file.Data.Length; i++)
-                memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
+                memory.Memory[(runLoadAddress + i) & 0xFFFF] = file.Data[i];
 
-            cpu.registers.PC = file.ExecutionAddress;
+            cpu.registers.PC = ToCpuAddress(file.ExecutionAddress, DefaultBasicLoadAddress);
             NotifyDiscImageLoadActivity();
             return true;
         }
@@ -265,10 +312,11 @@ namespace BBC
             }
 
             HostFile file = matchedFile.Value;
+            ushort fscvLoadAddress = ToCpuAddress(file.LoadAddress, DefaultBasicLoadAddress);
             for (int i = 0; i < file.Data.Length; i++)
-                memory.Memory[(file.LoadAddress + i) & 0xFFFF] = file.Data[i];
+                memory.Memory[(fscvLoadAddress + i) & 0xFFFF] = file.Data[i];
 
-            cpu.registers.PC = file.ExecutionAddress;
+            cpu.registers.PC = ToCpuAddress(file.ExecutionAddress, DefaultBasicLoadAddress);
             NotifyDiscImageLoadActivity();
             return true;
         }
@@ -457,6 +505,7 @@ namespace BBC
         private HostFile? FindFile(string requestedName)
         {
             string normalized = NormalizeDiscName(requestedName).ToUpperInvariant();
+            string leafNormalized = NormalizeName(GetLeafName(requestedName));
 
             foreach (HostFile file in files)
             {
@@ -467,8 +516,15 @@ namespace BBC
             string fallbackNormalized = NormalizeName(requestedName);
             foreach (HostFile file in files)
             {
-                if (NormalizeName(file.Name) == fallbackNormalized || NormalizeName(GetLeafName(file.Name)) == fallbackNormalized)
+                string fileNormalized = NormalizeName(file.Name);
+                string fileLeafNormalized = NormalizeName(GetLeafName(file.Name));
+                if (fileNormalized == fallbackNormalized
+                    || fileLeafNormalized == fallbackNormalized
+                    || fileNormalized == leafNormalized
+                    || fileLeafNormalized == leafNormalized)
+                {
                     return file;
+                }
             }
 
             return files.Length == 1 ? files[0] : null;
@@ -482,8 +538,19 @@ namespace BBC
 
         private static string GetLeafName(string name)
         {
-            int dot = name.IndexOf('.');
-            return dot < 0 ? name : name[(dot + 1)..];
+            string trimmed = name.Trim().Trim('"');
+            if (trimmed.StartsWith('/'))
+                trimmed = trimmed[1..].TrimStart();
+
+            int dot = trimmed.LastIndexOf('.');
+            if (dot >= 0 && dot + 1 < trimmed.Length)
+                return trimmed[(dot + 1)..];
+
+            int colon = trimmed.LastIndexOf(':');
+            if (colon >= 0 && colon + 1 < trimmed.Length)
+                return trimmed[(colon + 1)..];
+
+            return trimmed;
         }
 
         private static bool TryParseRunCommand(string command, out string fileName)
@@ -643,6 +710,47 @@ namespace BBC
                     || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase));
         }
 
+        private bool TryGetSectorOffset(int track, int sector, out int offset)
+        {
+            if (track < 0 || sector < 0 || sector >= SectorsPerTrack)
+            {
+                offset = 0;
+                return false;
+            }
+
+            int logicalSector = (track * SectorsPerTrack) + sector;
+            offset = logicalSector * SectorSize;
+            return offset >= 0 && offset < mountedImage.Length;
+        }
+
+        private static void AdvanceSector(ref int track, ref int sector)
+        {
+            sector++;
+            if (sector < SectorsPerTrack)
+                return;
+
+            sector = 0;
+            track++;
+        }
+
+        private static int GetSectorSize(byte sectorSizeAndCount)
+        {
+            int sizeCode = sectorSizeAndCount >> 5;
+            return sizeCode switch
+            {
+                0 => 128,
+                1 => 256,
+                2 => 512,
+                _ => 1024
+            };
+        }
+
+        private static int GetSectorCount(byte sectorSizeAndCount)
+        {
+            int count = sectorSizeAndCount & 0x1F;
+            return count == 0 ? SectorsPerTrack : count;
+        }
+
         private static HostFile ReadRawHostFile(string path, byte[] data)
         {
             string name = Path.GetFileNameWithoutExtension(path);
@@ -675,7 +783,7 @@ namespace BBC
 
                 byte[] data = new byte[length];
                 Array.Copy(image, start, data, 0, length);
-                result.Add(new HostFile(name, ToCpuAddress(load, DefaultBasicLoadAddress), ToCpuAddress(exec, DefaultBasicLoadAddress), data));
+                result.Add(new HostFile(name, load, exec, data));
             }
 
             return result.ToArray();
@@ -729,7 +837,7 @@ namespace BBC
             return string.IsNullOrWhiteSpace(safe) ? "HOST" : safe.Length > 7 ? safe[..7] : safe;
         }
 
-        private readonly record struct HostFile(string Name, ushort LoadAddress, ushort ExecutionAddress, byte[] Data);
-        private readonly record struct HostFileMetadata(ushort LoadAddress, ushort ExecutionAddress);
+        private readonly record struct HostFile(string Name, uint LoadAddress, uint ExecutionAddress, byte[] Data);
+        private readonly record struct HostFileMetadata(uint LoadAddress, uint ExecutionAddress);
     }
 }
