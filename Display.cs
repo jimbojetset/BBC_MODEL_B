@@ -48,7 +48,8 @@ namespace BBC
         private IntPtr renderer;
         private IntPtr texture;
         private IntPtr scanlineTexture;
-        private IntPtr driveGlyphTexture;
+        private IntPtr emptyDriveGlyphTexture;
+        private IntPtr mountedDriveGlyphTexture;
         private bool scanlinesEnabled;
         private bool disposed;
         private bool hostCapsLockEnabled;
@@ -79,12 +80,15 @@ namespace BBC
         /// <summary>Gets or sets whether the disc activity LED overlay is lit.</summary>
         public bool DiscActivityLedActive { get; set; }
 
+        /// <summary>Gets or sets whether the drive glyph should show a mounted disc.</summary>
+        public bool DiscMounted { get; set; }
+
         /// <summary>Initializes a new SDL display window.</summary>
         /// <param name="title">Window title.</param>
         /// <param name="width">Framebuffer width in pixels.</param>
         /// <param name="height">Framebuffer height in pixels.</param>
         /// <param name="scanlines">Whether to draw a CRT-style scanline overlay.</param>
-        public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, bool scanlines = false)
+        public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, bool scanlines = true)
         {
             if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
             if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
@@ -125,7 +129,8 @@ namespace BBC
             ThrowIfNull(texture, "SDL_CreateTexture");
 
             scanlineTexture = CreateScanlineTexture(width, height);
-            driveGlyphTexture = CreateDriveGlyphTexture();
+            emptyDriveGlyphTexture = CreateDriveGlyphTexture(0xFF808080);
+            mountedDriveGlyphTexture = CreateDriveGlyphTexture(0xFF00A040);
 
             SDL_StartTextInput();
             hostCapsLockEnabled = IsHostCapsLockEnabled();
@@ -272,8 +277,9 @@ namespace BBC
             int glyphY = DriveGlyphMargin;
             SdlRect glyphRect = new SdlRect(glyphX, glyphY, DriveGlyphWidth, DriveGlyphHeight);
 
-            if (driveGlyphTexture != IntPtr.Zero)
-                _ = SDL_RenderCopy(renderer, driveGlyphTexture, IntPtr.Zero, ref glyphRect);
+            IntPtr glyphTexture = DiscMounted ? mountedDriveGlyphTexture : emptyDriveGlyphTexture;
+            if (glyphTexture != IntPtr.Zero)
+                _ = SDL_RenderCopy(renderer, glyphTexture, IntPtr.Zero, ref glyphRect);
 
             if (DiscActivityLedActive)
                 DrawDriveLed(glyphX, glyphY);
@@ -327,7 +333,7 @@ namespace BBC
             return overlay;
         }
 
-        private IntPtr CreateDriveGlyphTexture()
+        private IntPtr CreateDriveGlyphTexture(uint colour)
         {
             IntPtr glyph = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, DriveGlyphWidth, DriveGlyphHeight);
             if (glyph == IntPtr.Zero)
@@ -336,9 +342,9 @@ namespace BBC
             _ = SDL_SetTextureBlendMode(glyph, SDL_BLENDMODE_BLEND);
 
             uint[] pixels = new uint[DriveGlyphWidth * DriveGlyphHeight];
-            DrawPixelRectOutline(pixels, DriveGlyphWidth, DriveGlyphHeight, 0, 0, DriveGlyphWidth, DriveGlyphHeight);
-            DrawPixelRectOutline(pixels, DriveGlyphWidth, DriveGlyphHeight, 5, 3, 15, 4);
-            FillPixelRect(pixels, DriveGlyphWidth, DriveGlyphHeight, 5, DriveGlyphHeight - 4, DriveGlyphWidth - 10, 2);
+            DrawPixelRectOutline(pixels, DriveGlyphWidth, DriveGlyphHeight, 0, 0, DriveGlyphWidth, DriveGlyphHeight, colour);
+            DrawPixelRectOutline(pixels, DriveGlyphWidth, DriveGlyphHeight, 5, 3, 15, 4, colour);
+            FillPixelRect(pixels, DriveGlyphWidth, DriveGlyphHeight, 5, DriveGlyphHeight - 4, DriveGlyphWidth - 10, 2, colour);
 
             GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
             try
@@ -353,18 +359,16 @@ namespace BBC
             return glyph;
         }
 
-        private static void DrawPixelRectOutline(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height)
+        private static void DrawPixelRectOutline(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height, uint colour)
         {
-            FillPixelRect(pixels, textureWidth, textureHeight, x, y, width, 1);
-            FillPixelRect(pixels, textureWidth, textureHeight, x, y + height - 1, width, 1);
-            FillPixelRect(pixels, textureWidth, textureHeight, x, y, 1, height);
-            FillPixelRect(pixels, textureWidth, textureHeight, x + width - 1, y, 1, height);
+            FillPixelRect(pixels, textureWidth, textureHeight, x, y, width, 1, colour);
+            FillPixelRect(pixels, textureWidth, textureHeight, x, y + height - 1, width, 1, colour);
+            FillPixelRect(pixels, textureWidth, textureHeight, x, y, 1, height, colour);
+            FillPixelRect(pixels, textureWidth, textureHeight, x + width - 1, y, 1, height, colour);
         }
 
-        private static void FillPixelRect(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height)
+        private static void FillPixelRect(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height, uint colour)
         {
-            const uint Grey = 0xFF808080;
-
             int x0 = Math.Clamp(x, 0, textureWidth);
             int y0 = Math.Clamp(y, 0, textureHeight);
             int x1 = Math.Clamp(x + width, 0, textureWidth);
@@ -374,7 +378,7 @@ namespace BBC
             {
                 int offset = (py * textureWidth) + x0;
                 for (int px = x0; px < x1; px++)
-                    pixels[offset++] = Grey;
+                    pixels[offset++] = colour;
             }
         }
 
@@ -406,10 +410,16 @@ namespace BBC
                 scanlineTexture = IntPtr.Zero;
             }
 
-            if (driveGlyphTexture != IntPtr.Zero)
+            if (emptyDriveGlyphTexture != IntPtr.Zero)
             {
-                SDL_DestroyTexture(driveGlyphTexture);
-                driveGlyphTexture = IntPtr.Zero;
+                SDL_DestroyTexture(emptyDriveGlyphTexture);
+                emptyDriveGlyphTexture = IntPtr.Zero;
+            }
+
+            if (mountedDriveGlyphTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(mountedDriveGlyphTexture);
+                mountedDriveGlyphTexture = IntPtr.Zero;
             }
 
             if (texture != IntPtr.Zero)
@@ -755,6 +765,14 @@ namespace BBC
         {
             try
             {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc or file'; $dialog.Filter = 'BBC files (*.ssd;*.dsd)|*.ssd;*.dsd|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+
                 if (OperatingSystem.IsMacOS())
                     return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc or file\")");
 
@@ -773,6 +791,7 @@ namespace BBC
         {
             ProcessStartInfo startInfo = new ProcessStartInfo(fileName)
             {
+                CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false

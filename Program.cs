@@ -43,9 +43,6 @@ namespace BBC
             foreach (string path in options.MountPaths)
                 emulator.MountHostFile(path);
 
-            if (options.BootDisc)
-                emulator.QueueMountedDiscBoot();
-
             if (options.HeadlessMilliseconds > 0)
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
             else
@@ -316,6 +313,7 @@ namespace BBC
                 QueuePendingBootScriptLine();
                 RenderDisplayFrame(Display);
                 DrainHostScreenshotRequests(Display);
+                Display.DiscMounted = discController.HasMountedDisc;
                 Display.DiscActivityLedActive = discController.ReadLedActive || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
                 Display.Present();
 
@@ -380,6 +378,7 @@ namespace BBC
                 hostFilingSystem.Mount(path);
 
                 Console.WriteLine($"Mounted DFS: {discController.MountedFileName}");
+                QueueMountedDiscAutoRun();
                 return;
             }
 
@@ -388,10 +387,16 @@ namespace BBC
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedFileName}");
         }
 
-        public void QueueMountedDiscBoot()
+        public void QueueMountedDiscAutoRun()
         {
             if (discController.TryGetBootExecScript(out string? bootScript) && bootScript is not null)
+            {
                 QueueBootScript(bootScript);
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(discController.AutoLoadCommand))
+                QueueBootScript(discController.AutoLoadCommand);
         }
 
         /// <summary>Releases emulator-owned resources.</summary>
