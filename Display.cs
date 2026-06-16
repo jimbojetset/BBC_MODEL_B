@@ -23,12 +23,16 @@ namespace BBC
     {
         public const int DefaultWidth = 640;
         public const int DefaultHeight = 537;
+        private const int BorderPercent = 10;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
         private const uint ScanlineColour = 0x60000000;
         private const int DriveLedDiameter = 8;
-        private const int DriveLedMargin = 8;
+        private const int DriveLedInset = 2;
+        private const int DriveGlyphWidth = 34;
+        private const int DriveGlyphHeight = 12;
+        private const int DriveGlyphMargin = 8;
 
         private readonly uint[] frameBuffer;
         private readonly Queue<byte> pendingInput = new Queue<byte>();
@@ -44,9 +48,12 @@ namespace BBC
         private IntPtr renderer;
         private IntPtr texture;
         private IntPtr scanlineTexture;
+        private IntPtr driveGlyphTexture;
         private bool scanlinesEnabled;
         private bool disposed;
         private bool hostCapsLockEnabled;
+        private int logicalWidth;
+        private int logicalHeight;
         private SdlRect viewportRect;
 
         static Display()
@@ -76,7 +83,6 @@ namespace BBC
         /// <param name="title">Window title.</param>
         /// <param name="width">Framebuffer width in pixels.</param>
         /// <param name="height">Framebuffer height in pixels.</param>
-        /// <param name="scale">Initial integer window scale.</param>
         /// <param name="scanlines">Whether to draw a CRT-style scanline overlay.</param>
         public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, bool scanlines = false)
         {
@@ -91,14 +97,18 @@ namespace BBC
             Array.Fill(frameBuffer, Black);
 
             ThrowIfSdlFailed(SDL_InitSubSystem(SDL_INIT_VIDEO), "SDL_InitSubSystem");
-            viewportRect = new SdlRect(0, 0, width, height);
+            int horizontalBorder = width * BorderPercent / 100;
+            int topBorder = height * BorderPercent / 100;
+            logicalWidth = width + (horizontalBorder * 2);
+            logicalHeight = height + topBorder;
+            viewportRect = new SdlRect(horizontalBorder, topBorder, width, height);
 
             window = SDL_CreateWindow(
                 title,
                 SDL_WINDOWPOS_CENTERED,
                 SDL_WINDOWPOS_CENTERED,
-                width,
-                height,
+                logicalWidth,
+                logicalHeight,
                 SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
             ThrowIfNull(window, "SDL_CreateWindow");
 
@@ -108,13 +118,14 @@ namespace BBC
             ThrowIfNull(renderer, "SDL_CreateRenderer");
 
             ThrowIfSdlFailed(SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255), "SDL_SetRenderDrawColor");
-            ThrowIfSdlFailed(SDL_RenderSetLogicalSize(renderer, width, height), "SDL_RenderSetLogicalSize");
+            ThrowIfSdlFailed(SDL_RenderSetLogicalSize(renderer, logicalWidth, logicalHeight), "SDL_RenderSetLogicalSize");
             _ = SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
 
             texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
             ThrowIfNull(texture, "SDL_CreateTexture");
 
             scanlineTexture = CreateScanlineTexture(width, height);
+            driveGlyphTexture = CreateDriveGlyphTexture();
 
             SDL_StartTextInput();
             hostCapsLockEnabled = IsHostCapsLockEnabled();
@@ -250,17 +261,31 @@ namespace BBC
             if (scanlinesEnabled && scanlineTexture != IntPtr.Zero)
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
-            if (DiscActivityLedActive)
-                DrawDriveLed();
+            DrawDriveGlyph();
 
             SDL_RenderPresent(renderer);
         }
 
-        private void DrawDriveLed()
+        private void DrawDriveGlyph()
+        {
+            int glyphX = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
+            int glyphY = DriveGlyphMargin;
+            SdlRect glyphRect = new SdlRect(glyphX, glyphY, DriveGlyphWidth, DriveGlyphHeight);
+
+            if (driveGlyphTexture != IntPtr.Zero)
+                _ = SDL_RenderCopy(renderer, driveGlyphTexture, IntPtr.Zero, ref glyphRect);
+
+            if (DiscActivityLedActive)
+                DrawDriveLed(glyphX, glyphY);
+
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        }
+
+        private void DrawDriveLed(int glyphX, int glyphY)
         {
             int radius = DriveLedDiameter / 2;
-            int centerX = viewportRect.X + viewportRect.W - DriveLedMargin - radius;
-            int centerY = viewportRect.Y + DriveLedMargin + radius;
+            int centerX = glyphX + DriveGlyphWidth - DriveLedInset - radius;
+            int centerY = glyphY + DriveLedInset + radius;
 
             _ = SDL_SetRenderDrawColor(renderer, 220, 0, 0, 255);
             for (int y = -radius; y < radius; y++)
@@ -269,8 +294,6 @@ namespace BBC
                 SdlRect row = new SdlRect(centerX - halfWidth, centerY + y, halfWidth * 2, 1);
                 _ = SDL_RenderFillRect(renderer, ref row);
             }
-
-            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         }
 
         /// <summary>Builds a static overlay texture that darkens every other row for a CRT scanline look.</summary>
@@ -304,6 +327,57 @@ namespace BBC
             return overlay;
         }
 
+        private IntPtr CreateDriveGlyphTexture()
+        {
+            IntPtr glyph = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, DriveGlyphWidth, DriveGlyphHeight);
+            if (glyph == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            _ = SDL_SetTextureBlendMode(glyph, SDL_BLENDMODE_BLEND);
+
+            uint[] pixels = new uint[DriveGlyphWidth * DriveGlyphHeight];
+            DrawPixelRectOutline(pixels, DriveGlyphWidth, DriveGlyphHeight, 0, 0, DriveGlyphWidth, DriveGlyphHeight);
+            DrawPixelRectOutline(pixels, DriveGlyphWidth, DriveGlyphHeight, 5, 3, 15, 4);
+            FillPixelRect(pixels, DriveGlyphWidth, DriveGlyphHeight, 5, DriveGlyphHeight - 4, DriveGlyphWidth - 10, 2);
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                _ = SDL_UpdateTexture(glyph, IntPtr.Zero, handle.AddrOfPinnedObject(), DriveGlyphWidth * sizeof(uint));
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return glyph;
+        }
+
+        private static void DrawPixelRectOutline(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height)
+        {
+            FillPixelRect(pixels, textureWidth, textureHeight, x, y, width, 1);
+            FillPixelRect(pixels, textureWidth, textureHeight, x, y + height - 1, width, 1);
+            FillPixelRect(pixels, textureWidth, textureHeight, x, y, 1, height);
+            FillPixelRect(pixels, textureWidth, textureHeight, x + width - 1, y, 1, height);
+        }
+
+        private static void FillPixelRect(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height)
+        {
+            const uint Grey = 0xFF808080;
+
+            int x0 = Math.Clamp(x, 0, textureWidth);
+            int y0 = Math.Clamp(y, 0, textureHeight);
+            int x1 = Math.Clamp(x + width, 0, textureWidth);
+            int y1 = Math.Clamp(y + height, 0, textureHeight);
+
+            for (int py = y0; py < y1; py++)
+            {
+                int offset = (py * textureWidth) + x0;
+                for (int px = x0; px < x1; px++)
+                    pixels[offset++] = Grey;
+            }
+        }
+
         /// <summary>Copies and displays a complete ARGB8888 frame.</summary>
         /// <param name="pixels">A complete width * height frame.</param>
         public void Present(ReadOnlySpan<uint> pixels)
@@ -330,6 +404,12 @@ namespace BBC
             {
                 SDL_DestroyTexture(scanlineTexture);
                 scanlineTexture = IntPtr.Zero;
+            }
+
+            if (driveGlyphTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(driveGlyphTexture);
+                driveGlyphTexture = IntPtr.Zero;
             }
 
             if (texture != IntPtr.Zero)
