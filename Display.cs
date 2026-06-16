@@ -27,7 +27,7 @@ namespace BBC
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
-        private const uint ScanlineColour = 0x60000000;
+        private const uint ScanlineColour = 0x40000000;
         private const int DriveLedDiameter = 8;
         private const int DriveLedInset = 2;
         private const int DriveGlyphWidth = 34;
