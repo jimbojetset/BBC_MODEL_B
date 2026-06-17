@@ -17,6 +17,13 @@ namespace BBC
     /// </summary>
     public sealed class Video
     {
+        private enum CrtcInterlaceMode
+        {
+            NonInterlace,
+            InterlaceSync,
+            InterlaceSyncAndVideo
+        }
+
         public const ushort Mode7ScreenStart = 0x7C00;
         public const int Mode7Columns = 40;
         public const int Mode7Rows = 25;
@@ -47,6 +54,8 @@ namespace BBC
         private const int CrtcDisplayStartLowRegister = 13;
         private const int CrtcCursorHighRegister = 14;
         private const int CrtcCursorLowRegister = 15;
+        private const int CrtcLightPenHighRegister = 16;
+        private const int CrtcLightPenLowRegister = 17;
         private const int PaletteRegisterCount = 16;
         private const byte UlaTeletext = 0x02;
         private const byte UlaCharactersPerLineMask = 0x0C;
@@ -110,6 +119,7 @@ namespace BBC
         private bool beamEndOfFrameLatched;
         private bool beamInVertAdjust;
         private bool beamInDummyRaster;
+        private CrtcInterlaceMode beamInterlaceMode;
         private bool beamInterlacedSyncAndVideo;
         private bool beamDoEvenFrameLogic;
         private bool beamIsEvenRender = true;
@@ -140,10 +150,10 @@ namespace BBC
         private readonly TeletextChip beamTeletext = new TeletextChip(BbcColours);
         private int beamPixelsPerCharacter = 16;
         private int beamDisplayEnableSkew;
+        private int beamCursorDisplaySkew;
         private int beamCursorPos;
         private int beamCursorDrawIndex;
-        private bool beamCursorOn;
-        private bool beamCursorOff;
+        private bool beamCursorDisplayEnabled = true;
         private bool beamCursorOnThisFrame = true;
 
         /// <summary>Gets the currently selected BBC screen mode.</summary>
@@ -240,6 +250,7 @@ namespace BBC
             beamEndOfFrameLatched = false;
             beamInVertAdjust = false;
             beamInDummyRaster = false;
+            beamInterlaceMode = CrtcInterlaceMode.NonInterlace;
             beamInterlacedSyncAndVideo = false;
             beamDoEvenFrameLogic = false;
             beamIsEvenRender = true;
@@ -270,10 +281,10 @@ namespace BBC
             beamTeletext.Reset();
             beamPixelsPerCharacter = 16;
             beamDisplayEnableSkew = 0;
+            beamCursorDisplaySkew = 0;
             beamCursorPos = 0;
             beamCursorDrawIndex = 0;
-            beamCursorOn = false;
-            beamCursorOff = false;
+            beamCursorDisplayEnabled = true;
             beamCursorOnThisFrame = true;
             VsyncChanged?.Invoke(false);
         }
@@ -326,23 +337,43 @@ namespace BBC
             switch (register)
             {
                 case 3:
-                    beamHpulseWidth = value & 0x0F;
-                    beamVpulseWidth = (value >> 4) & 0x0F;
+                {
+                    int horizontalSyncWidth = value & 0x0F;
+                    int verticalSyncWidth = (value >> 4) & 0x0F;
+
+                    // The HD6845 treats VSW=0 as 16 raster periods. HSW=0 is
+                    // documented as invalid, so use the shortest safe pulse.
+                    beamHpulseWidth = Math.Max(1, horizontalSyncWidth);
+                    beamVpulseWidth = verticalSyncWidth == 0 ? 16 : verticalSyncWidth;
                     break;
+                }
 
                 case CrtcInterlaceAndSkewRegister:
-                    beamInterlacedSyncAndVideo = (value & 0x03) == 0x03;
-                    int skew = (value >> 4) & 0x03;
-                    if (skew < 3)
+                {
+                    beamInterlaceMode = (value & 0x03) switch
                     {
-                        beamDisplayEnableSkew = skew;
+                        0x01 => CrtcInterlaceMode.InterlaceSync,
+                        0x03 => CrtcInterlaceMode.InterlaceSyncAndVideo,
+                        _ => CrtcInterlaceMode.NonInterlace
+                    };
+                    beamInterlacedSyncAndVideo = beamInterlaceMode == CrtcInterlaceMode.InterlaceSyncAndVideo;
+                    int displaySkew = (value >> 4) & 0x03;
+                    int cursorSkew = (value >> 6) & 0x03;
+
+                    if (displaySkew < 3)
+                    {
+                        beamDisplayEnableSkew = displaySkew;
                         BeamDisplayEnableSet(UserDisplayEnable);
                     }
                     else
                     {
                         BeamDisplayEnableClear(UserDisplayEnable);
                     }
+
+                    beamCursorDisplaySkew = cursorSkew;
+                    beamCursorDisplayEnabled = cursorSkew < 3;
                     break;
+                }
 
                 case CrtcCursorHighRegister:
                 case CrtcCursorLowRegister:
@@ -418,7 +449,7 @@ namespace BBC
 
         private void TickBeamVSync()
         {
-            bool isInterlace = (crtcRegisters[CrtcInterlaceAndSkewRegister] & 0x01) != 0;
+            bool isInterlace = beamInterlaceMode != CrtcInterlaceMode.NonInterlace;
             bool halfR0Hit = beamHorizontalCounter == (crtcRegisters[CrtcHorizontalTotalRegister] >> 1);
             bool isVsyncPoint = !isInterlace || !beamDoEvenFrameLogic || halfR0Hit;
             bool vSyncEnding = false;
@@ -464,8 +495,16 @@ namespace BBC
             if (insideBorder)
                 beamTeletext.FetchData(data);
 
-            if (insideBorder && beamAddress == beamCursorPos && beamCursorOn && !beamCursorOff && beamHorizontalCounter < crtcRegisters[CrtcHorizontalDisplayedRegister])
-                beamCursorDrawIndex = 3 - ((crtcRegisters[CrtcInterlaceAndSkewRegister] >> 6) & 0x03);
+            bool renderDisplayEnabled = (beamDisplayEnabled & EverythingEnabled) == EverythingEnabled;
+            bool cursorDisplayTimingEnabled = insideBorder && (beamDisplayEnabled & UserDisplayEnable) != 0;
+            if (cursorDisplayTimingEnabled
+                && beamCursorDisplayEnabled
+                && beamAddress == beamCursorPos
+                && IsBeamCursorRasterActive()
+                && beamHorizontalCounter < crtcRegisters[CrtcHorizontalDisplayedRegister])
+            {
+                beamCursorDrawIndex = 3 - beamCursorDisplaySkew;
+            }
 
             if ((uint)beamBitmapX >= BeamFramebufferWidth || (uint)beamBitmapY >= BeamFramebufferHeight)
                 return;
@@ -479,7 +518,7 @@ namespace BBC
             }
 
             int offset = (y * BeamFramebufferWidth) + beamBitmapX;
-            if ((beamDisplayEnabled & EverythingEnabled) == EverythingEnabled)
+            if (renderDisplayEnabled)
             {
                 if (IsBeamTeletextMode)
                 {
@@ -501,6 +540,10 @@ namespace BBC
 
         private int GetBeamDisplayEnablePosition()
         {
+            // The extra teletext offset is part of the BBC's Video ULA/SAA5050
+            // fetch pipeline, not an HD6845 DISPTMG skew. Keep it separate from
+            // the R8 display-skew decode above so CRTC timing fixes do not
+            // accidentally remove BBC-specific compensation.
             return beamDisplayEnableSkew + (IsBeamTeletextMode ? 2 : 0);
         }
 
@@ -524,7 +567,7 @@ namespace BBC
             if ((ma & 0x1000) != 0)
                 adjustedHigh = (adjustedHigh - screenMemoryWindow.AddressSubtract) & 0x0F;
 
-            int address = ((adjustedHigh << 11) | ((ma & 0xFF) << 3) | (beamScanlineCounter & 0x07)) & 0x7FFF;
+            int address = ((adjustedHigh << 11) | ((ma & 0xFF) << 3) | (GetBeamRasterAddress() & 0x07)) & 0x7FFF;
             return memory[address];
         }
 
@@ -599,6 +642,21 @@ namespace BBC
             };
         }
 
+        private bool IsBeamCursorRasterActive()
+        {
+            int cursorMode = (crtcRegisters[CrtcCursorStartRegister] >> 5) & 0x03;
+            if (cursorMode == 0x01 || !beamCursorOnThisFrame)
+                return false;
+
+            int cursorStart = crtcRegisters[CrtcCursorStartRegister] & 0x1F;
+            int cursorEnd = crtcRegisters[CrtcCursorEndRegister] & 0x1F;
+            int rasterAddress = GetBeamRasterAddress();
+
+            return cursorStart <= cursorEnd
+                && rasterAddress >= cursorStart
+                && rasterAddress <= cursorEnd;
+        }
+
         private void HandleBeamHSync()
         {
             beamHpulseCounter = (beamHpulseCounter + 1) & 0x0F;
@@ -621,11 +679,8 @@ namespace BBC
         private void EndBeamScanline()
         {
             beamFirstScanline = false;
-            if (beamScanlineCounter == crtcRegisters[CrtcCursorEndRegister])
-                beamCursorOff = true;
-
             beamVpulseCounter = (beamVpulseCounter + 1) & 0x0F;
-            bool r9Hit = beamScanlineCounter == crtcRegisters[CrtcScanLinesPerCharacterRegister];
+            bool r9Hit = beamScanlineCounter == GetBeamMaximumRasterAddress();
             if (r9Hit)
                 beamLineStartAddress = beamNextLineStartAddress;
 
@@ -636,7 +691,7 @@ namespace BBC
 
             if (!IsBeamTeletextMode)
             {
-                if (((beamScanlineCounter >> 3) & 1) != 0)
+                if (((GetBeamRasterAddress() >> 3) & 1) != 0)
                     BeamDisplayEnableClear(ScanlineDisplayEnable);
                 else
                     BeamDisplayEnableSet(ScanlineDisplayEnable);
@@ -652,7 +707,7 @@ namespace BBC
             if (beamEndOfVertAdjustLatched)
             {
                 beamInVertAdjust = false;
-                if ((crtcRegisters[CrtcInterlaceAndSkewRegister] & 0x01) != 0 && beamDoEvenFrameLogic)
+                if (beamInterlaceMode != CrtcInterlaceMode.NonInterlace && beamDoEvenFrameLogic)
                 {
                     beamInDummyRaster = true;
                     beamEndOfFrameLatched = true;
@@ -674,14 +729,19 @@ namespace BBC
             }
 
             beamAddress = beamLineStartAddress;
-            if (beamScanlineCounter == (crtcRegisters[CrtcCursorStartRegister] & 0x1F))
-                beamCursorOn = true;
-
-            int externalScanline = beamScanlineCounter;
-            if (beamInterlacedSyncAndVideo && (beamFrameCount & 1) != 0)
-                externalScanline++;
-            beamTeletext.SetRA0((externalScanline & 1) != 0);
+            beamTeletext.SetRA0((GetBeamRasterAddress() & 1) != 0);
         }
+
+        private int GetBeamRasterAddress()
+        {
+            int rasterAddress = beamScanlineCounter;
+            if (beamInterlacedSyncAndVideo && (beamFrameCount & 1) != 0)
+                rasterAddress++;
+
+            return rasterAddress & 0x1F;
+        }
+
+        private int GetBeamMaximumRasterAddress() => crtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F;
 
         private void EndBeamCharacterLine()
         {
@@ -715,8 +775,6 @@ namespace BBC
             ApplyPendingPaletteWrites();
             beamHadVSyncThisRow = false;
             BeamDisplayEnableSet(ScanlineDisplayEnable);
-            beamCursorOn = false;
-            beamCursorOff = false;
         }
 
         private void EndBeamFrame()
@@ -758,7 +816,7 @@ namespace BBC
                 return;
 
             if (beamVerticalCounter == GetBeamVerticalTotal()
-                && beamScanlineCounter == crtcRegisters[CrtcScanLinesPerCharacterRegister])
+                && beamScanlineCounter == GetBeamMaximumRasterAddress())
             {
                 beamEndOfMainLatched = true;
                 beamVerticalAdjustCounter = 0;
@@ -792,7 +850,7 @@ namespace BBC
             beamDisplayEnabled &= ~FrameSkipEnable;
             beamDisplayEnabled |= FrameSkipEnable;
             beamBitmapY = 0;
-            if ((crtcRegisters[CrtcInterlaceAndSkewRegister] & 0x01) != 0 && (beamFrameCount & 1) != 0)
+            if (beamInterlaceMode != CrtcInterlaceMode.NonInterlace && (beamFrameCount & 1) != 0)
                 beamBitmapY = -1;
         }
 
@@ -893,9 +951,14 @@ namespace BBC
                 case 0xFE01:
                     {
                         int regIndex = selectedCrtcRegister & 0x1F;
+                        if (regIndex >= 18
+                            || regIndex is CrtcLightPenHighRegister or CrtcLightPenLowRegister)
+                            break;
+
                         value = (byte)(value & CrtcRegisterMasks[regIndex]);
                         crtcRegisters[regIndex] = value;
                         UpdateBeamCrtcDerivedState(regIndex, value);
+                        ValidateBeamCrtcProgramming(regIndex);
                         UpdateBeamStableVerticalTiming();
                         HandleBeamDisplayStartRupture(regIndex);
                     }
@@ -1005,6 +1068,65 @@ namespace BBC
             beamPendingDisplayStartRuptureAddress = (crtcRegisters[CrtcDisplayStartLowRegister]
                 | (crtcRegisters[CrtcDisplayStartHighRegister] << 8)) & 0x3FFF;
             beamPendingDisplayStartRupture = true;
+        }
+
+        [System.Diagnostics.Conditional("DEBUG")]
+        private void ValidateBeamCrtcProgramming(int changedRegister)
+        {
+            int horizontalTotal = crtcRegisters[CrtcHorizontalTotalRegister] + 1;
+            int horizontalDisplayed = crtcRegisters[CrtcHorizontalDisplayedRegister];
+            int horizontalSync = crtcRegisters[2];
+            int horizontalSyncWidth = crtcRegisters[3] & 0x0F;
+
+            if ((changedRegister is CrtcHorizontalTotalRegister or CrtcHorizontalDisplayedRegister)
+                && horizontalDisplayed != 0
+                && horizontalDisplayed >= horizontalTotal)
+            {
+                TraceBeamCrtcDiagnostic($"R1 horizontal displayed ({horizontalDisplayed}) must be less than R0+1 ({horizontalTotal}).");
+            }
+
+            if ((changedRegister is CrtcHorizontalTotalRegister or 2)
+                && horizontalSync > crtcRegisters[CrtcHorizontalTotalRegister])
+            {
+                TraceBeamCrtcDiagnostic($"R2 horizontal sync position ({horizontalSync}) is beyond R0 horizontal total ({crtcRegisters[CrtcHorizontalTotalRegister]}).");
+            }
+
+            if (changedRegister == 3 && horizontalSyncWidth == 0)
+                TraceBeamCrtcDiagnostic("R3 horizontal sync width is 0; HD6845 documents HSW=0 as invalid.");
+
+            int verticalTotal = GetBeamVerticalTotal() + 1;
+            int verticalDisplayed = GetBeamVerticalDisplayed();
+            int verticalSync = GetBeamVerticalSync();
+
+            if ((changedRegister is CrtcVerticalTotalRegister or CrtcVerticalDisplayedRegister)
+                && verticalDisplayed != 0
+                && verticalDisplayed >= verticalTotal)
+            {
+                TraceBeamCrtcDiagnostic($"R6 vertical displayed ({verticalDisplayed}) must be less than R4+1 ({verticalTotal}).");
+            }
+
+            if ((changedRegister is CrtcVerticalTotalRegister or CrtcVerticalSyncRegister)
+                && verticalSync > GetBeamVerticalTotal())
+            {
+                TraceBeamCrtcDiagnostic($"R7 vertical sync position ({verticalSync}) is beyond R4 vertical total ({GetBeamVerticalTotal()}).");
+            }
+
+            int cursorStart = crtcRegisters[CrtcCursorStartRegister] & 0x1F;
+            int cursorEnd = crtcRegisters[CrtcCursorEndRegister] & 0x1F;
+            int maxRaster = GetBeamMaximumRasterAddress();
+
+            if ((changedRegister is CrtcCursorStartRegister or CrtcCursorEndRegister or CrtcScanLinesPerCharacterRegister)
+                && cursorStart <= cursorEnd
+                && (cursorStart > maxRaster || cursorEnd > maxRaster))
+            {
+                TraceBeamCrtcDiagnostic($"Cursor raster range R10/R11 ({cursorStart}-{cursorEnd}) exceeds R9 maximum raster ({maxRaster}).");
+            }
+        }
+
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void TraceBeamCrtcDiagnostic(string message)
+        {
+            System.Diagnostics.Debug.WriteLine($"CRTC diagnostic: {message}");
         }
 
         private void UpdateBeamStableVerticalTiming()
