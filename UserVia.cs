@@ -13,6 +13,7 @@
 
 namespace BBC
 {
+
     /// <summary>
     /// Models the subset of the BBC user VIA needed by game timer IRQs.
     /// </summary>
@@ -45,7 +46,7 @@ namespace BBC
         private bool timer2HasInterrupted;
         private int peripheralCycleRemainder;
 
-        /// <summary>Returns whether an address belongs to the user VIA.</summary>
+        /// <summary>Checks whether address is true for the current emulator state.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <returns>True when the address is within &amp;FE60-&amp;FE6F.</returns>
         public static bool IsAddress(ushort address)
@@ -80,7 +81,7 @@ namespace BBC
             peripheralCycleRemainder = 0;
         }
 
-        /// <summary>Advances VIA timers by the supplied number of CPU cycles.</summary>
+        /// <summary>Advances user VIA timers for the supplied CPU cycle count.</summary>
         /// <param name="cycles">The elapsed 6502 cycles.</param>
         public void Tick(int cycles)
         {
@@ -100,7 +101,7 @@ namespace BBC
                 TickTimer2(peripheralCycles);
         }
 
-        /// <summary>Reads a user VIA register.</summary>
+        /// <summary>Reads  from emulated memory or device state.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <returns>The register value.</returns>
         public byte Read(ushort address)
@@ -125,7 +126,7 @@ namespace BBC
             };
         }
 
-        /// <summary>Writes a user VIA register.</summary>
+        /// <summary>Writes  into emulated memory or device state.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <param name="value">The value written by the CPU.</param>
         public void Write(ushort address, byte value)
@@ -199,6 +200,8 @@ namespace BBC
             }
         }
 
+        /// <summary>Advances user VIA timer 1 and raises its interrupt on underflow.</summary>
+        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void TickTimer1(int cycles)
         {
             if (!timer1Running)
@@ -229,16 +232,20 @@ namespace BBC
             }
         }
 
+        /// <summary>Reloads user VIA timer 1 from its latch after underflow.</summary>
         private void ReloadTimer1Counter()
         {
             timer1Counter = AddTimerOffset(timer1Latch, Timer1ReloadExtraCycles);
         }
 
+        /// <summary>Loads user VIA timer 1 from its latch and clears the timer interrupt.</summary>
         private void LoadTimer1Counter()
         {
             timer1Counter = AddTimerOffset(timer1Latch, Timer1LoadExtraCycles);
         }
 
+        /// <summary>Advances user VIA timer 2 and raises its interrupt on underflow.</summary>
+        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void TickTimer2(int cycles)
         {
             if (timer2HasInterrupted)
@@ -256,12 +263,18 @@ namespace BBC
             SetInterrupt(InterruptFlagTimer2);
         }
 
+        /// <summary>Reads a user VIA timer low byte and clears the associated interrupt flag.</summary>
+        /// <param name="value">The input value.</param>
+        /// <param name="interruptFlag">The interrupt flag value.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadTimerLow(ushort value, byte interruptFlag)
         {
             ClearInterrupt(interruptFlag);
             return (byte)value;
         }
 
+        /// <summary>Returns the user VIA interrupt flag register with bit 7 reflecting enabled active interrupts.</summary>
+        /// <returns>The computed value.</returns>
         private byte GetInterruptFlags()
         {
             byte flags = interruptFlags;
@@ -271,26 +284,38 @@ namespace BBC
             return flags;
         }
 
+        /// <summary>Sets a user VIA interrupt flag and refreshes derived IRQ state.</summary>
+        /// <param name="flag">The flag value.</param>
         private void SetInterrupt(byte flag)
         {
             interruptFlags |= flag;
         }
 
+        /// <summary>Clears selected user VIA interrupt flags and updates derived IRQ state.</summary>
+        /// <param name="mask">The bit mask.</param>
         private void ClearInterrupt(byte mask)
         {
             interruptFlags &= unchecked((byte)~mask);
         }
 
+        /// <summary>Applies the VIA timer reload offset used by the 6522 counter pipeline.</summary>
+        /// <param name="value">The input value.</param>
+        /// <param name="offset">The buffer or image offset.</param>
+        /// <returns>The resulting value.</returns>
         private static ushort AddTimerOffset(ushort value, int offset)
         {
             return (ushort)Math.Clamp(value + offset, 0, 0xFFFF);
         }
 
+        /// <summary>Checks whether user VIA timer 1 is configured for free-running reloads.</summary>
+        /// <returns>True when timer1 free running is true; otherwise, false.</returns>
         private bool IsTimer1FreeRunning()
         {
             return (registers[0xB] & 0x40) != 0;
         }
 
+        /// <summary>Reads user VIA port B, including the printer acknowledge input bit.</summary>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadPortB()
         {
             byte value = ReadPort(portB, dataDirectionB);
@@ -320,6 +345,10 @@ namespace BBC
             return value;
         }
 
+        /// <summary>Combines a user VIA output latch and data-direction register into the visible port value.</summary>
+        /// <param name="output">The port output latch value.</param>
+        /// <param name="direction">The I/O direction register value.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private static byte ReadPort(byte output, byte direction)
         {
             return (byte)((output & direction) | (0xFF & ~direction));

@@ -12,6 +12,7 @@
 
 namespace BBC
 {
+
     /// <summary>
     /// Draws the SAA5050 English teletext alphanumeric character set used by BBC Micro MODE 7.
     /// </summary>
@@ -43,6 +44,8 @@ namespace BBC
 
         private static readonly byte[] GlyphRows = BuildGlyphRows();
 
+        /// <summary>Builds the compact SAA5050 glyph-row lookup table from the encoded font data.</summary>
+        /// <returns>The resulting collection.</returns>
         private static byte[] BuildGlyphRows()
         {
             if (GlyphRowsEncoded.Length != 96 * GlyphRowsPerCharacter)
@@ -55,6 +58,9 @@ namespace BBC
             return rows;
         }
 
+        /// <summary>Decodes one packed teletext font row into a six-bit glyph mask.</summary>
+        /// <param name="value">The input value.</param>
+        /// <returns>The decoded value.</returns>
         private static byte DecodeGlyphRow(char value)
         {
             if (value is >= 'A' and <= 'Z')
@@ -66,6 +72,11 @@ namespace BBC
             throw new InvalidOperationException("SAA5050 glyph table contains an invalid row code.");
         }
 
+        /// <summary>Returns the rendered SAA5050 alphanumeric row mask, including optional horizontal expansion.</summary>
+        /// <param name="character">The character value.</param>
+        /// <param name="row">The glyph row value.</param>
+        /// <param name="horizontalExpand">The horizontal expansion state.</param>
+        /// <returns>The computed value.</returns>
         public static ushort GetAlphanumericRowMask(byte character, int row, bool horizontalExpand)
         {
             character = (byte)(character & 0x7F);
@@ -93,6 +104,11 @@ namespace BBC
             return result;
         }
 
+        /// <summary>Returns the SAA5050 mosaic graphics row mask, including separated mosaic spacing.</summary>
+        /// <param name="character">The character value.</param>
+        /// <param name="row">The glyph row value.</param>
+        /// <param name="separated">The separated value.</param>
+        /// <returns>The computed value.</returns>
         public static ushort GetMosaicRowMask(byte character, int row, bool separated)
         {
             int value = character & 0x7F;
@@ -122,6 +138,10 @@ namespace BBC
             return result;
         }
 
+        /// <summary>Expands a six-pixel glyph row into the rounded teletext output mask.</summary>
+        /// <param name="glyphOffset">The glyph-table offset.</param>
+        /// <param name="outputY">The output y value.</param>
+        /// <returns>The computed value.</returns>
         private static ushort GetRoundedRow(int glyphOffset, int outputY)
         {
             int sourceY = outputY >> 1;
@@ -141,6 +161,11 @@ namespace BBC
             return result;
         }
 
+        /// <summary>Checks whether a source glyph pixel is set in the compact font table.</summary>
+        /// <param name="glyphOffset">The glyph-table offset.</param>
+        /// <param name="sourceX">The source X coordinate.</param>
+        /// <param name="sourceY">The source Y coordinate.</param>
+        /// <returns>True when source pixel set is true; otherwise, false.</returns>
         private static bool IsSourcePixelSet(int glyphOffset, int sourceX, int sourceY)
         {
             if ((uint)sourceX >= GlyphWidth || (uint)sourceY >= SourceCellHeight)
@@ -150,6 +175,13 @@ namespace BBC
             return (row & (0x10 >> sourceX)) != 0;
         }
 
+        /// <summary>Checks rounded teletext smoothing for a diagonal source-pixel transition.</summary>
+        /// <param name="glyphOffset">The glyph-table offset.</param>
+        /// <param name="sourceX">The source X coordinate.</param>
+        /// <param name="sourceY">The source Y coordinate.</param>
+        /// <param name="phaseX">The phase x value.</param>
+        /// <param name="phaseY">The phase y value.</param>
+        /// <returns>True when rounded diagonal pixel set is true; otherwise, false.</returns>
         private static bool IsRoundedDiagonalPixelSet(int glyphOffset, int sourceX, int sourceY, int phaseX, int phaseY)
         {
             if ((uint)sourceX >= SourceCellWidth || (uint)sourceY >= SourceCellHeight)

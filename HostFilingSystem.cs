@@ -16,6 +16,7 @@ using System.Text;
 
 namespace BBC
 {
+
     /// <summary>
     /// Provides a lightweight host-backed filing system by intercepting MOS OSFILE.
     /// </summary>
@@ -44,16 +45,16 @@ namespace BBC
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
         }
 
-        /// <summary>Gets the currently mounted host path, if any.</summary>
+        /// <summary>Gets the currently mounted host path.</summary>
         public string? MountedPath => mountedPath;
 
-        /// <summary>Gets the currently mounted host path, if any.</summary>
+        /// <summary>Gets the currently mounted host filename.</summary>
         public string? MountedFileName => mountedFileName;
 
         /// <summary>Gets whether a host file or image is mounted.</summary>
         public bool HasMountedFile => files.Length > 0;
 
-        /// <summary>Gets or sets whether host-backed *RUN/FSCV execution shortcuts are enabled.</summary>
+        /// <summary>Gets or sets whether host RUN/LOAD command interception is enabled.</summary>
         public bool RunCommandInterceptionEnabled { get; set; } = true;
 
         /// <summary>Called after a host-backed disc-image load is copied into memory.</summary>
@@ -62,7 +63,7 @@ namespace BBC
         /// <summary>Queues text into the emulated keyboard buffer for soft-key expansion.</summary>
         public Action<string>? QueueKeyboardText { get; set; }
 
-        /// <summary>Gets the command that should be typed at BASIC after mounting.</summary>
+        /// <summary>Gets the BASIC load command for the first mounted host file.</summary>
         public string? AutoLoadCommand => files.Length == 0 ? null : $"LOAD \"{files[0].Name}\"";
 
         private readonly string[] softKeyStrings = new string[16];
@@ -104,7 +105,7 @@ namespace BBC
             RunCommandInterceptionEnabled = true;
         }
 
-        /// <summary>Handles an OSFILE call if the CPU is currently at the OSFILE entry.</summary>
+        /// <summary>Handles OSFILE when the current emulator state matches the expected firmware entry.</summary>
         /// <param name="cpu">The CPU.</param>
         /// <returns>True when the call was handled by the host filing system.</returns>
         public bool TryHandleOsfile(CPU_6502 cpu)
@@ -148,6 +149,9 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Attempts to handle osword.</summary>
+        /// <param name="cpu">The CPU.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         public bool TryHandleOsword(CPU_6502 cpu)
         {
             if ((cpu.registers.PC & 0xFFFF) != OswordEntry || cpu.registers.A != 0x7F || !mountedDiscImage || mountedImage.Length == 0)
@@ -188,7 +192,7 @@ namespace BBC
             return true;
         }
 
-        /// <summary>Handles a host-backed *RUN command if the CPU is currently at the OSCLI entry.</summary>
+        /// <summary>Handles OSCLI when the current emulator state matches the expected firmware entry.</summary>
         /// <param name="cpu">The CPU.</param>
         /// <returns>True when the command was handled by the host filing system.</returns>
         public bool TryHandleOscli(CPU_6502 cpu)
@@ -294,7 +298,7 @@ namespace BBC
             return true;
         }
 
-        /// <summary>Handles host-backed filing system control vector calls.</summary>
+        /// <summary>Intercepts FSCV run/load requests for mounted host files.</summary>
         /// <param name="cpu">The CPU.</param>
         /// <returns>True when the FSCV call was handled by the host filing system.</returns>
         public bool TryHandleFscv(CPU_6502 cpu)
@@ -322,6 +326,9 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Checks whether an OSCLI command is a bare EXEC command.</summary>
+        /// <param name="command">The command value.</param>
+        /// <returns>True when bare exec command is true; otherwise, false.</returns>
         private static bool IsBareExecCommand(string command)
         {
             const string exec = "EXEC";
@@ -330,6 +337,9 @@ namespace BBC
                 && string.Equals(trimmed, exec, StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>Checks whether an OSCLI command is an OPT command handled by the host.</summary>
+        /// <param name="command">The command value.</param>
+        /// <returns>True when opt command is true; otherwise, false.</returns>
         private static bool IsOptCommand(string command)
         {
             string trimmed = command.TrimStart();
@@ -338,6 +348,9 @@ namespace BBC
                 && (trimmed.Length == 3 || char.IsWhiteSpace(trimmed[3]));
         }
 
+        /// <summary>Checks whether an OSCLI command switches back to tape filing.</summary>
+        /// <param name="command">The command value.</param>
+        /// <returns>True when tape command is true; otherwise, false.</returns>
         private static bool IsTapeCommand(string command)
         {
             string trimmed = command.Trim();
@@ -345,6 +358,9 @@ namespace BBC
                 && string.Equals(trimmed, "TAPE", StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>Checks whether an OSCLI command is a TV display command handled by the host.</summary>
+        /// <param name="command">The command value.</param>
+        /// <returns>True when tv command is true; otherwise, false.</returns>
         private static bool IsTvCommand(string command)
         {
             string trimmed = command.TrimStart();
@@ -354,6 +370,11 @@ namespace BBC
             return trimmed.StartsWith("T.", StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>Attempts to handle fx command.</summary>
+        /// <param name="command">The command value.</param>
+        /// <param name="cpu">The CPU.</param>
+        /// <param name="returnFromOscli">The return from oscli value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryHandleFxCommand(string command, CPU_6502 cpu, out bool returnFromOscli)
         {
             returnFromOscli = true;
@@ -392,6 +413,9 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Attempts to handle key command.</summary>
+        /// <param name="command">The command value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryHandleKeyCommand(string command)
         {
             string trimmed = command.TrimStart();
@@ -429,6 +453,8 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Queues the string assigned to a BBC soft key when the key is pressed.</summary>
+        /// <param name="keyCode">The key code value.</param>
         private void InsertSoftKey(byte keyCode)
         {
             int key = keyCode >= 0x80 ? keyCode - 0x80 : keyCode;
@@ -438,6 +464,9 @@ namespace BBC
             QueueKeyboardText(softKeyStrings[key]);
         }
 
+        /// <summary>Decodes soft key string.</summary>
+        /// <param name="value">The input value.</param>
+        /// <returns>The resulting string.</returns>
         private static string DecodeSoftKeyString(string value)
         {
             StringBuilder builder = new StringBuilder(value.Length);
@@ -463,6 +492,12 @@ namespace BBC
             return builder.ToString();
         }
 
+        /// <summary>Parses OSCLI *FX numeric arguments into A, X, and Y values.</summary>
+        /// <param name="text">The text.</param>
+        /// <param name="a">The a value.</param>
+        /// <param name="x">The low result byte value.</param>
+        /// <param name="y">The high result byte value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryParseFxArguments(string text, out int a, out int x, out int y)
         {
             a = 0;
@@ -488,6 +523,10 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Parses a decimal or ampersand-prefixed hexadecimal *FX argument.</summary>
+        /// <param name="text">The text.</param>
+        /// <param name="value">The input value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryParseFxNumber(string text, out int value)
         {
             string trimmed = text.Trim();
@@ -503,6 +542,9 @@ namespace BBC
             return int.TryParse(trimmed, out value);
         }
 
+        /// <summary>Finds a mounted host file by DFS-normalized name or host leaf name.</summary>
+        /// <param name="requestedName">The requested name value.</param>
+        /// <returns>The resulting value.</returns>
         private HostFile? FindFile(string requestedName)
         {
             string normalized = NormalizeDiscName(requestedName).ToUpperInvariant();
@@ -531,12 +573,16 @@ namespace BBC
             return files.Length == 1 ? files[0] : null;
         }
 
+        /// <summary>Raises the host disc activity callback for mounted disc-image reads.</summary>
         private void NotifyDiscImageLoadActivity()
         {
             if (mountedDiscImage)
                 DiscImageLoadActivity?.Invoke();
         }
 
+        /// <summary>Extracts the BBC leaf filename from a host or DFS-style path.</summary>
+        /// <param name="name">The name value.</param>
+        /// <returns>The normalized name.</returns>
         private static string GetLeafName(string name)
         {
             string trimmed = name.Trim().Trim('"');
@@ -554,6 +600,10 @@ namespace BBC
             return trimmed;
         }
 
+        /// <summary>Attempts to parse run command.</summary>
+        /// <param name="command">The command value.</param>
+        /// <param name="fileName">The file name value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryParseRunCommand(string command, out string fileName)
         {
             fileName = string.Empty;
@@ -569,6 +619,11 @@ namespace BBC
             return TryReadCommandFileName(rest, out fileName, out _);
         }
 
+        /// <summary>Attempts to parse load command.</summary>
+        /// <param name="command">The command value.</param>
+        /// <param name="fileName">The file name value.</param>
+        /// <param name="loadAddress">The load address.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryParseLoadCommand(string command, out string fileName, out ushort? loadAddress)
         {
             fileName = string.Empty;
@@ -596,6 +651,11 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Attempts to match command name.</summary>
+        /// <param name="command">The command value.</param>
+        /// <param name="name">The name value.</param>
+        /// <param name="rest">The rest value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryMatchCommandName(string command, string name, out string rest)
         {
             rest = string.Empty;
@@ -621,6 +681,11 @@ namespace BBC
             return false;
         }
 
+        /// <summary>Attempts to read command file name.</summary>
+        /// <param name="rest">The rest value.</param>
+        /// <param name="fileName">The file name value.</param>
+        /// <param name="nextIndex">The next index value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryReadCommandFileName(string rest, out string fileName, out int nextIndex)
         {
             fileName = string.Empty;
@@ -643,6 +708,10 @@ namespace BBC
             return fileName.Length > 0;
         }
 
+        /// <summary>Attempts to parse dfs address.</summary>
+        /// <param name="text">The text.</param>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryParseDfsAddress(string text, out ushort address)
         {
             string trimmed = text.Trim();
@@ -652,6 +721,9 @@ namespace BBC
             return ushort.TryParse(trimmed, System.Globalization.NumberStyles.HexNumber, null, out address);
         }
 
+        /// <summary>Writes OSFILE catalogue metadata for a mounted host file into BBC memory.</summary>
+        /// <param name="controlBlock">The control block value.</param>
+        /// <param name="file">The file value.</param>
         private void WriteCatalogueInfo(ushort controlBlock, HostFile file)
         {
             WriteDword(controlBlock + 2, file.LoadAddress);
@@ -660,6 +732,8 @@ namespace BBC
             WriteDword(controlBlock + 14, 0);
         }
 
+        /// <summary>Returns the CPU from an intercepted MOS subroutine call.</summary>
+        /// <param name="cpu">The CPU.</param>
         private void ReturnFromSubroutine(CPU_6502 cpu)
         {
             byte lo = memory.Memory[0x0100 + ((cpu.registers.S + 1) & 0xFF)];
@@ -668,6 +742,9 @@ namespace BBC
             cpu.registers.PC = (ushort)(((hi << 8) | lo) + 1);
         }
 
+        /// <summary>Reads OS string from emulated memory or device state.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The string read from emulated memory or host data.</returns>
         private string ReadOsString(uint address)
         {
             StringBuilder builder = new StringBuilder();
@@ -684,16 +761,25 @@ namespace BBC
             return builder.ToString();
         }
 
+        /// <summary>Reads a little-endian 16-bit value from BBC memory.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private ushort ReadWord(int address)
         {
             return (ushort)(memory.Memory[address & 0xFFFF] | (memory.Memory[(address + 1) & 0xFFFF] << 8));
         }
 
+        /// <summary>Reads a little-endian 32-bit value from BBC memory.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private uint ReadDword(int address)
         {
             return (uint)(ReadWord(address) | (ReadWord(address + 2) << 16));
         }
 
+        /// <summary>Writes a little-endian 32-bit value into BBC memory.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <param name="value">The input value.</param>
         private void WriteDword(int address, uint value)
         {
             memory.Memory[address & 0xFFFF] = (byte)value;
@@ -702,6 +788,10 @@ namespace BBC
             memory.Memory[(address + 3) & 0xFFFF] = (byte)(value >> 24);
         }
 
+        /// <summary>Checks whether host bytes and extension represent a sector-aligned DFS disc image.</summary>
+        /// <param name="path">The host file path.</param>
+        /// <param name="data">The data byte or buffer.</param>
+        /// <returns>True when ssd image is true; otherwise, false.</returns>
         private static bool IsSsdImage(string path, byte[] data)
         {
             string extension = Path.GetExtension(path);
@@ -711,6 +801,11 @@ namespace BBC
                     || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase));
         }
 
+        /// <summary>Attempts to get sector offset.</summary>
+        /// <param name="track">The disc track number value.</param>
+        /// <param name="sector">The sector number value.</param>
+        /// <param name="offset">The buffer or image offset.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryGetSectorOffset(int track, int sector, out int offset)
         {
             if (track < 0 || sector < 0 || sector >= SectorsPerTrack)
@@ -724,6 +819,9 @@ namespace BBC
             return offset >= 0 && offset < mountedImage.Length;
         }
 
+        /// <summary>Advances a DFS track/sector pair to the next sector, wrapping at the end of a track.</summary>
+        /// <param name="track">The disc track number value.</param>
+        /// <param name="sector">The sector number value.</param>
         private static void AdvanceSector(ref int track, ref int sector)
         {
             sector++;
@@ -734,6 +832,9 @@ namespace BBC
             track++;
         }
 
+        /// <summary>Decodes the byte size represented by a DFS sector-size code.</summary>
+        /// <param name="sectorSizeAndCount">The sector size and count value.</param>
+        /// <returns>The computed value.</returns>
         private static int GetSectorSize(byte sectorSizeAndCount)
         {
             int sizeCode = sectorSizeAndCount >> 5;
@@ -746,12 +847,19 @@ namespace BBC
             };
         }
 
+        /// <summary>Decodes the sector-count field from a DFS size/count byte.</summary>
+        /// <param name="sectorSizeAndCount">The sector size and count value.</param>
+        /// <returns>The computed value.</returns>
         private static int GetSectorCount(byte sectorSizeAndCount)
         {
             int count = sectorSizeAndCount & 0x1F;
             return count == 0 ? SectorsPerTrack : count;
         }
 
+        /// <summary>Wraps a host file and optional .inf metadata as a BBC catalogue entry.</summary>
+        /// <param name="path">The host file path.</param>
+        /// <param name="data">The data byte or buffer.</param>
+        /// <returns>The resulting value.</returns>
         private static HostFile ReadRawHostFile(string path, byte[] data)
         {
             string name = Path.GetFileNameWithoutExtension(path);
@@ -759,6 +867,9 @@ namespace BBC
             return new HostFile(NormalizeDiscName(name), metadata.LoadAddress, metadata.ExecutionAddress, data);
         }
 
+        /// <summary>Reads visible DFS catalogue entries and file contents from an SSD image.</summary>
+        /// <param name="image">The disc image data.</param>
+        /// <returns>The resulting collection.</returns>
         private static HostFile[] ReadSsdFiles(byte[] image)
         {
             int fileCount = image[0x105] / 8;
@@ -790,6 +901,10 @@ namespace BBC
             return result.ToArray();
         }
 
+        /// <summary>Reads and normalizes a DFS catalogue filename from raw image bytes.</summary>
+        /// <param name="image">The disc image data.</param>
+        /// <param name="offset">The buffer or image offset.</param>
+        /// <returns>The normalized name.</returns>
         private static string ReadDfsName(byte[] image, int offset)
         {
             string leaf = Encoding.ASCII.GetString(image, offset, 7).Trim();
@@ -799,11 +914,18 @@ namespace BBC
                 : leaf;
         }
 
+        /// <summary>Converts a host metadata address into a 16-bit BBC CPU address.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <param name="fallback">The fallback value.</param>
+        /// <returns>The resulting value.</returns>
         private static ushort ToCpuAddress(uint address, ushort fallback)
         {
             return address == 0 ? fallback : (ushort)(address & 0xFFFF);
         }
 
+        /// <summary>Reads optional .inf load and execution addresses for a host file.</summary>
+        /// <param name="path">The host file path.</param>
+        /// <returns>The resulting value.</returns>
         private static HostFileMetadata ReadInfMetadata(string path)
         {
             string infPath = path + ".inf";
@@ -820,6 +942,10 @@ namespace BBC
             return new HostFileMetadata(ParseHex(parts[1], DefaultBasicLoadAddress), ParseHex(parts[2], DefaultBasicLoadAddress));
         }
 
+        /// <summary>Parses a DFS hexadecimal address, falling back when parsing fails.</summary>
+        /// <param name="text">The text.</param>
+        /// <param name="fallback">The fallback value.</param>
+        /// <returns>The resulting value.</returns>
         private static ushort ParseHex(string text, ushort fallback)
         {
             return ushort.TryParse(text.TrimStart('&'), System.Globalization.NumberStyles.HexNumber, null, out ushort value)
@@ -827,11 +953,17 @@ namespace BBC
                 : fallback;
         }
 
+        /// <summary>Builds a case-insensitive comparison key for DFS filenames.</summary>
+        /// <param name="name">The name value.</param>
+        /// <returns>The normalized name.</returns>
         private static string NormalizeName(string name)
         {
             return NormalizeDiscName(name).Replace(".", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
         }
 
+        /// <summary>Converts a host name into a DFS-safe seven-character catalogue name.</summary>
+        /// <param name="name">The name value.</param>
+        /// <returns>The normalized name.</returns>
         private static string NormalizeDiscName(string name)
         {
             string safe = new string(name.Where(ch => ch is >= '!' and <= '~' && ch != '"').ToArray());

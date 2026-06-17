@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // Project:     BBC
 // File:        Flags.cs
 // Description: 6502 processor status register model and helpers for flag
@@ -15,6 +15,7 @@ using System.Runtime.CompilerServices;
 
 namespace BBC.CPU
 {
+
     /// <summary>
     /// Stores the 6502 processor status register and exposes named flag accessors used by instruction implementations.
     /// </summary>
@@ -55,7 +56,7 @@ namespace BBC.CPU
             p = (byte)(p & 0x20);// & FLAG_T);
         }
 
-        /// <summary>Sets flags from byte.</summary>
+        /// <summary>Updates selected processor status flags from a packed status byte.</summary>
         /// <param name="flags">The packed processor status bits to apply.</param>
         /// <param name="bits">The status bits that are allowed to change.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -64,7 +65,8 @@ namespace BBC.CPU
             p = (byte)((p & (byte)~bits) | (flags & bits));
         }
 
-        /// <summary>Returns the processor status flags as a byte.</summary>
+        /// <summary>Computes flags as byte from the current emulated hardware state.</summary>
+        /// <returns>The computed value.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public byte GetFlagsAsByte() => p;
     }

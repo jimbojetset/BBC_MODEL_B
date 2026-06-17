@@ -13,17 +13,19 @@
 
 namespace BBC.CPU
 {
+
     /// <summary>
     /// Provides byte-level CPU bus access for 6502/6510-compatible processors.
     /// </summary>
     public interface ICpuBus
     {
-        /// <summary>Reads a byte from the CPU-visible address space.</summary>
+
+        /// <summary>Reads one byte from the CPU-visible bus implementation.</summary>
         /// <param name="addr">The emulated address to access.</param>
         /// <returns>The byte value read from the bus.</returns>
         byte ReadByte(ulong addr);
 
-        /// <summary>Writes a byte to the CPU-visible address space.</summary>
+        /// <summary>Writes one byte to the CPU-visible bus implementation.</summary>
         /// <param name="addr">The emulated address to access.</param>
         /// <param name="value">The value to write to the bus.</param>
         void WriteByte(ulong addr, byte value);

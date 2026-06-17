@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // Project:     BBC
 // File:        Registers.cs
 // Description: 6502 register container exposing program counter, stack pointer,
@@ -13,11 +13,13 @@
 
 namespace BBC.CPU
 {
+
     /// <summary>
     /// Holds the CPU register set and maps the processor status byte through the structured flag model.
     /// </summary>
     public class Registers
     {
+
         /// <summary>Gets or sets the CPU program counter.</summary>
         public ulong PC { get; set; } /// Program Counter
 
@@ -30,10 +32,10 @@ namespace BBC.CPU
         /// <summary>Gets or sets the CPU accumulator.</summary>
         public byte A { get; set; } /// Accumulator
 
-        /// <summary>Gets or sets the CPU X register.</summary>
+        /// <summary>Gets or sets the CPU X index register.</summary>
         public byte X { get; set; } /// X Index Register
 
-        /// <summary>Gets or sets the CPU Y register.</summary>
+        /// <summary>Gets or sets the CPU Y index register.</summary>
         public byte Y { get; set; } /// Y Index Register
 
         public Flags Flags = new Flags();

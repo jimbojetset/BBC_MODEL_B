@@ -19,6 +19,9 @@ namespace BBC
 {
     internal static class Program
     {
+
+        /// <summary>Runs the command-line BBC Model B emulator host.</summary>
+        /// <param name="args">The command-line arguments.</param>
         private static void Main(string[] args)
         {
             using Emulator emulator = new Emulator();
@@ -50,6 +53,9 @@ namespace BBC
                 emulator.Run();
         }
 
+        /// <summary>Parses command-line startup options.</summary>
+        /// <param name="args">The command-line arguments.</param>
+        /// <returns>The resulting value.</returns>
         private static StartupOptions ParseStartupOptions(string[] args)
         {
             int headlessMilliseconds = 0;
@@ -111,6 +117,10 @@ namespace BBC
             return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath, speedScale, bootDisc);
         }
 
+        /// <summary>Attempts to parse speed scale.</summary>
+        /// <param name="value">The input value.</param>
+        /// <param name="speedScale">The speed scale value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryParseSpeedScale(string value, out double speedScale)
         {
             string trimmed = value.Trim();
@@ -263,6 +273,7 @@ namespace BBC
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
+        /// <param name="createDisplay">The create display value.</param>
         public void Initialise(bool createDisplay = false)
         {
             if (initialised)
@@ -387,6 +398,7 @@ namespace BBC
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedFileName}");
         }
 
+        /// <summary>Queues the mounted disc boot command or boot script.</summary>
         public void QueueMountedDiscAutoRun()
         {
             if (discController.TryGetBootExecScript(out string? bootScript) && bootScript is not null)
@@ -412,6 +424,7 @@ namespace BBC
             Display?.Dispose();
         }
 
+        /// <summary>Runs the background CPU execution loop.</summary>
         private void RunCpu()
         {
             try
@@ -424,6 +437,7 @@ namespace BBC
             }
         }
 
+        /// <summary>Starts the background CPU thread.</summary>
         private void StartCpu()
         {
             if (cpuThread is not null && cpuThread.IsAlive)
@@ -438,6 +452,7 @@ namespace BBC
             cpuThread.Start();
         }
 
+        /// <summary>Stops the background CPU thread.</summary>
         private void StopCpu()
         {
             Cpu.Stop();
@@ -448,6 +463,7 @@ namespace BBC
             cpuThread = null;
         }
 
+        /// <summary>Resets video, sound, VIA, disc, ADC, and host input state for a BBC reset.</summary>
         private void ResetDeviceState()
         {
             Video.Reset();
@@ -481,17 +497,22 @@ namespace BBC
             }
         }
 
+        /// <summary>Copies the current video frame into the host display framebuffer.</summary>
+        /// <param name="display">The target display.</param>
         private void RenderDisplayFrame(Display display)
         {
             Video.Render(display);
         }
 
+        /// <summary>Extends the host disc activity LED pulse.</summary>
         private void PulseHostDiscActivityLed()
         {
             long pulseTicks = (long)HostDiscActivityLedMilliseconds * Stopwatch.Frequency / 1000;
             Interlocked.Exchange(ref hostDiscActivityLedUntilTicks, Stopwatch.GetTimestamp() + pulseTicks);
         }
 
+        /// <summary>Ticks all clocked emulator devices for the CPU cycles just executed.</summary>
+        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void AdvanceDeviceCycles(int cycles)
         {
             Sound.Tick(cycles);
@@ -505,6 +526,7 @@ namespace BBC
             UpdateCpuIrqLine();
         }
 
+        /// <summary>Pulses the BBC Caps Lock matrix key to mirror host Caps Lock changes.</summary>
         private void StartCapsLockTap()
         {
             capsLockTapPulseCycles = CapsLockTapPulseCycles;
@@ -512,6 +534,8 @@ namespace BBC
             systemVia.SetKeyState(BbcCapsLockKey, true);
         }
 
+        /// <summary>Counts down and releases the synthetic BBC Caps Lock key press.</summary>
+        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void TickCapsLockTap(int cycles)
         {
             if (!capsLockTapPressed)
@@ -525,11 +549,14 @@ namespace BBC
             systemVia.SetKeyState(BbcCapsLockKey, false);
         }
 
+        /// <summary>Refreshes CPU IRQ line after related emulator state changes.</summary>
         private void UpdateCpuIrqLine()
         {
             Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted);
         }
 
+        /// <summary>Intercepts MOS firmware entry points that the host can service directly.</summary>
+        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         private bool HandleHostFirmwareHooks()
         {
             return TryHandleSidewaysRomLanguageCommand()
@@ -540,6 +567,8 @@ namespace BBC
                 || TryHandleOsbyte();
         }
 
+        /// <summary>Attempts to handle sideways ROM language command.</summary>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryHandleSidewaysRomLanguageCommand()
         {
             if (!IsCliEntryPoint((ushort)(Cpu.registers.PC & 0xFFFF)))
@@ -569,6 +598,9 @@ namespace BBC
             return false;
         }
 
+        /// <summary>Checks whether a sideways ROM bank advertises a language entry point.</summary>
+        /// <param name="bank">The bank value.</param>
+        /// <returns>True when language rom is true; otherwise, false.</returns>
         private bool IsLanguageRom(int bank)
         {
             if (bank < 0 || bank >= SidewaysRomBanks)
@@ -578,11 +610,16 @@ namespace BBC
             return (sidewaysRoms[typeOffset] & 0x40) != 0;
         }
 
+        /// <summary>Checks whether the CPU is currently executing an OSCLI entry point.</summary>
+        /// <param name="pc">The PC value.</param>
+        /// <returns>True when cli entry point is true; otherwise, false.</returns>
         private bool IsCliEntryPoint(ushort pc)
         {
             return pc == OscliEntry || pc == ReadWord(CliVector);
         }
 
+        /// <summary>Intercepts OSBYTE calls for keyboard scanning, Escape, and analogue input shortcuts.</summary>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryHandleOsbyte()
         {
             if ((Cpu.registers.PC & 0xFFFF) != 0xFFF4)
@@ -670,6 +707,9 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Scans the BBC keyboard matrix for an INKEY request.</summary>
+        /// <param name="scanKey">The scan key value.</param>
+        /// <returns>The resulting value.</returns>
         private byte ScanKeyboard(byte scanKey)
         {
             if ((scanKey & 0x80) != 0)
@@ -690,12 +730,18 @@ namespace BBC
             return 0xFF;
         }
 
+        /// <summary>Updates the CPU Z and N flags from an intercepted firmware result byte.</summary>
+        /// <param name="result">The result value.</param>
         private void SetFirmwareResultFlags(byte result)
         {
             Cpu.registers.Flags.Z = result == 0;
             Cpu.registers.Flags.N = (result & 0x80) != 0;
         }
 
+        /// <summary>Returns the emulated analogue channel value in the MOS ADVAL X/Y byte format.</summary>
+        /// <param name="channel">The channel value.</param>
+        /// <param name="x">The low result byte value.</param>
+        /// <param name="y">The high result byte value.</param>
         private void ReadAdval(byte channel, out byte x, out byte y)
         {
             ushort value = channel switch
@@ -710,6 +756,10 @@ namespace BBC
             y = (byte)(value >> 8);
         }
 
+        /// <summary>Attempts to map negative inkey code.</summary>
+        /// <param name="code">The code value.</param>
+        /// <param name="internalKey">The BBC keyboard matrix key.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private static bool TryMapNegativeInkeyCode(byte code, out byte internalKey)
         {
             internalKey = code switch
@@ -782,6 +832,7 @@ namespace BBC
             return internalKey != 0xFF;
         }
 
+        /// <summary>Restores CPU state for from firmware subroutine.</summary>
         private void ReturnFromFirmwareSubroutine()
         {
             byte lo = Memory.Memory[0x0100 + ((Cpu.registers.S + 1) & 0xFF)];
@@ -790,6 +841,9 @@ namespace BBC
             Cpu.registers.PC = (ushort)(((hi << 8) | lo) + 1);
         }
 
+        /// <summary>Reads OS string from emulated memory or device state.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The string read from emulated memory or host data.</returns>
         private string ReadOsString(ushort address)
         {
             StringBuilder builder = new StringBuilder();
@@ -806,17 +860,27 @@ namespace BBC
             return builder.ToString();
         }
 
+        /// <summary>Reads a little-endian 16-bit word from BBC memory.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private ushort ReadWord(ushort address)
         {
             return (ushort)(Memory.Memory[address & 0xFFFF] | (Memory.Memory[(address + 1) & 0xFFFF] << 8));
         }
 
+        /// <summary>Extracts the first token from a star command line.</summary>
+        /// <param name="command">The command value.</param>
+        /// <returns>The normalized name.</returns>
         private static string GetCommandName(string command)
         {
             int separator = command.IndexOfAny([' ', '\t', '\r']);
             return separator < 0 ? command : command[..separator];
         }
 
+        /// <summary>Matches a star command token against a sideways ROM title, including abbreviated commands.</summary>
+        /// <param name="commandName">The command name value.</param>
+        /// <param name="romTitle">The ROM title value.</param>
+        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         private static bool MatchesSidewaysRomCommand(string commandName, string romTitle)
         {
             if (string.Equals(commandName, romTitle, StringComparison.OrdinalIgnoreCase))
@@ -830,6 +894,9 @@ namespace BBC
                 && romTitle.StartsWith(abbreviation, StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>Reads the title string from a sideways ROM service header.</summary>
+        /// <param name="bank">The bank value.</param>
+        /// <returns>The string read from emulated memory or host data.</returns>
         private string ReadSidewaysRomTitle(int bank)
         {
             if (bank < 0 || bank >= SidewaysRomBanks)
@@ -852,6 +919,8 @@ namespace BBC
             return builder.ToString();
         }
 
+        /// <summary>Consumes disc or file mount requests from the display event queue.</summary>
+        /// <param name="display">The target display.</param>
         private void DrainHostDiscLoads(Display display)
         {
             discLoadScratch.Clear();
@@ -861,6 +930,8 @@ namespace BBC
                 MountHostFile(path);
         }
 
+        /// <summary>Consumes screenshot requests and writes display PNG captures.</summary>
+        /// <param name="display">The target display.</param>
         private void DrainHostScreenshotRequests(Display display)
         {
             int count = display.DrainScreenshotRequests();
@@ -872,6 +943,8 @@ namespace BBC
             }
         }
 
+        /// <summary>Consumes host text input and feeds it into the BBC keyboard buffer.</summary>
+        /// <param name="display">The target display.</param>
         private void DrainHostKeyboardInput(Display display)
         {
             if (Stopwatch.GetTimestamp() < keyboardInputEnabledAtTicks)
@@ -893,6 +966,8 @@ namespace BBC
             }
         }
 
+        /// <summary>Consumes host key up/down events and applies them to the BBC keyboard matrix.</summary>
+        /// <param name="display">The target display.</param>
         private void DrainHostKeyMatrixInput(Display display)
         {
             DrainPendingMatrixKeyReleases();
@@ -920,6 +995,8 @@ namespace BBC
                 UpdateCpuIrqLine();
         }
 
+        /// <summary>Applies a host key transition to the BBC keyboard matrix while preserving minimum press duration.</summary>
+        /// <param name="change">The change value.</param>
         private void ApplyHostKeyChange(HostKeyChange change)
         {
             byte key = change.InternalKey;
@@ -952,6 +1029,7 @@ namespace BBC
             matrixKeyReleasePending[key] = true;
         }
 
+        /// <summary>Releases matrix keys whose minimum host press duration has expired.</summary>
         private void DrainPendingMatrixKeyReleases()
         {
             long now = Stopwatch.GetTimestamp();
@@ -971,6 +1049,8 @@ namespace BBC
                 UpdateCpuIrqLine();
         }
 
+        /// <summary>Consumes host joystick key changes and updates the emulated analogue joystick state.</summary>
+        /// <param name="display">The target display.</param>
         private void DrainHostJoystickInput(Display display)
         {
             int count = display.DrainJoystickChanges(joystickChangeScratch);
@@ -1007,6 +1087,7 @@ namespace BBC
             UpdateAdcChannels();
         }
 
+        /// <summary>Refreshes ADC channels after related emulator state changes.</summary>
         private void UpdateAdcChannels()
         {
             // µPD7002 channels follow the BBC ADVAL convention: 0x0000 = max one direction, 0xFFFF = max other.
@@ -1025,6 +1106,8 @@ namespace BBC
             adc.SetChannel(3, 0x8000);
         }
 
+        /// <summary>Consumes host break-key requests and schedules a BBC BREAK reset.</summary>
+        /// <param name="display">The target display.</param>
         private void DrainHostBreakInput(Display display)
         {
             int count = display.DrainBreaks(breakScratch);
@@ -1043,6 +1126,7 @@ namespace BBC
             Cpu.RequestReset();
         }
 
+        /// <summary>Handles host Escape input as either BREAK cancellation or a BBC Escape condition.</summary>
         private void HandleEscapeKeyPress()
         {
             // OSBYTE 229 (OS variable $0275) selects the ESCAPE key behaviour: when it is
@@ -1055,11 +1139,14 @@ namespace BBC
                 TriggerEscapeCondition();
         }
 
+        /// <summary>Sets the MOS Escape state and marks the Escape key as active.</summary>
         private void TriggerEscapeCondition()
         {
             Memory.Memory[EscapeFlag] |= EscapePendingFlag;
         }
 
+        /// <summary>Queues keyboard text.</summary>
+        /// <param name="text">The text.</param>
         private void QueueKeyboardText(string text)
         {
             foreach (char ch in text)
@@ -1073,6 +1160,8 @@ namespace BBC
             }
         }
 
+        /// <summary>Queues boot script.</summary>
+        /// <param name="script">The boot script text.</param>
         private void QueueBootScript(string script)
         {
             pendingBootScriptLines.Clear();
@@ -1086,6 +1175,7 @@ namespace BBC
             nextBootScriptLineAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
         }
 
+        /// <summary>Queues pending boot script line.</summary>
         private void QueuePendingBootScriptLine()
         {
             if (pendingBootScriptLines.Count == 0 || pendingKeyboardInput.Count > 0)
@@ -1100,6 +1190,8 @@ namespace BBC
             nextBootScriptLineAtTicks = now + (Stopwatch.Frequency / 3);
         }
 
+        /// <summary>Feeds queued host characters into the MOS keyboard buffer while space is available.</summary>
+        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         private bool DrainQueuedKeyboardInput()
         {
             bool inserted = false;
@@ -1116,11 +1208,16 @@ namespace BBC
             return inserted;
         }
 
+        /// <summary>Checks the MOS keyboard buffer read/write pointers for pending characters.</summary>
+        /// <returns>True when keyboard buffer empty is true; otherwise, false.</returns>
         private bool IsKeyboardBufferEmpty()
         {
             return Memory.Memory[KeyboardBufferStartIndex] == Memory.Memory[KeyboardBufferEndIndex];
         }
 
+        /// <summary>Attempts to insert keyboard buffer character.</summary>
+        /// <param name="character">The character value.</param>
+        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryInsertKeyboardBufferCharacter(byte character)
         {
             byte start = Memory.Memory[KeyboardBufferStartIndex];
@@ -1136,6 +1233,9 @@ namespace BBC
             return true;
         }
 
+        /// <summary>Advances a MOS keyboard buffer pointer with BBC buffer wrapping.</summary>
+        /// <param name="offset">The buffer or image offset.</param>
+        /// <returns>The resulting value.</returns>
         private static byte NextKeyboardBufferOffset(byte offset)
         {
             return offset >= (KeyboardBufferEnd & 0xFF)
@@ -1143,6 +1243,8 @@ namespace BBC
                 : (byte)(offset + 1);
         }
 
+        /// <summary>Creates a timestamped path for the next host screenshot capture.</summary>
+        /// <returns>The resolved host path.</returns>
         private static string CreateScreenshotPath()
         {
             string directory = Path.Combine(Environment.CurrentDirectory, "Screenshots");
@@ -1159,6 +1261,8 @@ namespace BBC
             public bool Fire;
         }
 
+        /// <summary>Sleeps or spins until the requested stopwatch deadline is reached.</summary>
+        /// <param name="deadlineTicks">The stopwatch deadline tick value.</param>
         private static void WaitUntil(long deadlineTicks)
         {
             long remaining = deadlineTicks - Stopwatch.GetTimestamp();
@@ -1173,6 +1277,7 @@ namespace BBC
                 Thread.SpinWait(64);
         }
 
+        /// <summary>Loads OS, BASIC, and DFS ROM images into the emulator address space.</summary>
         private void LoadSystemRoms()
         {
             string romRoot = Path.Combine(AppContext.BaseDirectory, RomDirectory);
@@ -1197,6 +1302,9 @@ namespace BBC
             LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
         }
 
+        /// <summary>Copies a ROM image into the selected sideways ROM bank, mirroring short images.</summary>
+        /// <param name="path">The host file path.</param>
+        /// <param name="bank">The bank value.</param>
         private void LoadSidewaysRomBank(string path, int bank)
         {
             byte[] rom = File.ReadAllBytes(path);
@@ -1206,11 +1314,20 @@ namespace BBC
                 sidewaysRoms[bankOffset + i] = rom[i % rom.Length];
         }
 
+        /// <summary>Validates ROM.</summary>
+        /// <param name="path">The host file path.</param>
+        /// <param name="marker">The marker value.</param>
+        /// <param name="exactSize">The exact size value.</param>
         private static void ValidateRom(string path, string marker, int exactSize)
         {
             ValidateRom(path, marker, exactSize, exactSize);
         }
 
+        /// <summary>Validates ROM.</summary>
+        /// <param name="path">The host file path.</param>
+        /// <param name="marker">The marker value.</param>
+        /// <param name="minimumSize">The minimum size value.</param>
+        /// <param name="maximumSize">The maximum size value.</param>
         private static void ValidateRom(string path, string marker, int minimumSize, int maximumSize)
         {
             if (!File.Exists(path))
@@ -1225,12 +1342,17 @@ namespace BBC
                 throw new InvalidOperationException($"ROM '{path}' does not contain expected marker '{marker}'.");
         }
 
+        /// <summary>Scans ROM data for an identifying ASCII marker.</summary>
+        /// <param name="data">The data byte or buffer.</param>
+        /// <param name="marker">The marker value.</param>
+        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         private static bool ContainsAscii(ReadOnlySpan<byte> data, string marker)
         {
             ReadOnlySpan<byte> needle = Encoding.ASCII.GetBytes(marker);
             return data.IndexOf(needle) >= 0;
         }
 
+        /// <summary>Installs CPU bus read and write callbacks for ROM, RAM, and SHEILA address ranges.</summary>
         private void InstallMemoryMapHooks()
         {
             Memory.OnRead = (address, value) =>
@@ -1278,6 +1400,9 @@ namespace BBC
             };
         }
 
+        /// <summary>Checks whether the selected sideways bank is writable RAM.</summary>
+        /// <param name="bank">The bank value.</param>
+        /// <returns>True when sideways ram bank is true; otherwise, false.</returns>
         private static bool IsSidewaysRamBank(int bank)
         {
             return bank >= SidewaysRamFirstBank && bank <= SidewaysRamLastBank;
@@ -1289,6 +1414,8 @@ namespace BBC
         /// adding a per-access stretch. We approximate this with a constant +1 cycle per access,
         /// which is close enough for software that polls CRTC, VIA, ACIA, ADC, etc.
         /// </summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The computed value.</returns>
         private int ComputeBusStretchCycles(ulong address)
         {
             ushort addr = (ushort)(address & 0xFFFF);
@@ -1297,6 +1424,9 @@ namespace BBC
             return 0;
         }
 
+        /// <summary>Reads sideways ROM from emulated memory or device state.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadSidewaysRom(ushort address)
         {
             int bankOffset = selectedSidewaysRom * RomSize;
@@ -1304,6 +1434,9 @@ namespace BBC
             return sidewaysRoms[bankOffset + romOffset];
         }
 
+        /// <summary>Dispatches a SHEILA read to the emulated device mapped at the supplied address.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadSheila(ushort address)
         {
             if (Video.IsSheilaAddress(address))
@@ -1339,6 +1472,9 @@ namespace BBC
             };
         }
 
+        /// <summary>Dispatches a SHEILA write to the emulated device mapped at the supplied address.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <param name="value">The input value.</param>
         private void WriteSheila(ushort address, byte value)
         {
             if (Video.IsSheilaAddress(address))
@@ -1387,6 +1523,9 @@ namespace BBC
             }
         }
 
+        /// <summary>Checks whether a host path looks like a DFS disc image.</summary>
+        /// <param name="path">The host file path.</param>
+        /// <returns>True when disc image path is true; otherwise, false.</returns>
         private static bool IsDiscImagePath(string path)
         {
             string extension = Path.GetExtension(path);

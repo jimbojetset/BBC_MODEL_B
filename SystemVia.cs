@@ -13,6 +13,7 @@
 
 namespace BBC
 {
+
     /// <summary>
     /// Models the subset of the BBC system VIA needed by the sound slow bus.
     /// </summary>
@@ -65,7 +66,7 @@ namespace BBC
         /// <summary>Raised when the addressable latch changes the video RAM wrap window.</summary>
         public event Action<ScreenMemoryWindow>? ScreenMemoryWindowChanged;
 
-        /// <summary>Returns whether an address belongs to the system VIA.</summary>
+        /// <summary>Checks whether address is true for the current emulator state.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <returns>True when the address is within &amp;FE40-&amp;FE4F.</returns>
         public static bool IsAddress(ushort address)
@@ -102,16 +103,16 @@ namespace BBC
         /// <summary>Gets the number of emulated 50 Hz video frames since reset.</summary>
         public int FrameCounter => Volatile.Read(ref frameCounter);
 
-        /// <summary>Gets the currently selected video RAM start address.</summary>
+        /// <summary>Decodes the addressable latch into the BBC video RAM window and scroll mapping.</summary>
         public int ScreenMemoryStart => CurrentScreenMemoryWindow.Start;
 
-        /// <summary>Gets the currently selected video RAM window size.</summary>
+        /// <summary>Decodes the addressable latch into the BBC video RAM window and scroll mapping.</summary>
         public int ScreenMemorySize => CurrentScreenMemoryWindow.Size;
 
-        /// <summary>Gets the currently selected video RAM window and BBC hardware scroll mapping.</summary>
+        /// <summary>Decodes the addressable latch into the BBC video RAM window and scroll mapping.</summary>
         public ScreenMemoryWindow CurrentScreenMemoryWindow => GetScreenMemoryWindow(addressableLatch);
 
-        /// <summary>Updates one BBC keyboard matrix key state.</summary>
+        /// <summary>Applies key state to the emulated hardware state.</summary>
         /// <param name="internalKey">The BBC internal key number.</param>
         /// <param name="pressed">Whether the key is currently pressed.</param>
         public void SetKeyState(byte internalKey, bool pressed)
@@ -138,7 +139,7 @@ namespace BBC
                 ClearInterrupt(InterruptFlagAdcEoc);
         }
 
-        /// <summary>Returns whether one BBC keyboard matrix key is currently held.</summary>
+        /// <summary>Checks whether key pressed is true for the current emulator state.</summary>
         /// <param name="internalKey">The BBC internal key number.</param>
         /// <returns>True when the key is pressed.</returns>
         public bool IsKeyPressed(byte internalKey)
@@ -149,14 +150,14 @@ namespace BBC
         /// <summary>Gets whether the VIA IRQ output is currently asserted.</summary>
         public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;
 
-        /// <summary>Sets whether VSYNC is driven by the video beam instead of the internal frame timer.</summary>
+        /// <summary>Applies VSYNC line to the emulated hardware state.</summary>
         public bool ExternalVsyncLineEnabled
         {
             get => externalVsyncLineEnabled;
             set => externalVsyncLineEnabled = value;
         }
 
-        /// <summary>Updates the CRTC-driven vertical sync input to the system VIA.</summary>
+        /// <summary>Applies VSYNC line to the emulated hardware state.</summary>
         /// <param name="active">Whether the video VSYNC line is currently active.</param>
         public void SetVsyncLine(bool active)
         {
@@ -173,7 +174,7 @@ namespace BBC
             }
         }
 
-        /// <summary>Advances VIA timers by the supplied number of CPU cycles.</summary>
+        /// <summary>Advances system VIA timers, frame timing, and keyboard interrupt state.</summary>
         /// <param name="cycles">The elapsed 6502 cycles.</param>
         public void Tick(int cycles)
         {
@@ -196,7 +197,7 @@ namespace BBC
                 TickVsync(peripheralCycles);
         }
 
-        /// <summary>Reads a system VIA register.</summary>
+        /// <summary>Reads  from emulated memory or device state.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <returns>The register value.</returns>
         public byte Read(ushort address)
@@ -222,7 +223,7 @@ namespace BBC
             };
         }
 
-        /// <summary>Writes a system VIA register.</summary>
+        /// <summary>Writes  into emulated memory or device state.</summary>
         /// <param name="address">The CPU-visible address.</param>
         /// <param name="value">The value written by the CPU.</param>
         public void Write(ushort address, byte value)
@@ -300,6 +301,8 @@ namespace BBC
             }
         }
 
+        /// <summary>Advances VIA timer 1 and raises its interrupt on underflow.</summary>
+        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void TickTimer1(int cycles)
         {
             int remaining = cycles;
@@ -326,16 +329,20 @@ namespace BBC
             }
         }
 
+        /// <summary>Reloads timer 1 from its latch after a free-running underflow.</summary>
         private void ReloadTimer1Counter()
         {
             timer1Counter = AddTimerOffset(timer1Latch, Timer1ReloadExtraCycles);
         }
 
+        /// <summary>Loads timer 1 from its latch and clears the timer 1 interrupt flag.</summary>
         private void LoadTimer1Counter()
         {
             timer1Counter = AddTimerOffset(timer1Latch, Timer1LoadExtraCycles);
         }
 
+        /// <summary>Advances VIA timer 2 and raises its interrupt on underflow.</summary>
+        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void TickTimer2(int cycles)
         {
             if (timer2HasInterrupted)
@@ -353,6 +360,8 @@ namespace BBC
             SetInterrupt(InterruptFlagTimer2);
         }
 
+        /// <summary>Generates the system VIA frame tick when VSYNC is not driven by the CRTC beam.</summary>
+        /// <param name="peripheralCycles">The peripheral cycles value.</param>
         private void TickVsync(int peripheralCycles)
         {
             vsyncCycleCounter += peripheralCycles;
@@ -366,6 +375,8 @@ namespace BBC
             }
         }
 
+        /// <summary>Handles system VIA port B writes, including addressable latch and keyboard row selection.</summary>
+        /// <param name="value">The input value.</param>
         private void WritePortB(byte value)
         {
             int latchBit = value & 0x07;
@@ -388,11 +399,15 @@ namespace BBC
             }
         }
 
+        /// <summary>Transfers the addressable latch sound bit to the SN76489 slow data bus.</summary>
         private void UpdateSoundSlowDataBus()
         {
             sound.UpdateSlowDataBus(portA, (addressableLatch & (1 << SoundWriteEnableLatchBit)) == 0);
         }
 
+        /// <summary>Decodes the addressable latch into the BBC video RAM window and scroll mapping.</summary>
+        /// <param name="latch">The latch value.</param>
+        /// <returns>The resulting value.</returns>
         private static ScreenMemoryWindow GetScreenMemoryWindow(byte latch)
         {
             int code = ((latch >> ScreenAddressLatchLowBit) & 0x01)
@@ -407,12 +422,18 @@ namespace BBC
             };
         }
 
+        /// <summary>Reads a VIA timer low byte and clears the associated interrupt flag.</summary>
+        /// <param name="counter">The counter value.</param>
+        /// <param name="interruptFlag">The interrupt flag value.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadTimerLow(ushort counter, byte interruptFlag)
         {
             ClearInterrupt(interruptFlag);
             return (byte)counter;
         }
 
+        /// <summary>Returns the VIA interrupt flag register with bit 7 reflecting enabled active interrupts.</summary>
+        /// <returns>The computed value.</returns>
         private byte GetInterruptFlags()
         {
             byte flags = interruptFlags;
@@ -422,31 +443,47 @@ namespace BBC
             return flags;
         }
 
+        /// <summary>Sets a VIA interrupt flag and refreshes the CPU IRQ line state.</summary>
+        /// <param name="flag">The flag value.</param>
         private void SetInterrupt(byte flag)
         {
             interruptFlags |= flag;
         }
 
+        /// <summary>Clears selected VIA interrupt flags and updates derived IRQ state.</summary>
+        /// <param name="flags">The flag mask.</param>
         private void ClearInterrupt(byte flags)
         {
             interruptFlags &= unchecked((byte)~flags);
         }
 
+        /// <summary>Checks whether timer 1 is configured to reload automatically after underflow.</summary>
+        /// <returns>True when timer1 free running is true; otherwise, false.</returns>
         private bool IsTimer1FreeRunning()
         {
             return (registers[0xB] & 0x40) != 0;
         }
 
+        /// <summary>Applies the VIA timer reload offset used by the 6522 counter pipeline.</summary>
+        /// <param name="value">The input value.</param>
+        /// <param name="offset">The buffer or image offset.</param>
+        /// <returns>The resulting value.</returns>
         private static ushort AddTimerOffset(ushort value, int offset)
         {
             return (ushort)Math.Clamp(value + offset, 0, 0xFFFF);
         }
 
+        /// <summary>Combines a VIA output latch and data-direction register into the visible port value.</summary>
+        /// <param name="output">The port output latch value.</param>
+        /// <param name="direction">The I/O direction register value.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private static byte ReadPort(byte output, byte direction)
         {
             return (byte)((output & direction) | (0xFF & ~direction));
         }
 
+        /// <summary>Reads port A and applies CA1/CA2 keyboard handshake side effects.</summary>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadPortAWithHandshake()
         {
             ClearInterrupt(InterruptFlagVsync);
@@ -457,6 +494,8 @@ namespace BBC
             return ReadPort(portA, dataDirectionA);
         }
 
+        /// <summary>Reads port A without applying keyboard handshake side effects.</summary>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadPortAWithoutHandshake()
         {
             if (dataDirectionA == 0x7F)
@@ -465,6 +504,8 @@ namespace BBC
             return ReadPort(portA, dataDirectionA);
         }
 
+        /// <summary>Reads VIA port A as keyboard matrix columns for the currently selected row.</summary>
+        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadKeyboardPortA()
         {
             byte selectedKey = (byte)(portA & 0x7F);
@@ -476,6 +517,8 @@ namespace BBC
             return (byte)(selectedKey | (pressed ? 0x80 : 0x00));
         }
 
+        /// <summary>Checks whether any non-modifier BBC keyboard matrix key is currently pressed.</summary>
+        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         private bool AnyNonModifierKeyPressed()
         {
             for (int i = 0x10; i < pressedKeys.Length; i++)
@@ -487,11 +530,14 @@ namespace BBC
             return false;
         }
 
+        /// <summary>Checks whether the system VIA keyboard auto-scan mode is enabled.</summary>
+        /// <returns>True when keyboard auto scan enabled is true; otherwise, false.</returns>
         private bool IsKeyboardAutoScanEnabled()
         {
             return (addressableLatch & (1 << KeyboardWriteEnableLatchBit)) != 0;
         }
 
+        /// <summary>Refreshes the keyboard column interrupt from the selected matrix row.</summary>
         private void UpdateKeyboardColumnInterrupt()
         {
             int column = portA & 0x0F;

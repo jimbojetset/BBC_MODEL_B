@@ -15,11 +15,13 @@ using System.Runtime.CompilerServices;
 
 namespace BBC.CPU
 {
+
     /// <summary>
     /// Provides a generic 64 KiB 6502 bus with no 6510 processor port or C64 banking behavior.
     /// </summary>
     public class FlatMemoryBus : ICpuBus
     {
+
         /// <summary>Gets the backing address space.</summary>
         public byte[] Memory { get; }
 
@@ -36,7 +38,7 @@ namespace BBC.CPU
             Memory = new byte[size];
         }
 
-        /// <summary>Reads a byte from the CPU-visible address space.</summary>
+        /// <summary>Reads one byte from the flat CPU-visible memory array.</summary>
         /// <param name="addr">The emulated address to access.</param>
         /// <returns>The byte value read from the bus.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -47,7 +49,7 @@ namespace BBC.CPU
             return OnRead is null ? value : OnRead(addr, value);
         }
 
-        /// <summary>Writes a byte to the CPU-visible address space.</summary>
+        /// <summary>Writes one byte into the flat CPU-visible memory array.</summary>
         /// <param name="addr">The emulated address to access.</param>
         /// <param name="value">The value to write to the bus.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -60,7 +62,7 @@ namespace BBC.CPU
             Memory[addr] = value;
         }
 
-        /// <summary>Reads a little-endian 16-bit word from the bus.</summary>
+        /// <summary>Reads a little-endian 16-bit value from the flat memory bus.</summary>
         /// <param name="addr">The emulated address to access.</param>
         /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

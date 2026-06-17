@@ -12,6 +12,7 @@
 
 namespace BBC
 {
+
     /// <summary>
     /// Emulates the uPD7002 ADC fitted to the BBC Model B at &amp;FEC0-&amp;FEC3.
     /// Provides 8/10/12-bit conversion of four analogue channels with a programmable
@@ -48,10 +49,14 @@ namespace BBC
         /// <summary>Raised when an EOC transition occurs (true = conversion complete).</summary>
         public Action<bool>? EndOfConversionChanged;
 
-        /// <summary>Returns true when the supplied SHEILA address targets the ADC.</summary>
+        /// <summary>Checks whether address is true for the current emulator state.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>True when address is true; otherwise, false.</returns>
         public static bool IsAddress(ushort address) => address >= BaseAddress && address <= EndAddress;
 
-        /// <summary>Sets the latest sample for a channel (0..3). Value uses the 16-bit ADVAL convention (0x8000 centre).</summary>
+        /// <summary>Applies channel to the emulated hardware state.</summary>
+        /// <param name="channel">The channel value.</param>
+        /// <param name="value">The input value.</param>
         public void SetChannel(int channel, ushort value)
         {
             if ((uint)channel < 4) channels[channel] = value;
@@ -67,7 +72,8 @@ namespace BBC
             tenBitMode = false;
         }
 
-        /// <summary>Advances the conversion timer by the given number of CPU cycles.</summary>
+        /// <summary>Advances the uPD7002 conversion timer and completes conversions when ready.</summary>
+        /// <param name="cycles">The number of emulated CPU cycles.</param>
         public void Tick(int cycles)
         {
             if (conversionCountdown <= 0) return;
@@ -79,7 +85,9 @@ namespace BBC
             }
         }
 
-        /// <summary>Reads a byte from a SHEILA address inside the ADC range.</summary>
+        /// <summary>Reads  from emulated memory or device state.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <returns>The value read from emulated memory or device state.</returns>
         public byte Read(ushort address)
         {
             switch (address & 0x03)
@@ -95,7 +103,9 @@ namespace BBC
             }
         }
 
-        /// <summary>Writes a byte to a SHEILA address inside the ADC range.</summary>
+        /// <summary>Writes  into emulated memory or device state.</summary>
+        /// <param name="address">The CPU-visible address.</param>
+        /// <param name="value">The input value.</param>
         public void Write(ushort address, byte value)
         {
             if ((address & 0x03) != 0)
@@ -115,6 +125,7 @@ namespace BBC
             conversionCountdown = tenBitMode ? Conversion10BitCycles : Conversion8BitCycles;
         }
 
+        /// <summary>Finishes a uPD7002 conversion and latches the selected analogue channel value.</summary>
         private void CompleteConversion()
         {
             ushort sample = channels[selectedChannel & 0x03];
