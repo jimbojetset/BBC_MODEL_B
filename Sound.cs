@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        Sound.cs
-// Description: BBC Model B SN76489 sound generator and SDL audio output.
+// Description: BBC Model B SN76489 sound generator emulation with SDL audio
+//              mixing and playback.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

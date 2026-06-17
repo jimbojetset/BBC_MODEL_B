@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        CassetteInterface.cs
-// Description: Minimal BBC cassette/serial ACIA state.
+// Description: Minimal BBC cassette and serial ACIA state used by software
+//              probing cassette/RS423 hardware registers.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

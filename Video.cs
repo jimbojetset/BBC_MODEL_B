@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        Video.cs
-// Description: BBC Model B video state and display rendering.
+// Description: BBC Model B video subsystem, combining HD6845-compatible CRTC
+//              timing, Video ULA modes/palette, teletext, and framebuffer output.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

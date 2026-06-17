@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        SystemVia.cs
-// Description: Minimal BBC system VIA model for slow-bus sound writes.
+// Description: BBC system VIA subset for keyboard control, slow data bus sound
+//              latching, interrupt signalling, and peripheral register access.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

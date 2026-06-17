@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        DiscController8271.cs
-// Description: Intel 8271-compatible controller backed by DFS SSD/DSD images.
+// Description: Intel 8271-compatible floppy disc controller backed by DFS
+//              SSD/DSD images, including command timing and drive activity.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

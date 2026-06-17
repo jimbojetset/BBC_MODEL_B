@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        FlatMemoryBus.cs
-// Description: Generic flat 6502 memory bus with optional read/write hooks.
+// Description: Flat 64 KiB 6502 memory bus with optional mapped read/write
+//              hooks for BBC hardware devices.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

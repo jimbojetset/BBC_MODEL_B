@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        UserVia.cs
-// Description: Minimal BBC user VIA timer model.
+// Description: BBC user VIA timer and interrupt model used by games and
+//              user-port polling code.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

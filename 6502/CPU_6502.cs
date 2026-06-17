@@ -1,9 +1,8 @@
 ﻿// ============================================================================
 // Project:     BBC
 // File:        CPU_6502.cs
-// Description: MOS 6502-compatible CPU emulator core with opcode dispatch, addressing
-//              modes, interrupt handling, stack operations, timing, and memory
-//              callbacks.
+// Description: NMOS 6502 CPU emulator core with documented and common
+//              undocumented opcodes, interrupts, timing, and bus callbacks.
 // Author:      James Booth
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root

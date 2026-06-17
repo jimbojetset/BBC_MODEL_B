@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        ICpuBus.cs
-// Description: Minimal CPU bus abstraction for 6502/6510-compatible cores.
+// Description: Byte-level CPU bus abstraction used by the 6502 core to access
+//              RAM, ROM, and memory-mapped BBC hardware.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

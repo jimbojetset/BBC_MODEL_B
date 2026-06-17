@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        Program.cs
-// Description: Core BBC Model B emulator host.
+// Description: Application entry point and main BBC Model B emulator host,
+//              wiring CPU, memory, ROMs, video, sound, filing, and input.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

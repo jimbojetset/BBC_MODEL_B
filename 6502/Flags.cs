@@ -1,8 +1,8 @@
 ﻿// ============================================================================
 // Project:     BBC
 // File:        Flags.cs
-// Description: Processor status register model for the 6502 flags used by
-//              CPU instruction implementations.
+// Description: 6502 processor status register model and helpers for flag
+//              packing, unpacking, and instruction flag updates.
 // Author:      James Booth
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root

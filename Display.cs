@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        Display.cs
-// Description: SDL2-backed display window for the BBC Model B emulator.
+// Description: SDL2 window, framebuffer presentation, keyboard/joystick input,
+//              drag/drop disc loading, and native file picker integration.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

@@ -1,7 +1,7 @@
 // ============================================================================
 // Project:     BBC
 // File:        Saa5050Font.cs
-// Description: Mullard SAA5050 teletext alphanumeric glyph renderer.
+// Description: Mullard SAA5050 Mode 7 teletext font data and glyph renderer.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

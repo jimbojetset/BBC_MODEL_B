@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        HostFilingSystem.cs
-// Description: Host-backed filing system shim for MOS OSFILE loads.
+// Description: Host-backed filing system shim for MOS OSFILE, OSWORD, OSCLI,
+//              and FSCV file/disc loading paths.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root

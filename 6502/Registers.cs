@@ -1,8 +1,8 @@
 ﻿// ============================================================================
 // Project:     BBC
 // File:        Registers.cs
-// Description: MOS 6510 register container exposing program counter, stack
-//              pointer, accumulator, index registers, and status flags.
+// Description: 6502 register container exposing program counter, stack pointer,
+//              accumulator, index registers, and status flags.
 // Author:      James Booth
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root
