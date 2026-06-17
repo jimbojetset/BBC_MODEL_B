@@ -123,7 +123,7 @@ namespace BBC
 
             ThrowIfSdlFailed(SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255), "SDL_SetRenderDrawColor");
             ThrowIfSdlFailed(SDL_RenderSetLogicalSize(renderer, logicalWidth, logicalHeight), "SDL_RenderSetLogicalSize");
-            _ = SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
+            _ = SDL_RenderSetIntegerScale(renderer, SDL_FALSE);
 
             texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
             ThrowIfNull(texture, "SDL_CreateTexture");
@@ -980,6 +980,7 @@ namespace BBC
         private const int SDL_TEXTUREACCESS_STREAMING = 1;
         private const int SDL_BLENDMODE_BLEND = 0x00000001;
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
+        private const int SDL_FALSE = 0;
         private const int SDL_TRUE = 1;
         private const uint SDL_QUIT = 0x100;
         private const uint SDL_KEYDOWN = 0x300;
