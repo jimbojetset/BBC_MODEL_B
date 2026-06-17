@@ -1108,9 +1108,9 @@ namespace BBC
                 int sourceWidth = beamCompletedMaxX - beamCompletedMinX;
                 int sourceHeight = sourceMaxY - sourceMinY;
                 int copyWidth = Math.Min(display.Width, sourceWidth);
-                int destinationY = beamCompletedVisibleRuptureTimingActive ? 26 : 0;
-                int copyHeight = Math.Min(display.Height - destinationY, sourceHeight);
+                int copyHeight = Math.Min(display.Height, sourceHeight);
                 int destinationX = Math.Max(0, (display.Width - copyWidth) / 2);
+                int destinationY = Math.Max(0, (display.Height - copyHeight) / 2);
 
                 for (int y = 0; y < copyHeight; y++)
                 {

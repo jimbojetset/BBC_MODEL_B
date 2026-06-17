@@ -26,7 +26,6 @@ namespace BBC
         public const int DefaultWidth = 768;
         public const int DefaultHeight = 576;
         private const int HorizontalBorderPercent = 5;
-        private const int TopBorderPercent = 8;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
@@ -106,10 +105,9 @@ namespace BBC
 
             ThrowIfSdlFailed(SDL_InitSubSystem(SDL_INIT_VIDEO), "SDL_InitSubSystem");
             int horizontalBorder = (int)Math.Round(width * HorizontalBorderPercent / 100.0);
-            int topBorder = (int)Math.Round(height * TopBorderPercent / 100.0);
             logicalWidth = width + (horizontalBorder * 2);
-            logicalHeight = height + topBorder;
-            viewportRect = new SdlRect(horizontalBorder, topBorder, width, height);
+            logicalHeight = height;
+            viewportRect = new SdlRect(horizontalBorder, 0, width, height);
 
             window = SDL_CreateWindow(
                 title,
