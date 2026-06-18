@@ -43,6 +43,7 @@ namespace BBC
         private readonly Queue<HostJoystickChange> pendingJoystickChanges = new Queue<HostJoystickChange>();
         private readonly Queue<string> pendingDiscLoads = new Queue<string>();
         private int pendingScreenshotRequests;
+        private int pendingTraceToggleRequests;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
 
@@ -234,6 +235,15 @@ namespace BBC
         {
             int count = pendingScreenshotRequests;
             pendingScreenshotRequests = 0;
+            return count;
+        }
+
+        /// <summary>Consumes queued trace toggle requests events and applies them to emulator state.</summary>
+        /// <returns>The number of requested trace toggles.</returns>
+        public int DrainTraceToggleRequests()
+        {
+            int count = pendingTraceToggleRequests;
+            pendingTraceToggleRequests = 0;
             return count;
         }
 
@@ -505,6 +515,12 @@ namespace BBC
             if (keySym == SDLK_S && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
             {
                 pendingScreenshotRequests++;
+                return;
+            }
+
+            if (keySym == SDLK_T && (modifiers & KMOD_CTRL) != 0)
+            {
+                pendingTraceToggleRequests++;
                 return;
             }
 

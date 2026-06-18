@@ -68,6 +68,8 @@ namespace BBC
         private bool busy;
         private bool imageDirty;
         private bool writeProtected;
+        private StreamWriter? traceWriter;
+        private string? tracePath;
 
         /// <summary>Initializes a new 8271-compatible disc controller.</summary>
         public DiscController8271()
@@ -105,6 +107,35 @@ namespace BBC
 
         /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
+
+        /// <summary>Gets whether 8271 diagnostic tracing is currently enabled.</summary>
+        public bool TraceEnabled => traceWriter is not null;
+
+        /// <summary>Starts writing 8271 diagnostic trace events to a host file.</summary>
+        /// <param name="path">The trace file path.</param>
+        public void StartTrace(string path)
+        {
+            StopTrace();
+            tracePath = Path.GetFullPath(path);
+            traceWriter = new StreamWriter(tracePath, append: false, Encoding.UTF8)
+            {
+                AutoFlush = true
+            };
+            Trace("TRACE START");
+        }
+
+        /// <summary>Stops the current 8271 diagnostic trace.</summary>
+        /// <returns>The trace file path, when tracing had been enabled.</returns>
+        public string? StopTrace()
+        {
+            if (traceWriter is null)
+                return tracePath;
+
+            Trace("TRACE STOP");
+            traceWriter.Dispose();
+            traceWriter = null;
+            return tracePath;
+        }
 
         /// <summary>Tries to read a DFS option-3 !BOOT script from the mounted disc.</summary>
         /// <param name="script">The script text when present.</param>
@@ -336,10 +367,12 @@ namespace BBC
             if (nmiDelayCycles > 0)
                 return 0x00;
 
+            byte value = result;
             resultAvailable = false;
             nmiPending = false;
             busy = readData.Count > 0 || pendingWrite is not null;
-            return result;
+            Trace($"RESULT read ${value:X2} drive={selectedDrive} readBytes={readData.Count} pendingWrite={pendingWrite is not null}");
+            return value;
         }
 
         /// <summary>Reads the next byte from the 8271 data FIFO and updates transfer status.</summary>
@@ -389,6 +422,7 @@ namespace BBC
             parameters.Clear();
             resultAvailable = false;
             busy = true;
+            Trace($"CMD ${command:X2} op=${command & 0x3F:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive}");
 
             if (GetParameterCount(command) == 0)
                 ExecuteCommand();
@@ -402,6 +436,7 @@ namespace BBC
                 return;
 
             parameters.Add(value);
+            Trace($"PARAM[{parameters.Count - 1}] ${value:X2}");
 
             if (parameters.Count >= GetParameterCount(command))
                 ExecuteCommand();
@@ -420,9 +455,11 @@ namespace BBC
 
             if (writeData.Count >= pendingWrite.Value.Length)
             {
+                int byteCount = writeData.Count;
                 WriteSectors(pendingWrite.Value, writeData);
                 pendingWrite = null;
                 writeData.Clear();
+                Trace($"WRITE complete bytes={byteCount}");
                 SetResult(ResultOk);
             }
             else
@@ -435,6 +472,7 @@ namespace BBC
         private void ExecuteCommand()
         {
             byte opcode = (byte)(command & 0x3F);
+            Trace($"EXEC op=${opcode:X2} drive={selectedDrive} params={string.Join(' ', parameters.Select(p => $"${p:X2}"))}");
 
             switch (opcode)
             {
@@ -505,6 +543,7 @@ namespace BBC
                     result = IsDriveReady(selectedDrive) ? (byte)0x45 : (byte)0x00;
                     resultAvailable = true;
                     busy = false;
+                    Trace($"DRIVE STATUS result=${result:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive}");
                     RequestNmi();
                     break;
 
@@ -514,13 +553,16 @@ namespace BBC
 
                 case 0x3A:
                     specialRegisters[parameters[0] & 0x3F] = parameters[1];
+                    Trace($"SPECIAL WRITE reg=${parameters[0] & 0x3F:X2} value=${parameters[1]:X2}");
                     SetResult(ResultOk);
                     break;
 
                 case 0x3D:
-                    result = specialRegisters[parameters[0] & 0x3F];
+                    int specialRegister = parameters[0] & 0x3F;
+                    result = specialRegisters[specialRegister];
                     resultAvailable = true;
                     busy = false;
+                    Trace($"SPECIAL READ reg=${specialRegister:X2} result=${result:X2}");
                     RequestNmi();
                     break;
 
@@ -567,6 +609,7 @@ namespace BBC
             }
 
             readLedActive = readData.Count > 0;
+            Trace($"READ queued drive={selectedDrive} track={track} sector={sector} size={sectorSize} count={count} bytes={readData.Count}");
             RequestNmi(BeginMediaAccess(track, sector));
         }
 
@@ -633,6 +676,7 @@ namespace BBC
 
             pendingWrite = new PendingWrite(selectedDrive, offsets.ToArray(), sectorSize, sectorSize * count);
             writeData.Clear();
+            Trace($"WRITE prepared drive={selectedDrive} track={track} sector={sector} size={sectorSize} count={count}");
             RequestNmi(BeginMediaAccess(track, sector));
         }
 
@@ -679,6 +723,7 @@ namespace BBC
             }
 
             readLedActive = readData.Count > 0;
+            Trace($"READID queued drive={selectedDrive} track={track} count={sectorCount} bytes={readData.Count}");
             RequestNmi(BeginMediaAccess(track, 0));
         }
 
@@ -774,6 +819,7 @@ namespace BBC
             result = value;
             resultAvailable = true;
             busy = false;
+            Trace($"RESULT ${value:X2} delay={nmiDelayCycles} drive={selectedDrive} readBytes={readData.Count} pendingWrite={pendingWrite is not null}");
             RequestNmi(nmiDelayCycles);
         }
 
@@ -800,6 +846,13 @@ namespace BBC
         private bool IsDriveReady(int drive)
         {
             return drive >= 0 && drive < drives.Length && driveMounted[drive] && drives[drive].Length > 0;
+        }
+
+        /// <summary>Writes one controller diagnostic event when tracing is enabled.</summary>
+        /// <param name="message">The diagnostic message.</param>
+        private void Trace(string message)
+        {
+            traceWriter?.WriteLine($"{elapsedCycles,12} {message}");
         }
 
         /// <summary>Advances a DFS track/sector pair to the next sector, wrapping at the end of a track.</summary>

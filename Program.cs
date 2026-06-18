@@ -324,6 +324,7 @@ namespace BBC
                 QueuePendingBootScriptLine();
                 RenderDisplayFrame(Display);
                 DrainHostScreenshotRequests(Display);
+                DrainHostTraceToggleRequests(Display);
                 Display.DiscMounted = discController.HasMountedDisc;
                 Display.DiscActivityLedActive = discController.ReadLedActive || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
                 Display.Present();
@@ -420,6 +421,7 @@ namespace BBC
                 if (discController.Flush())
                     Console.WriteLine($"Saved disc:   {discController.MountedFileName}");
             }
+            discController.StopTrace();
             Sound.Dispose();
             Display?.Dispose();
         }
@@ -940,6 +942,27 @@ namespace BBC
                 string path = CreateScreenshotPath();
                 display.SavePng(path);
                 Console.WriteLine($"Screenshot: {path}");
+            }
+        }
+
+        /// <summary>Consumes trace toggle requests and starts or stops disc controller tracing.</summary>
+        /// <param name="display">The target display.</param>
+        private void DrainHostTraceToggleRequests(Display display)
+        {
+            int count = display.DrainTraceToggleRequests();
+            for (int i = 0; i < count; i++)
+            {
+                if (discController.TraceEnabled)
+                {
+                    string? path = discController.StopTrace();
+                    Console.WriteLine($"8271 trace stopped: {path}");
+                }
+                else
+                {
+                    string path = Path.Combine(Environment.CurrentDirectory, "bbc-8271-trace.log");
+                    discController.StartTrace(path);
+                    Console.WriteLine($"8271 trace started: {path}");
+                }
             }
         }
 

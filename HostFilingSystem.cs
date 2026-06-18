@@ -254,6 +254,12 @@ namespace BBC
                 return true;
             }
 
+            if (IsMouseCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
             if (!RunCommandInterceptionEnabled)
             {
                 return false;
@@ -356,6 +362,17 @@ namespace BBC
             string trimmed = command.Trim();
             return trimmed.Length == 4
                 && string.Equals(trimmed, "TAPE", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Checks whether an OSCLI command targets an optional mouse ROM.</summary>
+        /// <param name="command">The command value.</param>
+        /// <returns>True when mouse command is true; otherwise, false.</returns>
+        private static bool IsMouseCommand(string command)
+        {
+            string trimmed = command.TrimStart();
+            return trimmed.Length >= 5
+                && string.Equals(trimmed[..5], "MOUSE", StringComparison.OrdinalIgnoreCase)
+                && (trimmed.Length == 5 || char.IsWhiteSpace(trimmed[5]));
         }
 
         /// <summary>Checks whether an OSCLI command is a TV display command handled by the host.</summary>
