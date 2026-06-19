@@ -1298,6 +1298,7 @@ namespace BBC
                 SDLK_COMMA => Key(0x66),
                 SDLK_PERIOD => Key(0x67),
                 SDLK_SLASH => Key(0x68),
+                SDLK_SECTION => Key(0x69),
                 SDLK_ESCAPE => Key(0x70),
                 SDLK_F1 => Key(0x71),
                 SDLK_F2 => Key(0x72),
@@ -1717,6 +1718,7 @@ namespace BBC
         private const int SDLK_HASH = 35;
         private const int SDLK_APOSTROPHE = 39;
         private const int SDLK_QUOTEDBL = 34;
+        private const int SDLK_SECTION = 167;
         private const int SDLK_UNDERSCORE = 95;
         private const int SDLK_0 = 48;
         private const int SDLK_1 = 49;
