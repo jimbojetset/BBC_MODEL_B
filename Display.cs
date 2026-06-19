@@ -35,6 +35,22 @@ namespace BBC
         private const int DriveGlyphWidth = 34;
         private const int DriveGlyphHeight = 12;
         private const int DriveGlyphMargin = 8;
+        private const int NotificationDurationMilliseconds = 15000;
+        private const int NotificationMargin = 28;
+        private const int NotificationPadding = 18;
+        private const int NotificationGap = 12;
+        private const int NotificationTitleCellWidth = 16;
+        private const int NotificationTitleCellHeight = 20;
+        private const int NotificationBodyCellWidth = 12;
+        private const int NotificationBodyCellHeight = 15;
+        private const int NotificationGlyphWidth = 5;
+        private const int NotificationGlyphHeight = 7;
+        private const uint NotificationShadow = 0xFF000000;
+        private const uint NotificationBackground = 0xFF101010;
+        private const uint NotificationBorder = 0xFFE2E2E2;
+        private const uint NotificationAccent = 0xFFFFD75E;
+        private const uint NotificationTitleColour = 0xFFFFFFFF;
+        private const uint NotificationBodyColour = 0xFFEAEAEA;
 
         private readonly uint[] frameBuffer;
         private readonly Queue<byte> pendingInput = new Queue<byte>();
@@ -59,6 +75,9 @@ namespace BBC
         private int logicalWidth;
         private int logicalHeight;
         private SdlRect viewportRect;
+        private string notificationTitle = string.Empty;
+        private string notificationBody = string.Empty;
+        private long notificationVisibleUntilTicks;
 
         /// <summary>Initializes a new Display instance.</summary>
         static Display()
@@ -86,6 +105,17 @@ namespace BBC
 
         /// <summary>Gets or sets whether the drive glyph should show a mounted disc.</summary>
         public bool DiscMounted { get; set; }
+
+        /// <summary>Shows a host-rendered notification over the BBC display.</summary>
+        /// <param name="title">The title text.</param>
+        /// <param name="body">The body text.</param>
+        public void ShowNotification(string title, string body)
+        {
+            notificationTitle = title.Trim();
+            notificationBody = body.Trim();
+            notificationVisibleUntilTicks = Stopwatch.GetTimestamp()
+                + (NotificationDurationMilliseconds * Stopwatch.Frequency / 1000);
+        }
 
         /// <summary>Initializes a new SDL display window.</summary>
         /// <param name="title">Window title.</param>
@@ -262,6 +292,7 @@ namespace BBC
         public void Present()
         {
             ObjectDisposedException.ThrowIf(disposed, this);
+            DrawNotificationOverlay();
 
             GCHandle handle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
             try
@@ -316,6 +347,237 @@ namespace BBC
                 int halfWidth = (int)Math.Sqrt((radius * radius) - (y * y));
                 SdlRect row = new SdlRect(centerX - halfWidth, centerY + y, halfWidth * 2, 1);
                 _ = SDL_RenderFillRect(renderer, ref row);
+            }
+        }
+
+        /// <summary>Draws the transient host notification into the presented framebuffer.</summary>
+        private void DrawNotificationOverlay()
+        {
+            if (notificationVisibleUntilTicks <= Stopwatch.GetTimestamp()
+                || (notificationTitle.Length == 0 && notificationBody.Length == 0))
+            {
+                return;
+            }
+
+            int maxPanelWidth = Width - (NotificationMargin * 2);
+            int bodyColumns = Math.Max(1, (maxPanelWidth - (NotificationPadding * 2)) / NotificationBodyCellWidth);
+            List<string> bodyLines = WrapNotificationText(notificationBody, bodyColumns);
+            int titleColumns = Math.Max(1, (maxPanelWidth - (NotificationPadding * 2)) / NotificationTitleCellWidth);
+            List<string> titleLines = WrapNotificationText(notificationTitle, titleColumns);
+
+            int titleWidth = titleLines.Count == 0 ? 0 : titleLines.Max(line => line.Length) * NotificationTitleCellWidth;
+            int bodyWidth = bodyLines.Count == 0 ? 0 : bodyLines.Max(line => line.Length) * NotificationBodyCellWidth;
+            int contentWidth = Math.Max(titleWidth, bodyWidth);
+            int panelWidth = Math.Min(maxPanelWidth, contentWidth + (NotificationPadding * 2));
+            int titleHeight = titleLines.Count * NotificationTitleCellHeight;
+            int bodyHeight = bodyLines.Count * NotificationBodyCellHeight;
+            int panelHeight = NotificationPadding + titleHeight + NotificationGap + bodyHeight + NotificationPadding;
+            int x = (Width - panelWidth) / 2;
+            int y = (Height - panelHeight) / 2;
+
+            FillPixelRect(frameBuffer, Width, Height, x + 4, y + 5, panelWidth, panelHeight, NotificationShadow);
+            FillPixelRect(frameBuffer, Width, Height, x, y, panelWidth, panelHeight, NotificationBackground);
+            DrawPixelRectOutline(frameBuffer, Width, Height, x, y, panelWidth, panelHeight, NotificationBorder);
+            FillPixelRect(frameBuffer, Width, Height, x, y, 6, panelHeight, NotificationAccent);
+
+            int textX = x + NotificationPadding;
+            int textY = y + NotificationPadding;
+            foreach (string line in titleLines)
+            {
+                DrawNotificationText(line, textX, textY, NotificationTitleCellWidth, NotificationTitleCellHeight, NotificationTitleColour);
+                textY += NotificationTitleCellHeight;
+            }
+
+            textY += NotificationGap;
+            foreach (string line in bodyLines)
+            {
+                DrawNotificationText(line, textX, textY, NotificationBodyCellWidth, NotificationBodyCellHeight, NotificationBodyColour);
+                textY += NotificationBodyCellHeight;
+            }
+        }
+
+        /// <summary>Draws embedded bitmap text into the framebuffer.</summary>
+        /// <param name="text">The text to draw.</param>
+        /// <param name="x">The left coordinate.</param>
+        /// <param name="y">The top coordinate.</param>
+        /// <param name="cellWidth">The cell width.</param>
+        /// <param name="cellHeight">The cell height.</param>
+        /// <param name="colour">The ARGB colour.</param>
+        private void DrawNotificationText(string text, int x, int y, int cellWidth, int cellHeight, uint colour)
+        {
+            int scale = Math.Max(1, Math.Min(cellWidth / (NotificationGlyphWidth + 1), cellHeight / NotificationGlyphHeight));
+            int glyphPixelWidth = NotificationGlyphWidth * scale;
+            int glyphPixelHeight = NotificationGlyphHeight * scale;
+            int glyphYOffset = Math.Max(0, (cellHeight - glyphPixelHeight) / 2);
+
+            for (int i = 0; i < text.Length; i++)
+            {
+                int charX = x + (i * cellWidth);
+                byte[] glyph = NotificationFont.GetRows(text[i]);
+                int glyphXOffset = Math.Max(0, (cellWidth - glyphPixelWidth) / 2);
+
+                for (int row = 0; row < glyph.Length; row++)
+                {
+                    byte mask = glyph[row];
+                    for (int column = 0; column < NotificationGlyphWidth; column++)
+                    {
+                        if ((mask & (1 << (NotificationGlyphWidth - 1 - column))) == 0)
+                            continue;
+
+                        FillPixelRect(
+                            frameBuffer,
+                            Width,
+                            Height,
+                            charX + glyphXOffset + (column * scale),
+                            y + glyphYOffset + (row * scale),
+                            scale,
+                            scale,
+                            colour);
+                    }
+                }
+            }
+        }
+
+        /// <summary>Wraps notification text to the requested character width.</summary>
+        /// <param name="text">The source text.</param>
+        /// <param name="columns">The maximum character count per line.</param>
+        /// <returns>The wrapped lines.</returns>
+        private static List<string> WrapNotificationText(string text, int columns)
+        {
+            List<string> lines = new List<string>();
+            foreach (string paragraph in text.Replace('\r', '\n').Split('\n'))
+            {
+                string remaining = paragraph.Trim();
+                if (remaining.Length == 0)
+                {
+                    lines.Add(string.Empty);
+                    continue;
+                }
+
+                while (remaining.Length > columns)
+                {
+                    int split = remaining.LastIndexOfAny([' ', '/', '\\', '-'], columns);
+                    if (split <= 0)
+                        split = columns;
+
+                    int take = split == columns ? split : split + 1;
+                    lines.Add(remaining[..take].Trim());
+                    remaining = remaining[take..].TrimStart();
+                }
+
+                if (remaining.Length > 0)
+                    lines.Add(remaining);
+            }
+
+            return lines;
+        }
+
+        /// <summary>Provides a small readable 5x7 bitmap font for host overlays.</summary>
+        private static class NotificationFont
+        {
+            private static readonly byte[] Fallback = [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100];
+            private static readonly Dictionary<char, byte[]> Glyphs = new Dictionary<char, byte[]>
+            {
+                [' '] = [0, 0, 0, 0, 0, 0, 0],
+                ['!'] = [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100],
+                ['"'] = [0b01010, 0b01010, 0b01010, 0, 0, 0, 0],
+                ['#'] = [0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b01010],
+                ['$'] = [0b00100, 0b01111, 0b10100, 0b01110, 0b00101, 0b11110, 0b00100],
+                ['%'] = [0b11001, 0b11010, 0b00100, 0b01000, 0b10110, 0b00110, 0],
+                ['&'] = [0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101],
+                ['\''] = [0b00100, 0b00100, 0b01000, 0, 0, 0, 0],
+                ['('] = [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+                [')'] = [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+                ['*'] = [0, 0b10101, 0b01110, 0b11111, 0b01110, 0b10101, 0],
+                ['+'] = [0, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0],
+                [','] = [0, 0, 0, 0, 0b00100, 0b00100, 0b01000],
+                ['-'] = [0, 0, 0, 0b11111, 0, 0, 0],
+                ['.'] = [0, 0, 0, 0, 0, 0b01100, 0b01100],
+                ['/'] = [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+                ['0'] = [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+                ['1'] = [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+                ['2'] = [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+                ['3'] = [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+                ['4'] = [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+                ['5'] = [0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110],
+                ['6'] = [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+                ['7'] = [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+                ['8'] = [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+                ['9'] = [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+                [':'] = [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+                [';'] = [0, 0b01100, 0b01100, 0, 0b01100, 0b00100, 0b01000],
+                ['<'] = [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
+                ['='] = [0, 0, 0b11111, 0, 0b11111, 0, 0],
+                ['>'] = [0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000],
+                ['?'] = [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
+                ['@'] = [0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01110],
+                ['A'] = [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+                ['B'] = [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+                ['C'] = [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+                ['D'] = [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+                ['E'] = [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+                ['F'] = [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+                ['G'] = [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+                ['H'] = [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+                ['I'] = [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+                ['J'] = [0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100],
+                ['K'] = [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+                ['L'] = [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+                ['M'] = [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+                ['N'] = [0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001],
+                ['O'] = [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+                ['P'] = [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+                ['Q'] = [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+                ['R'] = [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+                ['S'] = [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+                ['T'] = [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+                ['U'] = [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+                ['V'] = [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+                ['W'] = [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
+                ['X'] = [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+                ['Y'] = [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+                ['Z'] = [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+                ['['] = [0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110],
+                ['\\'] = [0b10000, 0b01000, 0b01000, 0b00100, 0b00010, 0b00010, 0b00001],
+                [']'] = [0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110],
+                ['^'] = [0b00100, 0b01010, 0b10001, 0, 0, 0, 0],
+                ['_'] = [0, 0, 0, 0, 0, 0, 0b11111],
+                ['`'] = [0b01000, 0b00100, 0b00010, 0, 0, 0, 0],
+                ['a'] = [0, 0, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111],
+                ['b'] = [0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b11110],
+                ['c'] = [0, 0, 0b01110, 0b10001, 0b10000, 0b10001, 0b01110],
+                ['d'] = [0b00001, 0b00001, 0b01101, 0b10011, 0b10001, 0b10001, 0b01111],
+                ['e'] = [0, 0, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110],
+                ['f'] = [0b00110, 0b01001, 0b01000, 0b11100, 0b01000, 0b01000, 0b01000],
+                ['g'] = [0, 0, 0b01111, 0b10001, 0b01111, 0b00001, 0b01110],
+                ['h'] = [0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001],
+                ['i'] = [0b00100, 0, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110],
+                ['j'] = [0b00010, 0, 0b00110, 0b00010, 0b00010, 0b10010, 0b01100],
+                ['k'] = [0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010],
+                ['l'] = [0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+                ['m'] = [0, 0, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101],
+                ['n'] = [0, 0, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001],
+                ['o'] = [0, 0, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
+                ['p'] = [0, 0, 0b11110, 0b10001, 0b11110, 0b10000, 0b10000],
+                ['q'] = [0, 0, 0b01111, 0b10001, 0b01111, 0b00001, 0b00001],
+                ['r'] = [0, 0, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000],
+                ['s'] = [0, 0, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110],
+                ['t'] = [0b01000, 0b01000, 0b11100, 0b01000, 0b01000, 0b01001, 0b00110],
+                ['u'] = [0, 0, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101],
+                ['v'] = [0, 0, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+                ['w'] = [0, 0, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010],
+                ['x'] = [0, 0, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001],
+                ['y'] = [0, 0, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
+                ['z'] = [0, 0, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111],
+                ['{'] = [0b00010, 0b00100, 0b00100, 0b01000, 0b00100, 0b00100, 0b00010],
+                ['|'] = [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+                ['}'] = [0b01000, 0b00100, 0b00100, 0b00010, 0b00100, 0b00100, 0b01000],
+                ['~'] = [0, 0, 0b01000, 0b10101, 0b00010, 0, 0],
+            };
+
+            public static byte[] GetRows(char character)
+            {
+                return Glyphs.TryGetValue(character, out byte[]? rows) ? rows : Fallback;
             }
         }
 
@@ -436,6 +698,7 @@ namespace BBC
         public void SavePng(string path)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
+            DrawNotificationOverlay();
             WritePng(path, frameBuffer, Width, Height);
         }
 

@@ -45,7 +45,17 @@ namespace BBC
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
             foreach (string path in options.MountPaths)
-                emulator.MountHostFile(path);
+            {
+                try
+                {
+                    emulator.MountHostFile(path);
+                }
+                catch (Exception ex) when (IsUserMountException(ex))
+                {
+                    string message = emulator.QueueHostMountFailure(path, ex);
+                    Console.WriteLine(message);
+                }
+            }
 
             if (options.HeadlessMilliseconds > 0)
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
@@ -135,6 +145,18 @@ namespace BBC
                 speedScale /= 100.0;
 
             return speedScale is >= 0.01 and <= 4.0;
+        }
+
+        /// <summary>Checks whether a mount exception should be reported inside the emulator.</summary>
+        /// <param name="exception">The exception to check.</param>
+        /// <returns>True when the exception is suitable for user-facing reporting; otherwise, false.</returns>
+        private static bool IsUserMountException(Exception exception)
+        {
+            return exception is FileNotFoundException
+                or DirectoryNotFoundException
+                or UnauthorizedAccessException
+                or IOException
+                or InvalidOperationException;
         }
 
         private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath, double SpeedScale, bool BootDisc);
@@ -397,6 +419,24 @@ namespace BBC
             hostFilingSystem.Mount(path);
 
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedFileName}");
+        }
+
+        /// <summary>Queues and returns a host mount failure message.</summary>
+        /// <param name="path">The requested host path.</param>
+        /// <param name="exception">The mount exception.</param>
+        /// <returns>The formatted message.</returns>
+        public string QueueHostMountFailure(string path, Exception exception)
+        {
+            string displayPath = GetMountFailurePath(path);
+            string message = exception is FileNotFoundException
+                ? $"File does not exist at: {displayPath}"
+                : $"Could not load file: {displayPath}";
+
+            Display?.ShowNotification(
+                exception is FileNotFoundException ? "File not found" : "Could not load file",
+                displayPath);
+
+            return message;
         }
 
         /// <summary>Queues the mounted disc boot command or boot script.</summary>
@@ -929,7 +969,21 @@ namespace BBC
             display.DrainDiscLoads(discLoadScratch);
 
             foreach (string path in discLoadScratch)
-                MountHostFile(path);
+            {
+                try
+                {
+                    MountHostFile(path);
+                }
+                catch (Exception ex) when (ex is FileNotFoundException
+                    or DirectoryNotFoundException
+                    or UnauthorizedAccessException
+                    or IOException
+                    or InvalidOperationException)
+                {
+                    string message = QueueHostMountFailure(path, ex);
+                    Console.WriteLine(message);
+                }
+            }
         }
 
         /// <summary>Consumes screenshot requests and writes display PNG captures.</summary>
@@ -1273,6 +1327,14 @@ namespace BBC
             string directory = Path.Combine(Environment.CurrentDirectory, "Screenshots");
             string fileName = $"bbc-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png";
             return Path.Combine(directory, fileName);
+        }
+
+        /// <summary>Gets the host path associated with a mount failure.</summary>
+        /// <param name="path">The requested host path.</param>
+        /// <returns>The path to display.</returns>
+        private static string GetMountFailurePath(string path)
+        {
+            return string.IsNullOrWhiteSpace(path) ? "(empty path)" : path;
         }
 
         private struct JoystickState
