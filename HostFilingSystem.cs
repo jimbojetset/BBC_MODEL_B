@@ -30,10 +30,12 @@ namespace BBC
         private const ushort OswordEntry = 0xFFF1;
         private const int SectorSize = 256;
         private const int SectorsPerTrack = 10;
+        private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
         private readonly FlatMemoryBus memory;
         private HostFile[] files = [];
         private byte[] mountedImage = [];
         private string? mountedPath;
+        private string currentDirectory = "$";
 
         private string? mountedFileName;
         private bool mountedDiscImage;
@@ -76,6 +78,7 @@ namespace BBC
             mountedPath = null;
             mountedFileName = null;
             mountedDiscImage = false;
+            currentDirectory = "$";
             RunCommandInterceptionEnabled = true;
         }
 
@@ -102,6 +105,7 @@ namespace BBC
 
             mountedPath = fullPath;
             mountedFileName = Path.GetFileName(fullPath);
+            currentDirectory = "$";
             RunCommandInterceptionEnabled = true;
         }
 
@@ -120,6 +124,7 @@ namespace BBC
             ushort controlBlock = (ushort)(cpu.registers.X | (cpu.registers.Y << 8));
             string requestedName = ReadOsString(ReadWord(controlBlock));
             HostFile? matchedFile = FindFile(requestedName);
+            Trace($"OSFILE action=${action:X2} name=\"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
 
             if (!matchedFile.HasValue)
             {
@@ -205,6 +210,8 @@ namespace BBC
             if (command.StartsWith('*'))
                 command = command[1..].TrimStart();
 
+            Trace($"OSCLI \"{command}\"");
+
             // BBC shorthand: '*/FILE' is equivalent to '*RUN FILE'. Rewrite once
             // so the rest of the dispatcher (TryParseRunCommand etc.) just works.
             if (command.StartsWith('/'))
@@ -254,6 +261,12 @@ namespace BBC
                 return true;
             }
 
+            if (TryHandleDirCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
             if (IsMouseCommand(command))
             {
                 ReturnFromSubroutine(cpu);
@@ -268,6 +281,7 @@ namespace BBC
             if (TryParseLoadCommand(command, out string loadName, out ushort? loadAddress))
             {
                 HostFile? matchedLoadFile = FindFile(loadName);
+                Trace($"LOAD \"{loadName}\" match=\"{matchedLoadFile?.Name ?? "<none>"}\"");
                 if (!matchedLoadFile.HasValue)
                 {
                     return false;
@@ -289,6 +303,7 @@ namespace BBC
             }
 
             HostFile? matchedFile = FindFile(requestedName);
+            Trace($"RUN \"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
             if (!matchedFile.HasValue)
             {
                 return false;
@@ -317,6 +332,7 @@ namespace BBC
 
             string requestedName = ReadOsString((ushort)(cpu.registers.X | (cpu.registers.Y << 8))).Trim();
             HostFile? matchedFile = FindFile(requestedName);
+            Trace($"FSCV A=${cpu.registers.A:X2} name=\"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
             if (!matchedFile.HasValue)
             {
                 return false;
@@ -564,16 +580,28 @@ namespace BBC
         /// <returns>The resulting value.</returns>
         private HostFile? FindFile(string requestedName)
         {
-            string normalized = NormalizeDiscName(requestedName).ToUpperInvariant();
-            string leafNormalized = NormalizeName(GetLeafName(requestedName));
+            string cleanedName = CleanDfsName(requestedName);
+            string normalized = CanonicalDfsName(cleanedName);
+            string leafNormalized = NormalizeName(GetLeafName(cleanedName));
+            bool hasExplicitDirectory = HasExplicitDirectory(cleanedName);
+
+            if (!hasExplicitDirectory && currentDirectory != "$")
+            {
+                string qualified = CanonicalDfsName($"{currentDirectory}.{cleanedName}");
+                foreach (HostFile file in files)
+                {
+                    if (CanonicalDfsName(file.Name) == qualified)
+                        return file;
+                }
+            }
 
             foreach (HostFile file in files)
             {
-                if (NormalizeDiscName(file.Name).ToUpperInvariant() == normalized)
+                if (CanonicalDfsName(file.Name) == normalized)
                     return file;
             }
 
-            string fallbackNormalized = NormalizeName(requestedName);
+            string fallbackNormalized = NormalizeName(cleanedName);
             foreach (HostFile file in files)
             {
                 string fileNormalized = NormalizeName(file.Name);
@@ -590,11 +618,65 @@ namespace BBC
             return files.Length == 1 ? files[0] : null;
         }
 
+        /// <summary>Handles DFS directory selection commands for host-side file lookups.</summary>
+        /// <param name="command">The OSCLI command text.</param>
+        /// <returns>True when the command selected a directory.</returns>
+        private bool TryHandleDirCommand(string command)
+        {
+            if (!TryMatchCommandName(command, "DIR", out string rest))
+                return false;
+
+            string directory = rest.Trim().Trim('"');
+            currentDirectory = string.IsNullOrEmpty(directory) || directory == "$"
+                ? "$"
+                : char.ToUpperInvariant(directory[0]).ToString();
+            Trace($"DIR current=\"{currentDirectory}\"");
+            return true;
+        }
+
+        /// <summary>Checks whether a DFS name already includes a directory prefix.</summary>
+        /// <param name="name">The file name.</param>
+        /// <returns>True when the name has an explicit directory.</returns>
+        private static bool HasExplicitDirectory(string name)
+        {
+            string cleanedName = CleanDfsName(name);
+            int dot = cleanedName.IndexOf('.');
+            return dot > 0 && dot < cleanedName.Length - 1;
+        }
+
+        /// <summary>Builds a non-truncating DFS catalogue comparison key.</summary>
+        /// <param name="name">The DFS file name.</param>
+        /// <returns>The canonical comparison key.</returns>
+        private static string CanonicalDfsName(string name)
+        {
+            return CleanDfsName(name).ToUpperInvariant();
+        }
+
+        /// <summary>Removes quoting and shorthand run prefixes from a DFS name.</summary>
+        /// <param name="name">The DFS file name.</param>
+        /// <returns>The cleaned DFS file name.</returns>
+        private static string CleanDfsName(string name)
+        {
+            string trimmed = name.Trim().Trim('"');
+            if (trimmed.StartsWith('/'))
+                trimmed = trimmed[1..].TrimStart();
+
+            return trimmed;
+        }
+
         /// <summary>Raises the host disc activity callback for mounted disc-image reads.</summary>
         private void NotifyDiscImageLoadActivity()
         {
             if (mountedDiscImage)
                 DiscImageLoadActivity?.Invoke();
+        }
+
+        /// <summary>Writes a host filing diagnostic event when tracing is enabled.</summary>
+        /// <param name="message">The diagnostic message.</param>
+        private static void Trace(string message)
+        {
+            if (TraceEnabled)
+                Console.WriteLine($"HOSTFS {message}");
         }
 
         /// <summary>Extracts the BBC leaf filename from a host or DFS-style path.</summary>
