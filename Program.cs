@@ -48,7 +48,7 @@ namespace BBC
             {
                 try
                 {
-                    emulator.MountHostFile(path);
+                    emulator.MountHostFile(path, options.AutoRunDisc);
                 }
                 catch (Exception ex) when (IsUserMountException(ex))
                 {
@@ -72,7 +72,7 @@ namespace BBC
             List<string> mountPaths = new List<string>();
             string? printAutoLoadPath = null;
             double speedScale = 1.0;
-            bool bootDisc = false;
+            bool autoRunDisc = true;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -105,7 +105,14 @@ namespace BBC
 
                 if (string.Equals(args[i], "--boot-disc", StringComparison.OrdinalIgnoreCase))
                 {
-                    bootDisc = true;
+                    autoRunDisc = true;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--no-boot-disc", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(args[i], "--no-autoboot", StringComparison.OrdinalIgnoreCase))
+                {
+                    autoRunDisc = false;
                     continue;
                 }
 
@@ -124,7 +131,7 @@ namespace BBC
                     mountPaths.Add(args[i]);
             }
 
-            return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath, speedScale, bootDisc);
+            return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath, speedScale, autoRunDisc);
         }
 
         /// <summary>Attempts to parse speed scale.</summary>
@@ -159,7 +166,7 @@ namespace BBC
                 or InvalidOperationException;
         }
 
-        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath, double SpeedScale, bool BootDisc);
+        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath, double SpeedScale, bool AutoRunDisc);
     }
 
     /// <summary>
@@ -194,6 +201,7 @@ namespace BBC
         private const string DfsRomFileName = "DFS-0.9.rom";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
         private const string DfsRomMarker = "DFS\0" + "0.90";
+        private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
         private const string OsRomMarker = "BBC Computer";
         private const int TargetFramesPerSecond = 50;
         private const int FrameMilliseconds = 1000 / TargetFramesPerSecond;
@@ -237,6 +245,10 @@ namespace BBC
         private readonly HostFilingSystem hostFilingSystem;
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
+        private bool mouseEnabled;
+        private bool mousePositionInitialized;
+        private byte lastMouseX;
+        private byte lastMouseY;
         private long keyboardInputEnabledAtTicks;
         private long hostDiscActivityLedUntilTicks;
         private int capsLockTapPulseCycles;
@@ -276,6 +288,7 @@ namespace BBC
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
             hostFilingSystem.DiscImageLoadActivity = PulseHostDiscActivityLed;
+            hostFilingSystem.MouseEnabledChanged = SetMouseEnabled;
             discController = new DiscController8271();
             Video = new Video(Memory.Memory);
             systemVia.ExternalVsyncLineEnabled = true;
@@ -342,6 +355,7 @@ namespace BBC
                 DrainHostDiscLoads(Display);
                 DrainHostKeyMatrixInput(Display);
                 DrainHostJoystickInput(Display);
+                UpdateHostMouseInput(Display);
                 DrainHostKeyboardInput(Display);
                 QueuePendingBootScriptLine();
                 RenderDisplayFrame(Display);
@@ -397,7 +411,8 @@ namespace BBC
 
         /// <summary>Mounts a host file or disc image.</summary>
         /// <param name="path">The host path.</param>
-        public void MountHostFile(string path)
+        /// <param name="autoRunDisc">Whether mounted disc images should queue their boot script.</param>
+        public void MountHostFile(string path, bool autoRunDisc = true)
         {
             if (IsDiscImagePath(path))
             {
@@ -412,7 +427,8 @@ namespace BBC
                 hostFilingSystem.Mount(path);
 
                 Console.WriteLine($"Mounted DFS: {discController.MountedFileName}");
-                QueueMountedDiscAutoRun();
+                if (autoRunDisc)
+                    QueueMountedDiscAutoRun();
                 return;
             }
 
@@ -1162,6 +1178,47 @@ namespace BBC
             }
 
             UpdateAdcChannels();
+        }
+
+        /// <summary>Enables or disables the emulated mouse interface.</summary>
+        /// <param name="enabled">Whether mouse input should be exposed to BBC software.</param>
+        private void SetMouseEnabled(bool enabled)
+        {
+            mouseEnabled = enabled;
+            mousePositionInitialized = false;
+            if (!enabled)
+                userVia.SetPortBInputBits(0x07, 0x07);
+        }
+
+        /// <summary>Maps host mouse state into the BBC mouse state used by Repton's editor.</summary>
+        /// <param name="display">The target display.</param>
+        private void UpdateHostMouseInput(Display display)
+        {
+            if (!mouseEnabled)
+                return;
+
+            HostMouseState mouse = display.GetMouseState();
+            byte x = (byte)Math.Clamp(mouse.X * 160 / Math.Max(1, display.Width - 1), 0, 0x9F);
+            byte y = (byte)Math.Clamp(mouse.Y * 256 / Math.Max(1, display.Height), 0, 0xFF);
+            Memory.Memory[0x009A] = x;
+            Memory.Memory[0x009B] = y;
+
+            byte activeLowButtons = (byte)(0x07 ^ (mouse.Buttons & 0x07));
+            int deltaX = 0;
+            int deltaY = 0;
+            if (mousePositionInitialized)
+            {
+                deltaX = Math.Sign(x - lastMouseX);
+                deltaY = Math.Sign(y - lastMouseY);
+            }
+
+            lastMouseX = x;
+            lastMouseY = y;
+            mousePositionInitialized = true;
+            userVia.SetMouseInput(activeLowButtons, deltaX, deltaY);
+            UpdateCpuIrqLine();
+            if (MouseTraceEnabled && (deltaX != 0 || deltaY != 0 || mouse.Buttons != 0))
+                Console.WriteLine($"MOUSE x={x} y={y} buttons=${mouse.Buttons:X2} dx={deltaX} dy={deltaY}");
         }
 
         /// <summary>Refreshes ADC channels after related emulator state changes.</summary>

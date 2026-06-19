@@ -33,6 +33,8 @@ namespace BBC
         private byte portB;
         private byte dataDirectionA;
         private byte dataDirectionB;
+        private byte externalPortBMask;
+        private byte externalPortBValue;
         private int peripheralCycleCounter;
         private int lastPortBReadCycle = int.MinValue / 2;
         private int portBPollStartCycle;
@@ -57,6 +59,43 @@ namespace BBC
         /// <summary>Gets whether the VIA IRQ output is currently asserted.</summary>
         public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;
 
+        /// <summary>Sets externally-driven user-port B input bits.</summary>
+        /// <param name="mask">The bits controlled by the external device.</param>
+        /// <param name="value">The bit values exposed on the user port.</param>
+        public void SetPortBInputBits(byte mask, byte value)
+        {
+            externalPortBMask = mask;
+            externalPortBValue = (byte)(value & mask);
+        }
+
+        /// <summary>Sets mouse-style user-port inputs and raises edge interrupt flags for movement.</summary>
+        /// <param name="activeLowButtons">The active-low button bits exposed on PB0-PB2.</param>
+        /// <param name="deltaX">The host mouse X movement direction.</param>
+        /// <param name="deltaY">The host mouse Y movement direction.</param>
+        public void SetMouseInput(byte activeLowButtons, int deltaX, int deltaY)
+        {
+            byte value = (byte)(activeLowButtons & 0x07);
+
+            if (deltaX != 0)
+            {
+                if (deltaX > 0)
+                    value |= 0x08;
+
+                SetInterrupt(0x10);
+            }
+
+            if (deltaY != 0)
+            {
+                if (deltaY > 0)
+                    value |= 0x10;
+
+                SetInterrupt(0x08);
+            }
+
+            externalPortBMask = 0x1F;
+            externalPortBValue = value;
+        }
+
         /// <summary>Resets the modelled VIA state.</summary>
         public void Reset()
         {
@@ -67,6 +106,8 @@ namespace BBC
             portB = 0;
             dataDirectionA = 0;
             dataDirectionB = 0;
+            externalPortBMask = 0;
+            externalPortBValue = 0;
             peripheralCycleCounter = 0;
             lastPortBReadCycle = int.MinValue / 2;
             portBPollStartCycle = 0;
@@ -342,6 +383,9 @@ namespace BBC
             }
 
             lastPortBReadCycle = peripheralCycleCounter;
+            value = (byte)((value & ~externalPortBMask) | externalPortBValue);
+            if ((externalPortBMask & 0x18) != 0)
+                ClearInterrupt(0x18);
             return value;
         }
 

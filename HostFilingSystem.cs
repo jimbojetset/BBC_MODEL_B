@@ -62,6 +62,9 @@ namespace BBC
         /// <summary>Called after a host-backed disc-image load is copied into memory.</summary>
         public Action? DiscImageLoadActivity { get; set; }
 
+        /// <summary>Called when an emulated mouse ROM command enables or disables mouse input.</summary>
+        public Action<bool>? MouseEnabledChanged { get; set; }
+
         /// <summary>Queues text into the emulated keyboard buffer for soft-key expansion.</summary>
         public Action<string>? QueueKeyboardText { get; set; }
 
@@ -267,7 +270,7 @@ namespace BBC
                 return true;
             }
 
-            if (IsMouseCommand(command))
+            if (TryHandleMouseCommand(command))
             {
                 ReturnFromSubroutine(cpu);
                 return true;
@@ -380,15 +383,24 @@ namespace BBC
                 && string.Equals(trimmed, "TAPE", StringComparison.OrdinalIgnoreCase);
         }
 
-        /// <summary>Checks whether an OSCLI command targets an optional mouse ROM.</summary>
+        /// <summary>Handles optional mouse ROM control commands.</summary>
         /// <param name="command">The command value.</param>
-        /// <returns>True when mouse command is true; otherwise, false.</returns>
-        private static bool IsMouseCommand(string command)
+        /// <returns>True when the command targeted the mouse ROM.</returns>
+        private bool TryHandleMouseCommand(string command)
         {
             string trimmed = command.TrimStart();
-            return trimmed.Length >= 5
-                && string.Equals(trimmed[..5], "MOUSE", StringComparison.OrdinalIgnoreCase)
-                && (trimmed.Length == 5 || char.IsWhiteSpace(trimmed[5]));
+            if (trimmed.Length < 5
+                || !string.Equals(trimmed[..5], "MOUSE", StringComparison.OrdinalIgnoreCase)
+                || (trimmed.Length > 5 && !char.IsWhiteSpace(trimmed[5])))
+            {
+                return false;
+            }
+
+            string option = trimmed.Length == 5 ? "ON" : trimmed[5..].TrimStart();
+            bool enabled = !option.StartsWith("OFF", StringComparison.OrdinalIgnoreCase);
+            MouseEnabledChanged?.Invoke(enabled);
+            Trace($"MOUSE enabled={enabled}");
+            return true;
         }
 
         /// <summary>Checks whether an OSCLI command is a TV display command handled by the host.</summary>

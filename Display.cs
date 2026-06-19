@@ -60,6 +60,7 @@ namespace BBC
         private readonly Queue<string> pendingDiscLoads = new Queue<string>();
         private int pendingScreenshotRequests;
         private int pendingTraceToggleRequests;
+        private HostMouseState mouseState;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
 
@@ -193,6 +194,12 @@ namespace BBC
 
                 if (ev.Type == SDL_KEYUP)
                     EnqueueKeyUp(ev.KeySym);
+
+                if (ev.Type == SDL_MOUSEMOTION)
+                    UpdateMouseState(ev.MouseX, ev.MouseY, mouseState.Buttons);
+
+                if (ev.Type is SDL_MOUSEBUTTONDOWN or SDL_MOUSEBUTTONUP)
+                    UpdateMouseButtonState(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY);
             }
 
             SyncHostCapsLockState();
@@ -249,6 +256,13 @@ namespace BBC
                 destination[count++] = pendingJoystickChanges.Dequeue();
 
             return count;
+        }
+
+        /// <summary>Gets the latest host mouse state mapped into BBC framebuffer coordinates.</summary>
+        /// <returns>The latest host mouse state.</returns>
+        public HostMouseState GetMouseState()
+        {
+            return mouseState;
         }
 
         /// <summary>Copies pending host disc/file mount requests into a caller-provided list.</summary>
@@ -853,6 +867,47 @@ namespace BBC
                 pendingJoystickChanges.Enqueue(new HostJoystickChange(control.Value, pressed));
         }
 
+        /// <summary>Updates the latest host mouse position in BBC framebuffer coordinates.</summary>
+        /// <param name="hostX">The host-window X coordinate.</param>
+        /// <param name="hostY">The host-window Y coordinate.</param>
+        /// <param name="buttons">The current host mouse button mask.</param>
+        private void UpdateMouseState(int hostX, int hostY, byte buttons)
+        {
+            float logicalX = hostX;
+            float logicalY = hostY;
+            if (renderer != IntPtr.Zero)
+                SDL_RenderWindowToLogical(renderer, hostX, hostY, out logicalX, out logicalY);
+
+            int bbcX = (int)Math.Round(logicalX - viewportRect.X);
+            int bbcY = (int)Math.Round(logicalY - viewportRect.Y);
+            mouseState = new HostMouseState(
+                Math.Clamp(bbcX, 0, Width - 1),
+                Math.Clamp(bbcY, 0, Height - 1),
+                buttons);
+        }
+
+        /// <summary>Updates the latest host mouse button state.</summary>
+        /// <param name="button">The SDL mouse button number.</param>
+        /// <param name="pressed">Whether the button is pressed.</param>
+        /// <param name="hostX">The host-window X coordinate.</param>
+        /// <param name="hostY">The host-window Y coordinate.</param>
+        private void UpdateMouseButtonState(byte button, bool pressed, int hostX, int hostY)
+        {
+            byte mask = button switch
+            {
+                SDL_BUTTON_LEFT => 0x01,
+                SDL_BUTTON_RIGHT => 0x02,
+                SDL_BUTTON_MIDDLE => 0x04,
+                _ => 0x00
+            };
+
+            byte buttons = mouseState.Buttons;
+            if (mask != 0)
+                buttons = pressed ? (byte)(buttons | mask) : (byte)(buttons & ~mask);
+
+            UpdateMouseState(hostX, hostY, buttons);
+        }
+
         /// <summary>Queues a BBC Caps Lock transition when the host Caps Lock state changes.</summary>
         private void SyncHostCapsLockState()
         {
@@ -1372,7 +1427,13 @@ namespace BBC
         private const uint SDL_QUIT = 0x100;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_KEYUP = 0x301;
+        private const uint SDL_MOUSEMOTION = 0x400;
+        private const uint SDL_MOUSEBUTTONDOWN = 0x401;
+        private const uint SDL_MOUSEBUTTONUP = 0x402;
         private const uint SDL_DROPFILE = 0x1000;
+        private const byte SDL_BUTTON_LEFT = 1;
+        private const byte SDL_BUTTON_MIDDLE = 2;
+        private const byte SDL_BUTTON_RIGHT = 3;
         private const int SDLK_SPACE = 32;
         private const int SDLK_ASTERISK = 42;
         private const int SDLK_PLUS = 43;
@@ -1470,6 +1531,9 @@ namespace BBC
             [FieldOffset(13)] public byte KeyRepeat;
             [FieldOffset(20)] public int KeySym;
             [FieldOffset(8)] public IntPtr DropFile;
+            [FieldOffset(16)] public byte MouseButton;
+            [FieldOffset(20)] public int MouseX;
+            [FieldOffset(24)] public int MouseY;
             [FieldOffset(12)] public byte Text0;
             [FieldOffset(13)] public byte Text1;
             [FieldOffset(14)] public byte Text2;
@@ -1576,6 +1640,15 @@ namespace BBC
         /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderSetIntegerScale(IntPtr renderer, int enable);
+
+        /// <summary>Imports SDL_RenderWindowToLogical for coordinate conversion.</summary>
+        /// <param name="renderer">The renderer value.</param>
+        /// <param name="windowX">The window X coordinate.</param>
+        /// <param name="windowY">The window Y coordinate.</param>
+        /// <param name="logicalX">The logical X coordinate.</param>
+        /// <param name="logicalY">The logical Y coordinate.</param>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SDL_RenderWindowToLogical(IntPtr renderer, int windowX, int windowY, out float logicalX, out float logicalY);
 
         /// <summary>Imports SDL_CreateTexture for allocating the framebuffer texture.</summary>
         /// <param name="renderer">The renderer value.</param>
@@ -1715,6 +1788,12 @@ namespace BBC
     /// <param name="Control">The joystick control that changed.</param>
     /// <param name="Pressed">Whether the control is now pressed.</param>
     public readonly record struct HostJoystickChange(JoystickControl Control, bool Pressed);
+
+    /// <summary>Describes the current host mouse state in BBC framebuffer coordinates.</summary>
+    /// <param name="X">The BBC framebuffer X coordinate.</param>
+    /// <param name="Y">The BBC framebuffer Y coordinate.</param>
+    /// <param name="Buttons">Pressed buttons as left/right/middle bits.</param>
+    public readonly record struct HostMouseState(int X, int Y, byte Buttons);
 
     /// <summary>Emulated joystick controls.</summary>
     public enum JoystickControl
