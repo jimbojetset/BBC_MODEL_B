@@ -77,6 +77,34 @@ namespace BBC
             externalPortBValue = (byte)(value & mask);
         }
 
+        /// <summary>Sets active-low switched-joystick inputs on the user port.</summary>
+        /// <param name="left">Whether left is pressed.</param>
+        /// <param name="right">Whether right is pressed.</param>
+        /// <param name="up">Whether up is pressed.</param>
+        /// <param name="down">Whether down is pressed.</param>
+        /// <param name="fire">Whether fire is pressed.</param>
+        public void SetSwitchedJoystickInput(bool left, bool right, bool up, bool down, bool fire)
+        {
+            byte value = 0x1F;
+
+            if (up)
+                value &= 0xFE;
+
+            if (down)
+                value &= 0xFD;
+
+            if (left)
+                value &= 0xFB;
+
+            if (right)
+                value &= 0xF7;
+
+            if (fire)
+                value &= 0xEF;
+
+            SetPortBInputBits(0x1F, value);
+        }
+
         /// <summary>Sets mouse-style user-port inputs and raises edge interrupt flags for movement.</summary>
         /// <param name="activeLowButtons">The active-low button bits exposed on PB0-PB2.</param>
         /// <param name="deltaX">The host mouse X movement steps.</param>

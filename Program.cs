@@ -235,6 +235,7 @@ namespace BBC
         private readonly byte[] inputScratch = new byte[64];
         private readonly HostKeyChange[] keyChangeScratch = new HostKeyChange[64];
         private readonly HostJoystickChange[] joystickChangeScratch = new HostJoystickChange[16];
+        private readonly HostAnalogJoystickChange[] analogJoystickChangeScratch = new HostAnalogJoystickChange[16];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly List<string> discLoadScratch = new List<string>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
@@ -371,6 +372,7 @@ namespace BBC
                 DrainHostDiscLoads(Display);
                 DrainHostKeyMatrixInput(Display);
                 DrainHostJoystickInput(Display);
+                DrainHostAnalogJoystickInput(Display);
                 UpdateHostMouseInput(Display);
                 DrainHostKeyboardInput(Display);
                 QueuePendingBootScriptLine();
@@ -561,7 +563,7 @@ namespace BBC
             mouseEnabled = false;
             mousePositionInitialized = false;
             Display?.SetRelativeMouseMode(false);
-            userVia.SetPortBInputBits(0x07, 0x07);
+            UpdateJoystickInputs();
             capsLockTapPressed = false;
             capsLockTapPulseCycles = 0;
             Array.Clear(matrixKeyPressedAtTicks);
@@ -822,11 +824,12 @@ namespace BBC
         /// <param name="y">The high result byte value.</param>
         private void ReadAdval(byte channel, out byte x, out byte y)
         {
+            GetJoystickAxisValues(out ushort xAxis, out ushort yAxis);
             ushort value = channel switch
             {
                 0 => joystickState.Fire ? (ushort)0x0001 : (ushort)0x0000,
-                1 => joystickState.Left ? (ushort)0xFFFF : joystickState.Right ? (ushort)0x0000 : (ushort)0x8000,
-                2 => joystickState.Up ? (ushort)0xFFFF : joystickState.Down ? (ushort)0x0000 : (ushort)0x8000,
+                1 => xAxis,
+                2 => yAxis,
                 _ => 0x8000
             };
 
@@ -1197,7 +1200,35 @@ namespace BBC
                 }
             }
 
-            UpdateAdcChannels();
+            UpdateJoystickInputs();
+        }
+
+        /// <summary>Consumes host analogue joystick changes and updates ADC joystick axes.</summary>
+        /// <param name="display">The target display.</param>
+        private void DrainHostAnalogJoystickInput(Display display)
+        {
+            int count = display.DrainAnalogJoystickChanges(analogJoystickChangeScratch);
+            if (count == 0)
+                return;
+
+            for (int i = 0; i < count; i++)
+            {
+                HostAnalogJoystickChange change = analogJoystickChangeScratch[i];
+                switch (change.Axis)
+                {
+                    case JoystickAxis.X:
+                        joystickState.AnalogX = SdlAxisToAdcValue(change.Value);
+                        joystickState.HasAnalogX = true;
+                        break;
+
+                    case JoystickAxis.Y:
+                        joystickState.AnalogY = SdlAxisToAdcValue(change.Value);
+                        joystickState.HasAnalogY = true;
+                        break;
+                }
+            }
+
+            UpdateJoystickInputs();
         }
 
         /// <summary>Enables or disables the emulated mouse interface.</summary>
@@ -1208,7 +1239,7 @@ namespace BBC
             mousePositionInitialized = false;
             Display?.SetRelativeMouseMode(enabled);
             if (!enabled)
-                userVia.SetPortBInputBits(0x07, 0x07);
+                UpdateJoystickInputs();
         }
 
         /// <summary>Maps host mouse state into the BBC mouse state used by Repton's editor.</summary>
@@ -1247,23 +1278,54 @@ namespace BBC
                 Console.WriteLine($"MOUSE x={x} y={y} buttons=${mouse.Buttons:X2} dx={deltaX} dy={deltaY}");
         }
 
+        /// <summary>Refreshes joystick hardware inputs after related emulator state changes.</summary>
+        private void UpdateJoystickInputs()
+        {
+            UpdateAdcChannels();
+            if (!mouseEnabled)
+                userVia.SetSwitchedJoystickInput(
+                    joystickState.Left,
+                    joystickState.Right,
+                    joystickState.Up,
+                    joystickState.Down,
+                    joystickState.Fire);
+        }
+
         /// <summary>Refreshes ADC channels after related emulator state changes.</summary>
         private void UpdateAdcChannels()
         {
-            // µPD7002 channels follow the BBC ADVAL convention: 0x0000 = max one direction, 0xFFFF = max other.
-            // Channel 0 returns 0/1 for fire (digital) — we reuse channel 0 for fire (most software polls ADVAL via OSBYTE).
-            // Channels 1 (X-axis) and 2 (Y-axis) carry analogue position.
-            ushort fire = joystickState.Fire ? (ushort)0xFFFF : (ushort)0x0000;
-            ushort xAxis = joystickState.Left ? (ushort)0xFFFF
-                         : joystickState.Right ? (ushort)0x0000
-                         : (ushort)0x8000;
-            ushort yAxis = joystickState.Up ? (ushort)0xFFFF
-                         : joystickState.Down ? (ushort)0x0000
-                         : (ushort)0x8000;
-            adc.SetChannel(0, fire);
-            adc.SetChannel(1, xAxis);
-            adc.SetChannel(2, yAxis);
-            adc.SetChannel(3, 0x8000);
+            // µPD7002 channels follow the BBC hardware convention: analogue axes live on
+            // channels 0-3. The MOS ADVAL(0) fire shortcut remains handled separately.
+            GetJoystickAxisValues(out ushort xAxis, out ushort yAxis);
+            adc.SetChannel(0, xAxis);
+            adc.SetChannel(1, yAxis);
+            adc.SetChannel(2, xAxis);
+            adc.SetChannel(3, yAxis);
+        }
+
+        /// <summary>Gets the current BBC analogue joystick axis values.</summary>
+        /// <param name="xAxis">The X-axis ADC value.</param>
+        /// <param name="yAxis">The Y-axis ADC value.</param>
+        private void GetJoystickAxisValues(out ushort xAxis, out ushort yAxis)
+        {
+            xAxis = joystickState.Left ? (ushort)0xFFFF
+                  : joystickState.Right ? (ushort)0x0000
+                  : joystickState.HasAnalogX ? joystickState.AnalogX
+                  : (ushort)0x8000;
+            yAxis = joystickState.Up ? (ushort)0xFFFF
+                  : joystickState.Down ? (ushort)0x0000
+                  : joystickState.HasAnalogY ? joystickState.AnalogY
+                  : (ushort)0x8000;
+        }
+
+        /// <summary>Converts a signed SDL joystick axis to the BBC ADC range.</summary>
+        /// <param name="value">The signed SDL axis value.</param>
+        /// <returns>The BBC ADC value.</returns>
+        private static ushort SdlAxisToAdcValue(short value)
+        {
+            int normalized = value == short.MinValue ? -32767 : value;
+            int adcValue = 0x8000 - normalized;
+            return (ushort)Math.Clamp(adcValue, 0, 0xFFFF);
         }
 
         /// <summary>Consumes host break-key requests and schedules a BBC BREAK reset.</summary>
@@ -1458,6 +1520,10 @@ namespace BBC
             public bool Up;
             public bool Down;
             public bool Fire;
+            public ushort AnalogX;
+            public ushort AnalogY;
+            public bool HasAnalogX;
+            public bool HasAnalogY;
         }
 
         /// <summary>Sleeps or spins until the requested stopwatch deadline is reached.</summary>

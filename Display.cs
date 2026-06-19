@@ -51,13 +51,16 @@ namespace BBC
         private const uint NotificationAccent = 0xFFFFD75E;
         private const uint NotificationTitleColour = 0xFFFFFFFF;
         private const uint NotificationBodyColour = 0xFFEAEAEA;
+        private const short JoystickAxisThreshold = 12000;
 
         private readonly uint[] frameBuffer;
         private readonly Queue<byte> pendingInput = new Queue<byte>();
         private readonly Queue<BreakKeyPress> pendingBreaks = new Queue<BreakKeyPress>();
         private readonly Queue<HostKeyChange> pendingKeyChanges = new Queue<HostKeyChange>();
         private readonly Queue<HostJoystickChange> pendingJoystickChanges = new Queue<HostJoystickChange>();
+        private readonly Queue<HostAnalogJoystickChange> pendingAnalogJoystickChanges = new Queue<HostAnalogJoystickChange>();
         private readonly Queue<string> pendingDiscLoads = new Queue<string>();
+        private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
         private int pendingScreenshotRequests;
         private int pendingTraceToggleRequests;
         private HostMouseState mouseState;
@@ -71,6 +74,9 @@ namespace BBC
         private IntPtr scanlineTexture;
         private IntPtr emptyDriveGlyphTexture;
         private IntPtr mountedDriveGlyphTexture;
+        private IntPtr gameController;
+        private IntPtr joystick;
+        private int activeJoystickInstanceId = -1;
         private bool scanlinesEnabled;
         private bool disposed;
         private bool hostCapsLockEnabled;
@@ -136,7 +142,7 @@ namespace BBC
             frameBuffer = new uint[width * height];
             Array.Fill(frameBuffer, Black);
 
-            ThrowIfSdlFailed(SDL_InitSubSystem(SDL_INIT_VIDEO), "SDL_InitSubSystem");
+            ThrowIfSdlFailed(SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK), "SDL_InitSubSystem");
             int horizontalBorder = (int)Math.Round(width * HorizontalBorderPercent / 100.0);
             logicalWidth = width + (horizontalBorder * 2);
             logicalHeight = height;
@@ -168,6 +174,9 @@ namespace BBC
             mountedDriveGlyphTexture = CreateDriveGlyphTexture(0xFF005020);
 
             SDL_StartTextInput();
+            _ = SDL_GameControllerEventState(SDL_ENABLE);
+            _ = SDL_JoystickEventState(SDL_ENABLE);
+            OpenFirstGameInput();
             hostCapsLockEnabled = IsHostCapsLockEnabled();
             Present();
         }
@@ -201,6 +210,27 @@ namespace BBC
 
                 if (ev.Type is SDL_MOUSEBUTTONDOWN or SDL_MOUSEBUTTONUP)
                     UpdateMouseButtonState(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY);
+
+                if (ev.Type == SDL_CONTROLLERAXISMOTION)
+                    UpdateControllerAxis(ev.ControllerAxis, ev.ControllerAxisValue);
+
+                if (ev.Type is SDL_CONTROLLERBUTTONDOWN or SDL_CONTROLLERBUTTONUP)
+                    UpdateControllerButton(ev.ControllerButton, ev.Type == SDL_CONTROLLERBUTTONDOWN);
+
+                if (ev.Type == SDL_CONTROLLERDEVICEADDED || ev.Type == SDL_JOYDEVICEADDED)
+                    OpenFirstGameInput();
+
+                if (ev.Type == SDL_CONTROLLERDEVICEREMOVED || ev.Type == SDL_JOYDEVICEREMOVED)
+                    HandleGameInputRemoved(ev.JoystickDeviceInstanceId);
+
+                if (ev.Type == SDL_JOYAXISMOTION && gameController == IntPtr.Zero)
+                    UpdateJoystickAxis(ev.JoystickAxis, ev.JoystickAxisValue);
+
+                if (ev.Type == SDL_JOYHATMOTION && gameController == IntPtr.Zero)
+                    UpdateJoystickHat(ev.JoystickHatValue);
+
+                if (ev.Type is SDL_JOYBUTTONDOWN or SDL_JOYBUTTONUP && gameController == IntPtr.Zero)
+                    UpdateJoystickButton(ev.JoystickButton, ev.Type == SDL_JOYBUTTONDOWN);
             }
 
             SyncHostCapsLockState();
@@ -255,6 +285,19 @@ namespace BBC
 
             while (count < destination.Length && pendingJoystickChanges.Count > 0)
                 destination[count++] = pendingJoystickChanges.Dequeue();
+
+            return count;
+        }
+
+        /// <summary>Copies pending analogue joystick axis changes into a caller-provided buffer.</summary>
+        /// <param name="destination">The destination buffer.</param>
+        /// <returns>The number of changes copied.</returns>
+        public int DrainAnalogJoystickChanges(Span<HostAnalogJoystickChange> destination)
+        {
+            int count = 0;
+
+            while (count < destination.Length && pendingAnalogJoystickChanges.Count > 0)
+                destination[count++] = pendingAnalogJoystickChanges.Dequeue();
 
             return count;
         }
@@ -776,8 +819,9 @@ namespace BBC
                 window = IntPtr.Zero;
             }
 
+            CloseGameInput();
             SDL_StopTextInput();
-            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+            SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
             disposed = true;
         }
 
@@ -831,7 +875,7 @@ namespace BBC
                 return;
             }
 
-            EnqueueJoystickChange(keySym, true);
+            EnqueueKeyboardJoystickChange(keySym, true);
 
             BbcKeyChord? chord = MapHostKeyToBbcKey(keySym, modifiers);
             if (chord.HasValue)
@@ -852,7 +896,7 @@ namespace BBC
                 return;
             }
 
-            EnqueueJoystickChange(keySym, false);
+            EnqueueKeyboardJoystickChange(keySym, false);
 
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
             {
@@ -869,7 +913,7 @@ namespace BBC
         /// <summary>Queues an emulated joystick direction or fire-button transition.</summary>
         /// <param name="keySym">The key sym value.</param>
         /// <param name="pressed">The key press state.</param>
-        private void EnqueueJoystickChange(int keySym, bool pressed)
+        private void EnqueueKeyboardJoystickChange(int keySym, bool pressed)
         {
             JoystickControl? control = keySym switch
             {
@@ -882,7 +926,186 @@ namespace BBC
             };
 
             if (control.HasValue)
-                pendingJoystickChanges.Enqueue(new HostJoystickChange(control.Value, pressed));
+                SetJoystickSource(control.Value, HostJoystickSource.Keyboard, pressed);
+        }
+
+        /// <summary>Updates one physical/source contribution to a joystick control.</summary>
+        /// <param name="control">The joystick control.</param>
+        /// <param name="source">The input source.</param>
+        /// <param name="pressed">Whether the source is pressed.</param>
+        private void SetJoystickSource(JoystickControl control, HostJoystickSource source, bool pressed)
+        {
+            int index = (int)control;
+            bool wasPressed = joystickSources[index] != HostJoystickSource.None;
+            joystickSources[index] = pressed
+                ? joystickSources[index] | source
+                : joystickSources[index] & ~source;
+            bool isPressed = joystickSources[index] != HostJoystickSource.None;
+            if (wasPressed != isPressed)
+                pendingJoystickChanges.Enqueue(new HostJoystickChange(control, isPressed));
+        }
+
+        /// <summary>Opens the first available SDL game controller or joystick.</summary>
+        private void OpenFirstGameInput()
+        {
+            if (gameController != IntPtr.Zero || joystick != IntPtr.Zero)
+                return;
+
+            int count = SDL_NumJoysticks();
+            for (int i = 0; i < count; i++)
+            {
+                if (SDL_IsGameController(i) == SDL_TRUE)
+                {
+                    gameController = SDL_GameControllerOpen(i);
+                    if (gameController != IntPtr.Zero)
+                    {
+                        IntPtr controllerJoystick = SDL_GameControllerGetJoystick(gameController);
+                        activeJoystickInstanceId = controllerJoystick == IntPtr.Zero ? -1 : SDL_JoystickInstanceID(controllerJoystick);
+                        return;
+                    }
+                }
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                joystick = SDL_JoystickOpen(i);
+                if (joystick != IntPtr.Zero)
+                {
+                    activeJoystickInstanceId = SDL_JoystickInstanceID(joystick);
+                    return;
+                }
+            }
+        }
+
+        /// <summary>Handles physical joystick or controller removal.</summary>
+        /// <param name="instanceId">The SDL joystick instance id.</param>
+        private void HandleGameInputRemoved(int instanceId)
+        {
+            if (instanceId != activeJoystickInstanceId)
+                return;
+
+            CloseGameInput();
+            ClearJoystickSource(HostJoystickSource.ControllerButton | HostJoystickSource.ControllerAxis);
+        }
+
+        /// <summary>Closes the active SDL game input device.</summary>
+        private void CloseGameInput()
+        {
+            if (gameController != IntPtr.Zero)
+            {
+                SDL_GameControllerClose(gameController);
+                gameController = IntPtr.Zero;
+            }
+
+            if (joystick != IntPtr.Zero)
+            {
+                SDL_JoystickClose(joystick);
+                joystick = IntPtr.Zero;
+            }
+
+            activeJoystickInstanceId = -1;
+        }
+
+        /// <summary>Clears joystick states contributed by a source mask.</summary>
+        /// <param name="source">The source mask.</param>
+        private void ClearJoystickSource(HostJoystickSource source)
+        {
+            foreach (JoystickControl control in Enum.GetValues<JoystickControl>())
+                SetJoystickSource(control, source, false);
+        }
+
+        /// <summary>Updates BBC joystick state from an SDL game-controller axis.</summary>
+        /// <param name="axis">The SDL controller axis.</param>
+        /// <param name="value">The signed axis value.</param>
+        private void UpdateControllerAxis(byte axis, short value)
+        {
+            if (axis == SDL_CONTROLLER_AXIS_LEFTX)
+            {
+                EnqueueAnalogJoystickChange(JoystickAxis.X, value);
+                SetJoystickSource(JoystickControl.Left, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
+                SetJoystickSource(JoystickControl.Right, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
+            }
+            else if (axis == SDL_CONTROLLER_AXIS_LEFTY)
+            {
+                EnqueueAnalogJoystickChange(JoystickAxis.Y, value);
+                SetJoystickSource(JoystickControl.Up, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
+                SetJoystickSource(JoystickControl.Down, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
+            }
+        }
+
+        /// <summary>Updates BBC joystick state from an SDL game-controller button.</summary>
+        /// <param name="button">The SDL controller button.</param>
+        /// <param name="pressed">Whether the button is pressed.</param>
+        private void UpdateControllerButton(byte button, bool pressed)
+        {
+            switch (button)
+            {
+                case SDL_CONTROLLER_BUTTON_A:
+                    SetJoystickSource(JoystickControl.Fire, HostJoystickSource.ControllerButton, pressed);
+                    break;
+
+                case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                    SetJoystickSource(JoystickControl.Up, HostJoystickSource.ControllerButton, pressed);
+                    break;
+
+                case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                    SetJoystickSource(JoystickControl.Down, HostJoystickSource.ControllerButton, pressed);
+                    break;
+
+                case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+                    SetJoystickSource(JoystickControl.Left, HostJoystickSource.ControllerButton, pressed);
+                    break;
+
+                case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+                    SetJoystickSource(JoystickControl.Right, HostJoystickSource.ControllerButton, pressed);
+                    break;
+            }
+        }
+
+        /// <summary>Updates BBC joystick state from a raw SDL joystick axis.</summary>
+        /// <param name="axis">The SDL joystick axis.</param>
+        /// <param name="value">The signed axis value.</param>
+        private void UpdateJoystickAxis(byte axis, short value)
+        {
+            if (axis == 0)
+            {
+                EnqueueAnalogJoystickChange(JoystickAxis.X, value);
+                SetJoystickSource(JoystickControl.Left, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
+                SetJoystickSource(JoystickControl.Right, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
+            }
+            else if (axis == 1)
+            {
+                EnqueueAnalogJoystickChange(JoystickAxis.Y, value);
+                SetJoystickSource(JoystickControl.Up, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
+                SetJoystickSource(JoystickControl.Down, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
+            }
+        }
+
+        /// <summary>Queues an analogue joystick axis change.</summary>
+        /// <param name="axis">The BBC analogue joystick axis.</param>
+        /// <param name="value">The signed SDL axis value.</param>
+        private void EnqueueAnalogJoystickChange(JoystickAxis axis, short value)
+        {
+            pendingAnalogJoystickChanges.Enqueue(new HostAnalogJoystickChange(axis, value));
+        }
+
+        /// <summary>Updates BBC joystick state from a raw SDL joystick hat.</summary>
+        /// <param name="value">The SDL hat value.</param>
+        private void UpdateJoystickHat(byte value)
+        {
+            SetJoystickSource(JoystickControl.Up, HostJoystickSource.ControllerButton, (value & SDL_HAT_UP) != 0);
+            SetJoystickSource(JoystickControl.Down, HostJoystickSource.ControllerButton, (value & SDL_HAT_DOWN) != 0);
+            SetJoystickSource(JoystickControl.Left, HostJoystickSource.ControllerButton, (value & SDL_HAT_LEFT) != 0);
+            SetJoystickSource(JoystickControl.Right, HostJoystickSource.ControllerButton, (value & SDL_HAT_RIGHT) != 0);
+        }
+
+        /// <summary>Updates BBC joystick state from a raw SDL joystick button.</summary>
+        /// <param name="button">The SDL joystick button.</param>
+        /// <param name="pressed">Whether the button is pressed.</param>
+        private void UpdateJoystickButton(byte button, bool pressed)
+        {
+            if (button == 0)
+                SetJoystickSource(JoystickControl.Fire, HostJoystickSource.ControllerButton, pressed);
         }
 
         /// <summary>Updates the latest host mouse position in BBC framebuffer coordinates.</summary>
@@ -1438,6 +1661,8 @@ namespace BBC
         private const string SdlLibrary = "SDL2";
 
         private const uint SDL_INIT_VIDEO = 0x00000020;
+        private const uint SDL_INIT_JOYSTICK = 0x00000200;
+        private const uint SDL_INIT_GAMECONTROLLER = 0x00002000;
         private const uint SDL_WINDOW_SHOWN = 0x00000004;
         private const uint SDL_WINDOW_RESIZABLE = 0x00000020;
         private const uint SDL_WINDOW_ALLOW_HIGHDPI = 0x00002000;
@@ -1457,10 +1682,33 @@ namespace BBC
         private const uint SDL_MOUSEMOTION = 0x400;
         private const uint SDL_MOUSEBUTTONDOWN = 0x401;
         private const uint SDL_MOUSEBUTTONUP = 0x402;
+        private const uint SDL_JOYAXISMOTION = 0x600;
+        private const uint SDL_JOYHATMOTION = 0x602;
+        private const uint SDL_JOYBUTTONDOWN = 0x603;
+        private const uint SDL_JOYBUTTONUP = 0x604;
+        private const uint SDL_JOYDEVICEADDED = 0x605;
+        private const uint SDL_JOYDEVICEREMOVED = 0x606;
+        private const uint SDL_CONTROLLERAXISMOTION = 0x650;
+        private const uint SDL_CONTROLLERBUTTONDOWN = 0x651;
+        private const uint SDL_CONTROLLERBUTTONUP = 0x652;
+        private const uint SDL_CONTROLLERDEVICEADDED = 0x653;
+        private const uint SDL_CONTROLLERDEVICEREMOVED = 0x654;
         private const uint SDL_DROPFILE = 0x1000;
+        private const int SDL_ENABLE = 1;
         private const byte SDL_BUTTON_LEFT = 1;
         private const byte SDL_BUTTON_MIDDLE = 2;
         private const byte SDL_BUTTON_RIGHT = 3;
+        private const byte SDL_CONTROLLER_AXIS_LEFTX = 0;
+        private const byte SDL_CONTROLLER_AXIS_LEFTY = 1;
+        private const byte SDL_CONTROLLER_BUTTON_A = 0;
+        private const byte SDL_CONTROLLER_BUTTON_DPAD_UP = 11;
+        private const byte SDL_CONTROLLER_BUTTON_DPAD_DOWN = 12;
+        private const byte SDL_CONTROLLER_BUTTON_DPAD_LEFT = 13;
+        private const byte SDL_CONTROLLER_BUTTON_DPAD_RIGHT = 14;
+        private const byte SDL_HAT_UP = 0x01;
+        private const byte SDL_HAT_RIGHT = 0x02;
+        private const byte SDL_HAT_DOWN = 0x04;
+        private const byte SDL_HAT_LEFT = 0x08;
         private const int SDLK_SPACE = 32;
         private const int SDLK_ASTERISK = 42;
         private const int SDLK_PLUS = 43;
@@ -1563,6 +1811,14 @@ namespace BBC
             [FieldOffset(24)] public int MouseY;
             [FieldOffset(28)] public int MouseRelativeX;
             [FieldOffset(32)] public int MouseRelativeY;
+            [FieldOffset(8)] public int JoystickDeviceInstanceId;
+            [FieldOffset(12)] public byte JoystickAxis;
+            [FieldOffset(12)] public byte JoystickButton;
+            [FieldOffset(13)] public byte JoystickHatValue;
+            [FieldOffset(16)] public short JoystickAxisValue;
+            [FieldOffset(12)] public byte ControllerAxis;
+            [FieldOffset(12)] public byte ControllerButton;
+            [FieldOffset(16)] public short ControllerAxisValue;
             [FieldOffset(12)] public byte Text0;
             [FieldOffset(13)] public byte Text1;
             [FieldOffset(14)] public byte Text2;
@@ -1758,6 +2014,63 @@ namespace BBC
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_PollEvent(out SdlEvent ev);
 
+        /// <summary>Imports SDL_NumJoysticks for enumerating host game input devices.</summary>
+        /// <returns>The number of attached SDL joystick devices.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_NumJoysticks();
+
+        /// <summary>Imports SDL_IsGameController for detecting controller-compatible devices.</summary>
+        /// <param name="joystickIndex">The SDL joystick device index.</param>
+        /// <returns>SDL_TRUE when the device has a game-controller mapping.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_IsGameController(int joystickIndex);
+
+        /// <summary>Imports SDL_GameControllerOpen for opening a mapped game controller.</summary>
+        /// <param name="joystickIndex">The SDL joystick device index.</param>
+        /// <returns>The native pointer returned by the host API.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr SDL_GameControllerOpen(int joystickIndex);
+
+        /// <summary>Imports SDL_GameControllerClose for closing a mapped game controller.</summary>
+        /// <param name="controller">The controller pointer.</param>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SDL_GameControllerClose(IntPtr controller);
+
+        /// <summary>Imports SDL_GameControllerGetJoystick for obtaining the controller's joystick handle.</summary>
+        /// <param name="controller">The controller pointer.</param>
+        /// <returns>The native pointer returned by the host API.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr SDL_GameControllerGetJoystick(IntPtr controller);
+
+        /// <summary>Imports SDL_GameControllerEventState for enabling controller events.</summary>
+        /// <param name="state">The requested event state.</param>
+        /// <returns>The resulting value.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_GameControllerEventState(int state);
+
+        /// <summary>Imports SDL_JoystickOpen for opening an unmapped joystick.</summary>
+        /// <param name="joystickIndex">The SDL joystick device index.</param>
+        /// <returns>The native pointer returned by the host API.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr SDL_JoystickOpen(int joystickIndex);
+
+        /// <summary>Imports SDL_JoystickClose for closing an unmapped joystick.</summary>
+        /// <param name="joystick">The joystick pointer.</param>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SDL_JoystickClose(IntPtr joystick);
+
+        /// <summary>Imports SDL_JoystickInstanceID for matching joystick removal events.</summary>
+        /// <param name="joystick">The joystick pointer.</param>
+        /// <returns>The SDL joystick instance id.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_JoystickInstanceID(IntPtr joystick);
+
+        /// <summary>Imports SDL_JoystickEventState for enabling raw joystick events.</summary>
+        /// <param name="state">The requested event state.</param>
+        /// <returns>The resulting value.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_JoystickEventState(int state);
+
         /// <summary>Imports SDL_GetModState for host modifier state queries.</summary>
         /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
@@ -1824,6 +2137,11 @@ namespace BBC
     /// <param name="Pressed">Whether the control is now pressed.</param>
     public readonly record struct HostJoystickChange(JoystickControl Control, bool Pressed);
 
+    /// <summary>Describes an analogue joystick axis transition from the host.</summary>
+    /// <param name="Axis">The analogue joystick axis.</param>
+    /// <param name="Value">The signed SDL axis value.</param>
+    public readonly record struct HostAnalogJoystickChange(JoystickAxis Axis, short Value);
+
     /// <summary>Describes the current host mouse state in BBC framebuffer coordinates.</summary>
     /// <param name="X">The BBC framebuffer X coordinate.</param>
     /// <param name="Y">The BBC framebuffer Y coordinate.</param>
@@ -1840,5 +2158,22 @@ namespace BBC
         Up,
         Down,
         Fire
+    }
+
+    /// <summary>Emulated analogue joystick axes.</summary>
+    public enum JoystickAxis
+    {
+        X,
+        Y
+    }
+
+    /// <summary>Tracks which host input sources currently hold a BBC joystick control down.</summary>
+    [Flags]
+    internal enum HostJoystickSource
+    {
+        None = 0,
+        Keyboard = 1,
+        ControllerAxis = 2,
+        ControllerButton = 4
     }
 }
