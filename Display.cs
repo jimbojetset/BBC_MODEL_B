@@ -61,6 +61,7 @@ namespace BBC
         private int pendingScreenshotRequests;
         private int pendingTraceToggleRequests;
         private HostMouseState mouseState;
+        private bool relativeMouseMode;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly int pitchBytes;
 
@@ -196,7 +197,7 @@ namespace BBC
                     EnqueueKeyUp(ev.KeySym);
 
                 if (ev.Type == SDL_MOUSEMOTION)
-                    UpdateMouseState(ev.MouseX, ev.MouseY, mouseState.Buttons);
+                    UpdateMouseState(ev.MouseX, ev.MouseY, ev.MouseRelativeX, ev.MouseRelativeY, mouseState.Buttons);
 
                 if (ev.Type is SDL_MOUSEBUTTONDOWN or SDL_MOUSEBUTTONUP)
                     UpdateMouseButtonState(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY);
@@ -262,7 +263,24 @@ namespace BBC
         /// <returns>The latest host mouse state.</returns>
         public HostMouseState GetMouseState()
         {
-            return mouseState;
+            HostMouseState state = mouseState;
+            mouseState = new HostMouseState(state.X, state.Y, state.Buttons, 0, 0);
+            return state;
+        }
+
+        /// <summary>Gets whether host mouse movement is currently captured as relative deltas.</summary>
+        public bool RelativeMouseMode => relativeMouseMode;
+
+        /// <summary>Enables or disables host relative mouse capture.</summary>
+        /// <param name="enabled">Whether relative mouse mode should be enabled.</param>
+        public void SetRelativeMouseMode(bool enabled)
+        {
+            if (relativeMouseMode == enabled)
+                return;
+
+            ThrowIfSdlFailed(SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE), "SDL_SetRelativeMouseMode");
+            relativeMouseMode = enabled;
+            mouseState = new HostMouseState(mouseState.X, mouseState.Y, mouseState.Buttons, 0, 0);
         }
 
         /// <summary>Copies pending host disc/file mount requests into a caller-provided list.</summary>
@@ -870,20 +888,29 @@ namespace BBC
         /// <summary>Updates the latest host mouse position in BBC framebuffer coordinates.</summary>
         /// <param name="hostX">The host-window X coordinate.</param>
         /// <param name="hostY">The host-window Y coordinate.</param>
+        /// <param name="relativeX">The host relative X movement.</param>
+        /// <param name="relativeY">The host relative Y movement.</param>
         /// <param name="buttons">The current host mouse button mask.</param>
-        private void UpdateMouseState(int hostX, int hostY, byte buttons)
+        private void UpdateMouseState(int hostX, int hostY, int relativeX, int relativeY, byte buttons)
         {
             float logicalX = hostX;
             float logicalY = hostY;
             if (renderer != IntPtr.Zero)
                 SDL_RenderWindowToLogical(renderer, hostX, hostY, out logicalX, out logicalY);
 
-            int bbcX = (int)Math.Round(logicalX - viewportRect.X);
-            int bbcY = (int)Math.Round(logicalY - viewportRect.Y);
+            int bbcX = relativeMouseMode
+                ? mouseState.X + relativeX
+                : (int)Math.Round(logicalX - viewportRect.X);
+            int bbcY = relativeMouseMode
+                ? mouseState.Y + relativeY
+                : (int)Math.Round(logicalY - viewportRect.Y);
+
             mouseState = new HostMouseState(
                 Math.Clamp(bbcX, 0, Width - 1),
                 Math.Clamp(bbcY, 0, Height - 1),
-                buttons);
+                buttons,
+                mouseState.DeltaX + relativeX,
+                mouseState.DeltaY + relativeY);
         }
 
         /// <summary>Updates the latest host mouse button state.</summary>
@@ -905,7 +932,7 @@ namespace BBC
             if (mask != 0)
                 buttons = pressed ? (byte)(buttons | mask) : (byte)(buttons & ~mask);
 
-            UpdateMouseState(hostX, hostY, buttons);
+            UpdateMouseState(hostX, hostY, 0, 0, buttons);
         }
 
         /// <summary>Queues a BBC Caps Lock transition when the host Caps Lock state changes.</summary>
@@ -1534,6 +1561,8 @@ namespace BBC
             [FieldOffset(16)] public byte MouseButton;
             [FieldOffset(20)] public int MouseX;
             [FieldOffset(24)] public int MouseY;
+            [FieldOffset(28)] public int MouseRelativeX;
+            [FieldOffset(32)] public int MouseRelativeY;
             [FieldOffset(12)] public byte Text0;
             [FieldOffset(13)] public byte Text1;
             [FieldOffset(14)] public byte Text2;
@@ -1640,6 +1669,12 @@ namespace BBC
         /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderSetIntegerScale(IntPtr renderer, int enable);
+
+        /// <summary>Imports SDL_SetRelativeMouseMode for host mouse capture.</summary>
+        /// <param name="enabled">Whether relative mouse mode should be enabled.</param>
+        /// <returns>The resulting value.</returns>
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_SetRelativeMouseMode(int enabled);
 
         /// <summary>Imports SDL_RenderWindowToLogical for coordinate conversion.</summary>
         /// <param name="renderer">The renderer value.</param>
@@ -1793,7 +1828,9 @@ namespace BBC
     /// <param name="X">The BBC framebuffer X coordinate.</param>
     /// <param name="Y">The BBC framebuffer Y coordinate.</param>
     /// <param name="Buttons">Pressed buttons as left/right/middle bits.</param>
-    public readonly record struct HostMouseState(int X, int Y, byte Buttons);
+    /// <param name="DeltaX">Relative X movement since the last read.</param>
+    /// <param name="DeltaY">Relative Y movement since the last read.</param>
+    public readonly record struct HostMouseState(int X, int Y, byte Buttons, int DeltaX, int DeltaY);
 
     /// <summary>Emulated joystick controls.</summary>
     public enum JoystickControl

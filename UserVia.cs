@@ -35,6 +35,10 @@ namespace BBC
         private byte dataDirectionB;
         private byte externalPortBMask;
         private byte externalPortBValue;
+        private byte mouseButtonBits = 0xE0;
+        private int pendingMouseX;
+        private int pendingMouseY;
+        private bool mouseInputActive;
         private int peripheralCycleCounter;
         private int lastPortBReadCycle = int.MinValue / 2;
         private int portBPollStartCycle;
@@ -64,36 +68,26 @@ namespace BBC
         /// <param name="value">The bit values exposed on the user port.</param>
         public void SetPortBInputBits(byte mask, byte value)
         {
+            mouseInputActive = false;
+            mouseButtonBits = 0xE0;
+            pendingMouseX = 0;
+            pendingMouseY = 0;
+            interruptFlags &= 0xE7;
             externalPortBMask = mask;
             externalPortBValue = (byte)(value & mask);
         }
 
         /// <summary>Sets mouse-style user-port inputs and raises edge interrupt flags for movement.</summary>
         /// <param name="activeLowButtons">The active-low button bits exposed on PB0-PB2.</param>
-        /// <param name="deltaX">The host mouse X movement direction.</param>
-        /// <param name="deltaY">The host mouse Y movement direction.</param>
+        /// <param name="deltaX">The host mouse X movement steps.</param>
+        /// <param name="deltaY">The host mouse Y movement steps.</param>
         public void SetMouseInput(byte activeLowButtons, int deltaX, int deltaY)
         {
-            byte value = (byte)(activeLowButtons & 0x07);
-
-            if (deltaX != 0)
-            {
-                if (deltaX > 0)
-                    value |= 0x08;
-
-                SetInterrupt(0x10);
-            }
-
-            if (deltaY != 0)
-            {
-                if (deltaY > 0)
-                    value |= 0x10;
-
-                SetInterrupt(0x08);
-            }
-
-            externalPortBMask = 0x1F;
-            externalPortBValue = value;
+            mouseInputActive = true;
+            mouseButtonBits = MapAmxButtonBits(activeLowButtons);
+            pendingMouseX += deltaX;
+            pendingMouseY += deltaY;
+            RefreshMouseInputBits();
         }
 
         /// <summary>Resets the modelled VIA state.</summary>
@@ -108,6 +102,10 @@ namespace BBC
             dataDirectionB = 0;
             externalPortBMask = 0;
             externalPortBValue = 0;
+            mouseButtonBits = 0xE0;
+            pendingMouseX = 0;
+            pendingMouseY = 0;
+            mouseInputActive = false;
             peripheralCycleCounter = 0;
             lastPortBReadCycle = int.MinValue / 2;
             portBPollStartCycle = 0;
@@ -336,7 +334,57 @@ namespace BBC
         /// <param name="mask">The bit mask.</param>
         private void ClearInterrupt(byte mask)
         {
+            if ((mask & 0x08) != 0 && (interruptFlags & 0x08) != 0)
+                pendingMouseX -= Math.Sign(pendingMouseX);
+
+            if ((mask & 0x10) != 0 && (interruptFlags & 0x10) != 0)
+                pendingMouseY -= Math.Sign(pendingMouseY);
+
             interruptFlags &= unchecked((byte)~mask);
+            RefreshMouseInputBits();
+        }
+
+        /// <summary>Maps host active-low buttons to the AMX mouse user-port button lines.</summary>
+        /// <param name="activeLowButtons">The host active-low button bits.</param>
+        /// <returns>The AMX PB5-PB7 button bits.</returns>
+        private static byte MapAmxButtonBits(byte activeLowButtons)
+        {
+            byte value = 0xE0;
+
+            if ((activeLowButtons & 0x01) == 0)
+                value &= 0xDF;
+
+            if ((activeLowButtons & 0x04) == 0)
+                value &= 0xBF;
+
+            if ((activeLowButtons & 0x02) == 0)
+                value &= 0x7F;
+
+            return value;
+        }
+
+        /// <summary>Refreshes AMX mouse user-port direction, button, and interrupt state.</summary>
+        private void RefreshMouseInputBits()
+        {
+            if (!mouseInputActive)
+                return;
+
+            byte value = mouseButtonBits;
+
+            if (pendingMouseX > 0)
+                value |= 0x04;
+
+            if (pendingMouseY > 0)
+                value |= 0x01;
+
+            externalPortBMask = 0xE5;
+            externalPortBValue = value;
+
+            if (pendingMouseX != 0)
+                SetInterrupt(0x08);
+
+            if (pendingMouseY != 0)
+                SetInterrupt(0x10);
         }
 
         /// <summary>Applies the VIA timer reload offset used by the 6522 counter pipeline.</summary>

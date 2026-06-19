@@ -9,7 +9,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Folder Include="TESTROMS\" />
     <Folder Include="ROMS\" />
   </ItemGroup>
 
@@ -18,19 +17,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="Elite.ssd">
+    <None Update="ROMS\BASIC2.rom">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="ROMS\BASIC2.rom">
+    <None Update="ROMS\AMXMSE331.rom">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="ROMS\DFS-0.9.rom">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="ROMS\OS12.rom">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="SSD\Elite.ssd">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

@@ -59,6 +59,9 @@ namespace BBC
         /// <summary>Gets or sets whether host RUN/LOAD command interception is enabled.</summary>
         public bool RunCommandInterceptionEnabled { get; set; } = true;
 
+        /// <summary>Gets or sets whether the host handles *MOUSE when no mouse ROM is loaded.</summary>
+        public bool MouseCommandFallbackEnabled { get; set; } = true;
+
         /// <summary>Called after a host-backed disc-image load is copied into memory.</summary>
         public Action? DiscImageLoadActivity { get; set; }
 
@@ -67,6 +70,12 @@ namespace BBC
 
         /// <summary>Queues text into the emulated keyboard buffer for soft-key expansion.</summary>
         public Action<string>? QueueKeyboardText { get; set; }
+
+        /// <summary>Queues an EXEC file as paced keyboard input.</summary>
+        public Action<string>? QueueKeyboardScript { get; set; }
+
+        /// <summary>Called when a BREAK command is seen so callers can schedule soft-key continuation.</summary>
+        public Action<string?>? BreakCommandObserved { get; set; }
 
         /// <summary>Gets the BASIC load command for the first mounted host file.</summary>
         public string? AutoLoadCommand => files.Length == 0 ? null : $"LOAD \"{files[0].Name}\"";
@@ -83,6 +92,7 @@ namespace BBC
             mountedDiscImage = false;
             currentDirectory = "$";
             RunCommandInterceptionEnabled = true;
+            MouseCommandFallbackEnabled = true;
         }
 
         /// <summary>Mounts a host file or SSD disc image.</summary>
@@ -220,6 +230,10 @@ namespace BBC
             if (command.StartsWith('/'))
                 command = "RUN " + command[1..].TrimStart();
 
+            ObservePointerCommand(command);
+            if (IsBreakCommand(command))
+                BreakCommandObserved?.Invoke(GetSoftKeyText(10));
+
             if (command.Length == 0)
             {
                 ReturnFromSubroutine(cpu);
@@ -227,6 +241,12 @@ namespace BBC
             }
 
             if (IsBareExecCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (TryHandleExecCommand(command))
             {
                 ReturnFromSubroutine(cpu);
                 return true;
@@ -362,6 +382,50 @@ namespace BBC
                 && string.Equals(trimmed, exec, StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>Checks whether an OSCLI command requests a BREAK reset.</summary>
+        /// <param name="command">The command value.</param>
+        /// <returns>True when the command is BREAK.</returns>
+        private static bool IsBreakCommand(string command)
+        {
+            string trimmed = command.Trim();
+            return string.Equals(trimmed, "BREAK", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Handles an EXEC command by feeding the host-backed file as keyboard input.</summary>
+        /// <param name="command">The OSCLI command text.</param>
+        /// <returns>True when an EXEC file was found and queued.</returns>
+        private bool TryHandleExecCommand(string command)
+        {
+            if (!TryParseExecCommand(command, out string requestedName))
+                return false;
+
+            HostFile? matchedFile = FindFile(requestedName);
+            Trace($"EXEC \"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
+            if (!matchedFile.HasValue)
+                return false;
+
+            string text = Encoding.ASCII.GetString(matchedFile.Value.Data).Replace('\0', '\r');
+            if (QueueKeyboardScript is not null)
+                QueueKeyboardScript(text);
+            else
+                QueueKeyboardText?.Invoke(text);
+
+            NotifyDiscImageLoadActivity();
+            return true;
+        }
+
+        /// <summary>Gets the current decoded soft-key text.</summary>
+        /// <param name="key">The soft-key index.</param>
+        /// <returns>The soft-key text, when present.</returns>
+        private string? GetSoftKeyText(int key)
+        {
+            if (key < 0 || key >= softKeyStrings.Length)
+                return null;
+
+            string text = softKeyStrings[key];
+            return text.Length == 0 ? null : text;
+        }
+
         /// <summary>Checks whether an OSCLI command is an OPT command handled by the host.</summary>
         /// <param name="command">The command value.</param>
         /// <returns>True when opt command is true; otherwise, false.</returns>
@@ -400,7 +464,25 @@ namespace BBC
             bool enabled = !option.StartsWith("OFF", StringComparison.OrdinalIgnoreCase);
             MouseEnabledChanged?.Invoke(enabled);
             Trace($"MOUSE enabled={enabled}");
-            return true;
+            return MouseCommandFallbackEnabled;
+        }
+
+        /// <summary>Observes AMX pointer commands so host mouse capture follows the ROM state.</summary>
+        /// <param name="command">The command value.</param>
+        private void ObservePointerCommand(string command)
+        {
+            string trimmed = command.TrimStart();
+            if (trimmed.Length < 7
+                || !string.Equals(trimmed[..7], "POINTER", StringComparison.OrdinalIgnoreCase)
+                || (trimmed.Length > 7 && !char.IsWhiteSpace(trimmed[7])))
+            {
+                return;
+            }
+
+            string option = trimmed.Length == 7 ? "ON" : trimmed[7..].TrimStart();
+            bool enabled = !option.StartsWith("OFF", StringComparison.OrdinalIgnoreCase);
+            MouseEnabledChanged?.Invoke(enabled);
+            Trace($"POINTER mouse enabled={enabled}");
         }
 
         /// <summary>Checks whether an OSCLI command is a TV display command handled by the host.</summary>
@@ -721,6 +803,25 @@ namespace BBC
             const string run = "RUN";
 
             if (!TryMatchCommandName(command, run, out string rest))
+                return false;
+
+            rest = rest.TrimStart();
+            if (rest.Length == 0)
+                return false;
+
+            return TryReadCommandFileName(rest, out fileName, out _);
+        }
+
+        /// <summary>Attempts to parse an EXEC command.</summary>
+        /// <param name="command">The command value.</param>
+        /// <param name="fileName">The file name value.</param>
+        /// <returns>True when the command names an EXEC file.</returns>
+        private static bool TryParseExecCommand(string command, out string fileName)
+        {
+            fileName = string.Empty;
+            const string exec = "EXEC";
+
+            if (!TryMatchCommandName(command, exec, out string rest))
                 return false;
 
             rest = rest.TrimStart();

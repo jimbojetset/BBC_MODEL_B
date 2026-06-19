@@ -42,6 +42,8 @@ namespace BBC
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  ${Emulator.SidewaysRomStart:X4}-${Emulator.SidewaysRomEnd:X4}");
             Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank}");
+            if (emulator.AmxMouseRomPath is not null)
+                Console.WriteLine($"AMX ROM:    bank {Emulator.AmxMouseRomBank}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
             foreach (string path in options.MountPaths)
@@ -186,6 +188,7 @@ namespace BBC
         public const int SidewaysRomBanks = 16;
         public const int BasicRomBank = 15;
         public const int DfsRomBank = 14;
+        public const int AmxMouseRomBank = 13;
         // Banks 4..7 are sideways RAM in this configuration. Most enhanced BBC setups
         // (Watford SRAM, Aries B20, Acorn 1.20) populate the upper four banks (12..15)
         // with ROMs and leave the lower banks free for RAM. We mirror that arrangement.
@@ -199,10 +202,12 @@ namespace BBC
         private const string OsRomFileName = "OS12.rom";
         private const string BasicRomFileName = "BASIC2.rom";
         private const string DfsRomFileName = "DFS-0.9.rom";
+        private const string AmxMouseRomFileName = "AMXMSE331.rom";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
         private const string DfsRomMarker = "DFS\0" + "0.90";
         private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
         private const string OsRomMarker = "BBC Computer";
+        private const string AmxMouseRomMarker = "AMX Mouse Support";
         private const int TargetFramesPerSecond = 50;
         private const int FrameMilliseconds = 1000 / TargetFramesPerSecond;
         private const ushort KeyboardBufferBusyFlag = 0x02CF;
@@ -218,6 +223,10 @@ namespace BBC
         private const int CapsLockTapPulseCycles = CpuClockHz / 20;
         private const int MinimumMatrixKeyPressMilliseconds = 40;
         private const int HostDiscActivityLedMilliseconds = 180;
+        private const int MaxAmxMouseStepsPerFrame = 16;
+        private const int BootScriptInitialDelayMilliseconds = 1000;
+        private const int ExecScriptInitialDelayMilliseconds = 100;
+        private const int KeyboardScriptLineDelayMilliseconds = 120;
         private const uint DisplayBlack = 0xFF000000;
 
         private bool initialised;
@@ -237,6 +246,7 @@ namespace BBC
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
         private string? pendingBootExecScript;
+        private bool breakContinuationQueued;
         private long nextBootScriptLineAtTicks;
         private readonly SystemVia systemVia;
         private readonly UserVia userVia = new UserVia();
@@ -246,6 +256,7 @@ namespace BBC
         private readonly DiscController8271 discController;
         private JoystickState joystickState;
         private bool mouseEnabled;
+        private bool amxMouseRomLoaded;
         private bool mousePositionInitialized;
         private byte lastMouseX;
         private byte lastMouseY;
@@ -280,6 +291,9 @@ namespace BBC
         /// <summary>Gets the loaded DFS ROM path.</summary>
         public string DfsRomPath { get; private set; } = string.Empty;
 
+        /// <summary>Gets the loaded AMX mouse ROM path when present.</summary>
+        public string? AmxMouseRomPath { get; private set; }
+
         /// <summary>Initializes a new emulator coordinator.</summary>
         public Emulator()
         {
@@ -287,6 +301,8 @@ namespace BBC
             systemVia = new SystemVia(Sound);
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
+            hostFilingSystem.QueueKeyboardScript = QueueExecScript;
+            hostFilingSystem.BreakCommandObserved = QueueBreakContinuation;
             hostFilingSystem.DiscImageLoadActivity = PulseHostDiscActivityLed;
             hostFilingSystem.MouseEnabledChanged = SetMouseEnabled;
             discController = new DiscController8271();
@@ -460,7 +476,7 @@ namespace BBC
         {
             if (discController.TryGetBootExecScript(out string? bootScript) && bootScript is not null)
             {
-                QueueBootScript(bootScript);
+                QueueBootScript("*EXEC !BOOT");
                 return;
             }
 
@@ -542,6 +558,10 @@ namespace BBC
                 systemVia.SetKeyState(0x00, true);
             hostCapsLockState = Display?.HostCapsLockEnabled == true;
             bbcCapsLockState = true;
+            mouseEnabled = false;
+            mousePositionInitialized = false;
+            Display?.SetRelativeMouseMode(false);
+            userVia.SetPortBInputBits(0x07, 0x07);
             capsLockTapPressed = false;
             capsLockTapPulseCycles = 0;
             Array.Clear(matrixKeyPressedAtTicks);
@@ -1186,6 +1206,7 @@ namespace BBC
         {
             mouseEnabled = enabled;
             mousePositionInitialized = false;
+            Display?.SetRelativeMouseMode(enabled);
             if (!enabled)
                 userVia.SetPortBInputBits(0x07, 0x07);
         }
@@ -1206,16 +1227,21 @@ namespace BBC
             byte activeLowButtons = (byte)(0x07 ^ (mouse.Buttons & 0x07));
             int deltaX = 0;
             int deltaY = 0;
-            if (mousePositionInitialized)
+            if (display.RelativeMouseMode)
             {
-                deltaX = Math.Sign(x - lastMouseX);
-                deltaY = Math.Sign(y - lastMouseY);
+                deltaX = Math.Clamp(mouse.DeltaX, -MaxAmxMouseStepsPerFrame, MaxAmxMouseStepsPerFrame);
+                deltaY = Math.Clamp(mouse.DeltaY, -MaxAmxMouseStepsPerFrame, MaxAmxMouseStepsPerFrame);
+            }
+            else if (mousePositionInitialized)
+            {
+                deltaX = Math.Clamp(x - lastMouseX, -MaxAmxMouseStepsPerFrame, MaxAmxMouseStepsPerFrame);
+                deltaY = Math.Clamp(y - lastMouseY, -MaxAmxMouseStepsPerFrame, MaxAmxMouseStepsPerFrame);
             }
 
             lastMouseX = x;
             lastMouseY = y;
             mousePositionInitialized = true;
-            userVia.SetMouseInput(activeLowButtons, deltaX, deltaY);
+            userVia.SetMouseInput(activeLowButtons, -deltaY, deltaX);
             UpdateCpuIrqLine();
             if (MouseTraceEnabled && (deltaX != 0 || deltaY != 0 || mouse.Buttons != 0))
                 Console.WriteLine($"MOUSE x={x} y={y} buttons=${mouse.Buttons:X2} dx={deltaX} dy={deltaY}");
@@ -1298,6 +1324,34 @@ namespace BBC
         /// <param name="script">The boot script text.</param>
         private void QueueBootScript(string script)
         {
+            breakContinuationQueued = false;
+            QueueKeyboardScript(script, BootScriptInitialDelayMilliseconds);
+        }
+
+        /// <summary>Queues an EXEC script as paced keyboard input.</summary>
+        /// <param name="script">The script text.</param>
+        private void QueueExecScript(string script)
+        {
+            breakContinuationQueued = false;
+            QueueKeyboardScript(script, ExecScriptInitialDelayMilliseconds);
+        }
+
+        /// <summary>Queues the soft-key continuation after an observed BREAK command.</summary>
+        /// <param name="script">The decoded soft-key script.</param>
+        private void QueueBreakContinuation(string? script)
+        {
+            if (breakContinuationQueued || string.IsNullOrWhiteSpace(script))
+                return;
+
+            QueueKeyboardScript(script, BootScriptInitialDelayMilliseconds);
+            breakContinuationQueued = true;
+        }
+
+        /// <summary>Queues keyboard script text.</summary>
+        /// <param name="script">The script text.</param>
+        /// <param name="initialDelayMilliseconds">Initial delay before typing the first line.</param>
+        private void QueueKeyboardScript(string script, int initialDelayMilliseconds)
+        {
             pendingBootScriptLines.Clear();
             foreach (string line in script.Replace('\n', '\r').Split('\r'))
             {
@@ -1306,7 +1360,7 @@ namespace BBC
                     pendingBootScriptLines.Enqueue(trimmed);
             }
 
-            nextBootScriptLineAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            nextBootScriptLineAtTicks = Stopwatch.GetTimestamp() + (initialDelayMilliseconds * Stopwatch.Frequency / 1000);
         }
 
         /// <summary>Queues pending boot script line.</summary>
@@ -1321,7 +1375,10 @@ namespace BBC
 
             string line = pendingBootScriptLines.Dequeue();
             QueueKeyboardText(line + "\r");
-            nextBootScriptLineAtTicks = now + (Stopwatch.Frequency / 3);
+            if (pendingBootScriptLines.Count == 0)
+                breakContinuationQueued = false;
+
+            nextBootScriptLineAtTicks = now + (KeyboardScriptLineDelayMilliseconds * Stopwatch.Frequency / 1000);
         }
 
         /// <summary>Feeds queued host characters into the MOS keyboard buffer while space is available.</summary>
@@ -1432,16 +1489,25 @@ namespace BBC
             OsRomPath = Path.Combine(romRoot, OsRomFileName);
             BasicRomPath = Path.Combine(romRoot, BasicRomFileName);
             DfsRomPath = Path.Combine(romRoot, DfsRomFileName);
+            AmxMouseRomPath = Path.Combine(romRoot, AmxMouseRomFileName);
 
             ValidateRom(OsRomPath, OsRomMarker, RomSize);
             ValidateRom(BasicRomPath, BasicRomMarker, RomSize);
             ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
+            if (File.Exists(AmxMouseRomPath))
+                ValidateRom(AmxMouseRomPath, AmxMouseRomMarker, RomSize);
+            else
+                AmxMouseRomPath = null;
 
             Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
 
             Array.Fill(sidewaysRoms, (byte)0xFF);
             LoadSidewaysRomBank(BasicRomPath, BasicRomBank);
             LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
+            amxMouseRomLoaded = AmxMouseRomPath is not null;
+            hostFilingSystem.MouseCommandFallbackEnabled = !amxMouseRomLoaded;
+            if (amxMouseRomLoaded)
+                LoadSidewaysRomBank(AmxMouseRomPath!, AmxMouseRomBank);
         }
 
         /// <summary>Copies a ROM image into the selected sideways ROM bank, mirroring short images.</summary>
