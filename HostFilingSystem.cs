@@ -56,9 +56,6 @@ namespace BBC
         /// <summary>Gets whether a host file or image is mounted.</summary>
         public bool HasMountedFile => files.Length > 0;
 
-        /// <summary>Gets or sets whether host RUN/LOAD command interception is enabled.</summary>
-        public bool RunCommandInterceptionEnabled { get; set; } = true;
-
         /// <summary>Gets or sets whether the host handles *MOUSE when no mouse ROM is loaded.</summary>
         public bool MouseCommandFallbackEnabled { get; set; } = true;
 
@@ -91,7 +88,6 @@ namespace BBC
             mountedFileName = null;
             mountedDiscImage = false;
             currentDirectory = "$";
-            RunCommandInterceptionEnabled = true;
             MouseCommandFallbackEnabled = true;
         }
 
@@ -119,7 +115,6 @@ namespace BBC
             mountedPath = fullPath;
             mountedFileName = Path.GetFileName(fullPath);
             currentDirectory = "$";
-            RunCommandInterceptionEnabled = true;
         }
 
         /// <summary>Handles OSFILE when the current emulator state matches the expected firmware entry.</summary>
@@ -294,11 +289,6 @@ namespace BBC
                 return true;
             }
 
-            if (!RunCommandInterceptionEnabled)
-            {
-                return false;
-            }
-
             if (TryParseLoadCommand(command, out string loadName, out ushort? loadAddress))
             {
                 HostFile? matchedLoadFile = FindFile(loadName);
@@ -345,7 +335,7 @@ namespace BBC
         /// <returns>True when the FSCV call was handled by the host filing system.</returns>
         public bool TryHandleFscv(CPU_6502 cpu)
         {
-            if (files.Length == 0 || !RunCommandInterceptionEnabled || (cpu.registers.PC & 0xFFFF) != ReadWord(FscvVector))
+            if (files.Length == 0 || (cpu.registers.PC & 0xFFFF) != ReadWord(FscvVector))
                 return false;
 
             if (cpu.registers.A != 0x04)
