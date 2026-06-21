@@ -19,7 +19,7 @@ namespace BBC.CPU
     /// <summary>
     /// Provides a generic 64 KiB 6502 bus with optional host-defined mapping hooks.
     /// </summary>
-    public class FlatMemoryBus : ICpuBus
+    public class FlatMemoryBus
     {
 
         /// <summary>Gets the backing address space.</summary>

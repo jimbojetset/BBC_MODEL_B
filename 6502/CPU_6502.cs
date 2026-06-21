@@ -22,7 +22,7 @@ namespace BBC.CPU
 
     /// <summary>
     /// Emulates an NMOS 6502-compatible CPU core, including opcode dispatch, interrupt processing, reset handling, cycle accounting, and pacing.
-    /// Memory access is routed through <see cref="ICpuBus"/> so the core can run with BBC hardware and other 6502 memory maps.
+    /// Memory access is routed through a flat bus with host-defined hooks for BBC hardware mapping.
     /// </summary>
     public class CPU_6502
     {
@@ -47,10 +47,10 @@ namespace BBC.CPU
 
         /// <summary>
         /// Legacy flat memory bus used when no host-specific bus is supplied.
-        /// Emulator hosts should provide their own ICpuBus via the Bus property or constructor.
+        /// Emulator hosts can provide their own FlatMemoryBus via the Bus property or constructor.
         /// </summary>
         public FlatMemoryBus memory = new FlatMemoryBus(0x10000);
-        private ICpuBus bus = null!;
+        private FlatMemoryBus bus = null!;
 
         private bool running = true;
         private bool paused;
@@ -92,7 +92,6 @@ namespace BBC.CPU
         public Action<int>? OnCyclesExecuted;
         public Func<bool>? OnBeforeInstruction;
         private int externalStallCycles;
-        public bool PacingEnabled { get; set; } = true;
         public double SpeedScale { get; set; } = 1.0;
 
         /// <summary>
@@ -133,7 +132,7 @@ namespace BBC.CPU
         /// <summary>Initializes a new CPU_6502 instance with an external CPU bus.</summary>
         /// <param name="bus">The CPU-visible bus implementation.</param>
         /// <param name="freq">The target CPU frequency in cycles per second.</param>
-        public CPU_6502(ICpuBus bus, int freq = 1000000)
+        public CPU_6502(FlatMemoryBus bus, int freq = 1000000)
         {
             Initialise();
             Bus = bus;
@@ -141,7 +140,7 @@ namespace BBC.CPU
         }
 
         /// <summary>Gets or sets the CPU-visible bus used for instruction fetches and data access.</summary>
-        public ICpuBus Bus
+        public FlatMemoryBus Bus
         {
             get => bus;
             set => bus = value ?? throw new ArgumentNullException(nameof(value));
@@ -310,20 +309,13 @@ namespace BBC.CPU
                             break;
                     }
 
-                    if (PacingEnabled)
-                    {
-                        WaitUntil(nextDeadline);
+                    WaitUntil(nextDeadline);
 
-                        nextDeadline += ticksPerSlice;
+                    nextDeadline += ticksPerSlice;
 
-                        long now = Stopwatch.GetTimestamp();
-                        if (nextDeadline < now - ticksPerSlice * 4)
-                            nextDeadline = now + ticksPerSlice;
-                    }
-                    else
-                    {
-                        nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
-                    }
+                    long now = Stopwatch.GetTimestamp();
+                    if (nextDeadline < now - ticksPerSlice * 4)
+                        nextDeadline = now + ticksPerSlice;
                 }
             }
             finally
