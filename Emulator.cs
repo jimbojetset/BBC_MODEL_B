@@ -354,6 +354,7 @@ namespace BBC
             }
 
             Sound.Start();
+            Sound.QueuePowerOnBeep();
 
             StartCpu();
 

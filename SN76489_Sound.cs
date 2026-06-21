@@ -31,6 +31,14 @@ namespace BBC
         private const int MaxQueuedSamples = SamplesPerBuffer * 2;
         private const int GeneratedQueueSamples = SampleRate / 2;
         private const int GeneratedQueueHighWaterSamples = SamplesPerBuffer * 3;
+        private const int PowerOnBeepFrequencyHz = 155;
+        private const int PowerOnBeepDurationMilliseconds = 355;
+        private const int PowerOnBeepAttackMilliseconds = 15;
+        private const int PowerOnBeepReleaseMilliseconds = 10;
+        private const double PowerOnBeepAmplitude = 0.8;
+        private const double PowerOnBeepSaturationDrive = 6.0;
+        private const double PowerOnBeepSaturationBias = -0.035;
+        private const double PowerOnBeepSaturationLevel = 0.78;
         private const int PsgWriteEnableDelayCycles = 14;
         private const ushort AudioFormatS16 = 0x8010;
         private readonly object syncRoot = new object();
@@ -132,6 +140,60 @@ namespace BBC
             };
             audioThread.Start();
             SDL_PauseAudioDevice(audioDevice, 0);
+        }
+
+        /// <summary>Queues the host power-on tone before MOS-generated sound begins.</summary>
+        public void QueuePowerOnBeep()
+        {
+            lock (syncRoot)
+            {
+                int samples = SampleRate * PowerOnBeepDurationMilliseconds / 1000;
+                double phase = 0;
+                double phaseStep = PowerOnBeepFrequencyHz / (double)SampleRate;
+
+                for (int i = 0; i < samples; i++)
+                {
+                    double carrier = Math.Sin(phase * Math.Tau) >= 0 ? 1.0 : -1.0;
+                    double envelope = GetPowerOnBeepEnvelope(i, samples);
+                    double signal = PowerOnBeepAmplitude * envelope * carrier;
+                    short sample = (short)(short.MaxValue * ApplyPowerOnSpeakerSaturation(signal));
+
+                    EnqueueGeneratedSample(sample);
+                    phase += phaseStep;
+                    if (phase >= 1.0)
+                        phase -= 1.0;
+                }
+            }
+        }
+
+        /// <summary>Shapes the measured power-on tone with a fast rise and short release.</summary>
+        /// <param name="sampleIndex">The sample position inside the generated tone.</param>
+        /// <param name="sampleCount">The total number of samples in the generated tone.</param>
+        /// <returns>The computed amplitude multiplier.</returns>
+        private static double GetPowerOnBeepEnvelope(int sampleIndex, int sampleCount)
+        {
+            int attackSamples = SampleRate * PowerOnBeepAttackMilliseconds / 1000;
+            int releaseSamples = SampleRate * PowerOnBeepReleaseMilliseconds / 1000;
+            double envelope = 1.0;
+
+            if (attackSamples > 0 && sampleIndex < attackSamples)
+                envelope = sampleIndex / (double)attackSamples;
+
+            int releaseStart = sampleCount - releaseSamples;
+            if (releaseSamples > 0 && sampleIndex >= releaseStart)
+                envelope = Math.Min(envelope, (sampleCount - sampleIndex) / (double)releaseSamples);
+
+            return envelope;
+        }
+
+        /// <summary>Adds subtle speaker-style compression to the synthetic power-on tone.</summary>
+        /// <param name="signal">The normalized input sample.</param>
+        /// <returns>The lightly saturated sample.</returns>
+        private static double ApplyPowerOnSpeakerSaturation(double signal)
+        {
+            double biased = signal + PowerOnBeepSaturationBias;
+            double zero = Math.Tanh(PowerOnBeepSaturationBias * PowerOnBeepSaturationDrive);
+            return PowerOnBeepSaturationLevel * (Math.Tanh(biased * PowerOnBeepSaturationDrive) - zero) / PowerOnBeepSaturationDrive;
         }
 
         /// <summary>Accepts one byte on the SN76489 data bus.</summary>
