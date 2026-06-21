@@ -244,6 +244,8 @@ Screenshots/
 
 ## Project Layout
 
+Terminology note: BBC Micro documentation commonly calls the memory-mapped I/O page at `&FE00-&FEFF` "SHEILA". Comments that mention SHEILA are referring to this hardware I/O address range, not to a separate chip.
+
 ```text
 6502/                 6502 CPU, registers, flags, and bus interfaces
 ROMS/                 BBC OS, BASIC, DFS, and optional AMX ROM images
@@ -256,7 +258,7 @@ Display.cs            SDL window, rendering, keyboard, mouse, joystick input
 HostFilingSystem.cs   Host-backed file/disc helper and OSCLI interception
 Emulator.cs           Emulator coordinator, memory map, CLI, firmware hooks
 SAA5050_Font.cs       Mode 7 teletext font data
-SN76489_Sound.cs     Sound generator support
+SN76489_Sound.cs      Sound generator support
 SystemVia.cs          BBC system VIA
 UserVia.cs            BBC user VIA, AMX mouse, switched joystick input
 HD6845_Video.cs       Video/ULA/CRTC rendering
