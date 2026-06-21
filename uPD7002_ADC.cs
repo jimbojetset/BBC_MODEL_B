@@ -1,9 +1,8 @@
 // ============================================================================
 // Project:     BBC_MODEL_B
 // File:        uPD7002_ADC.cs
-// Description: Minimal NEC uPD7002 4-channel analogue-to-digital converter
-//              fitted to the BBC Micro Model B for joystick/paddle input.
-//              Mapped at SHEILA &FEC0-&FEC3.
+// Description: NEC uPD7002 analogue input converter at SHEILA &FEC0-&FEC3,
+//              including conversion delay and the EOC line into system VIA CB1.
 // Author:      James Booth
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root
@@ -14,9 +13,8 @@ namespace BBC
 {
 
     /// <summary>
-    /// Emulates the uPD7002 ADC fitted to the BBC Model B at &amp;FEC0-&amp;FEC3.
-    /// Provides 8/10/12-bit conversion of four analogue channels with a programmable
-    /// completion delay and an EOC line that can drive System VIA CB1 (bit 4 of IFR).
+    /// The Model B's uPD7002 converts four analogue channels for joysticks and
+    /// paddles. Its EOC output is visible through system VIA CB1.
     /// </summary>
     public sealed class uPD7002_ADC
     {
@@ -41,23 +39,16 @@ namespace BBC
 
         private readonly ushort[] channels = new ushort[4] { 0x8000, 0x8000, 0x8000, 0x8000 };
 
-        /// <summary>Raised when an EOC transition occurs (true = conversion complete).</summary>
+        /// <summary>EOC is wired into system VIA CB1, which MOS sees through IFR bit 4.</summary>
         public Action<bool>? EndOfConversionChanged;
 
-        /// <summary>Checks whether address is true for the current emulator state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>True when address is true; otherwise, false.</returns>
         public static bool IsAddress(ushort address) => address >= BaseAddress && address <= EndAddress;
 
-        /// <summary>Applies channel to the emulated hardware state.</summary>
-        /// <param name="channel">The channel value.</param>
-        /// <param name="value">The input value.</param>
         public void SetChannel(int channel, ushort value)
         {
             if ((uint)channel < 4) channels[channel] = value;
         }
 
-        /// <summary>Resets the converter to its power-on state.</summary>
         public void Reset()
         {
             status = StatusNotEocMask;
@@ -67,8 +58,7 @@ namespace BBC
             tenBitMode = false;
         }
 
-        /// <summary>Advances the uPD7002 conversion timer and completes conversions when ready.</summary>
-        /// <param name="cycles">The number of emulated CPU cycles.</param>
+        /// <summary>ADC results are not instant; software can observe the EOC delay after starting a conversion.</summary>
         public void Tick(int cycles)
         {
             if (conversionCountdown <= 0) return;
@@ -80,9 +70,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Reads  from emulated memory or device state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>The value read from emulated memory or device state.</returns>
         public byte Read(ushort address)
         {
             switch (address & 0x03)
@@ -98,9 +85,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Writes  into emulated memory or device state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <param name="value">The input value.</param>
         public void Write(ushort address, byte value)
         {
             if ((address & 0x03) != 0)
@@ -118,7 +102,6 @@ namespace BBC
             conversionCountdown = tenBitMode ? Conversion10BitCycles : Conversion8BitCycles;
         }
 
-        /// <summary>Finishes a uPD7002 conversion and latches the selected analogue channel value.</summary>
         private void CompleteConversion()
         {
             ushort sample = channels[selectedChannel & 0x03];

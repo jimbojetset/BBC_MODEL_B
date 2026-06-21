@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        Intel8271_Disk.cs
-// Description: Intel 8271-compatible floppy disc controller backed by DFS
-//              SSD/DSD images, including command timing and drive activity.
+// Description: Intel 8271 floppy controller surface for Acorn DFS, backed by
+//              SSD/DSD images with BBC-style command timing and NMIs.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -17,7 +17,8 @@ namespace BBC
 {
 
     /// <summary>
-    /// Provides an 8271 FDC surface for Acorn DFS ROM access to SSD/DSD images.
+    /// Acorn DFS talks to an Intel 8271 FDC through SHEILA registers and expects
+    /// completion NMIs, result bytes, motor spin-up, and DFS sector geometry.
     /// </summary>
     public sealed class Intel8271_Disk
     {
@@ -71,47 +72,34 @@ namespace BBC
         private StreamWriter? traceWriter;
         private string? tracePath;
 
-        /// <summary>Initializes a new 8271-compatible disc controller.</summary>
         public Intel8271_Disk()
         {
         }
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public event Action? NmiRequested;
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public bool HasMountedDisc => driveMounted[0];
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public string? MountedPath => mountedPath;
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public string? MountedFileName => mountedFileName;
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public bool ImageDirty => imageDirty;
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public bool WriteProtected
         {
             get => writeProtected;
             set => writeProtected = value;
         }
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public bool TransferActive => readData.Count > 0 || pendingWrite is not null;
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public bool ReadLedActive => readLedActive;
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
 
-        /// <summary>Gets whether 8271 diagnostic tracing is currently enabled.</summary>
         public bool TraceEnabled => traceWriter is not null;
 
-        /// <summary>Starts writing 8271 diagnostic trace events to a host file.</summary>
-        /// <param name="path">The trace file path.</param>
         public void StartTrace(string path)
         {
             StopTrace();
@@ -123,8 +111,6 @@ namespace BBC
             Trace("TRACE START");
         }
 
-        /// <summary>Stops the current 8271 diagnostic trace.</summary>
-        /// <returns>The trace file path, when tracing had been enabled.</returns>
         public string? StopTrace()
         {
             if (traceWriter is null)
@@ -136,9 +122,7 @@ namespace BBC
             return tracePath;
         }
 
-        /// <summary>Tries to read a DFS option-3 !BOOT script from the mounted disc.</summary>
-        /// <param name="script">The script text when present.</param>
-        /// <returns>True when the mounted disc requests an EXEC boot script.</returns>
+        /// <summary>DFS option 3 boots by EXECing !BOOT, not by CHAINing it.</summary>
         public bool TryGetBootExecScript(out string? script)
         {
             script = null;
@@ -159,16 +143,12 @@ namespace BBC
             return script.Length > 0;
         }
 
-        /// <summary>Checks whether address is true for the current emulator state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>True for the BBC 8271 mirror window at &amp;FE80-&amp;FE9F.</returns>
         public static bool IsAddress(ushort address)
         {
             return address is >= 0xFE80 and <= 0xFE9F;
         }
 
-        /// <summary>Mounts an SSD/DSD image in drive 0/2.</summary>
-        /// <param name="path">The host image path.</param>
+        /// <summary>Single-sided SSD maps to drive 0; double-sided DSD exposes side two as DFS drive 2.</summary>
         public void Mount(string path)
         {
             string fullPath = Path.GetFullPath(path);
@@ -209,8 +189,7 @@ namespace BBC
             Reset();
         }
 
-        /// <summary>Writes dirty mounted disc image buffers back to the host file when writes are allowed.</summary>
-        /// <returns>True when a flush was attempted, false when no mounted image was present.</returns>
+        /// <summary>8271 writes alter the mounted DFS image only when the host file is not write-protected.</summary>
         public bool Flush()
         {
             if (!imageDirty)
@@ -253,7 +232,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Resets transient 8271 state.</summary>
         public void Reset()
         {
             readData.Clear();
@@ -271,8 +249,7 @@ namespace BBC
             busy = false;
         }
 
-        /// <summary>Advances 8271 motor timing, delayed NMIs, and spin-down state.</summary>
-        /// <param name="cycles">The elapsed 6502 cycles.</param>
+        /// <summary>DFS code polls the 8271 around motor spin-up and command-complete NMI timing.</summary>
         public void Tick(int cycles)
         {
             if (cycles <= 0)
@@ -301,9 +278,6 @@ namespace BBC
             NmiRequested?.Invoke();
         }
 
-        /// <summary>Reads  from emulated memory or device state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>The register value.</returns>
         public byte Read(ushort address)
         {
             return address switch
@@ -315,9 +289,6 @@ namespace BBC
             };
         }
 
-        /// <summary>Writes  into emulated memory or device state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <param name="value">The value written by the CPU.</param>
         public void Write(ushort address, byte value)
         {
             switch (address & 0x07)
@@ -340,8 +311,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Builds the 8271 status byte from busy, result, interrupt, and data-request state.</summary>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadStatus()
         {
             byte status = 0;
@@ -358,8 +327,6 @@ namespace BBC
             return status;
         }
 
-        /// <summary>Reads the current 8271 result byte and clears result-ready status.</summary>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadResult()
         {
             if (nmiDelayCycles > 0)
@@ -373,8 +340,6 @@ namespace BBC
             return value;
         }
 
-        /// <summary>Reads the next byte from the 8271 data FIFO and updates transfer status.</summary>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadData()
         {
             if (nmiDelayCycles > 0)
@@ -402,8 +367,6 @@ namespace BBC
             return value;
         }
 
-        /// <summary>Begins command.</summary>
-        /// <param name="value">The input value.</param>
         private void BeginCommand(byte value)
         {
 
@@ -426,8 +389,6 @@ namespace BBC
                 ExecuteCommand();
         }
 
-        /// <summary>Collects an 8271 command parameter byte and executes once the command is complete.</summary>
-        /// <param name="value">The input value.</param>
         private void WriteParameter(byte value)
         {
             if (!busy && command == 0)
@@ -440,8 +401,6 @@ namespace BBC
                 ExecuteCommand();
         }
 
-        /// <summary>Accepts a byte written to the 8271 data register during a pending write transfer.</summary>
-        /// <param name="value">The input value.</param>
         private void WriteData(byte value)
         {
             if (pendingWrite is null)
@@ -466,7 +425,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Decodes the current 8271 command and dispatches the requested disc operation.</summary>
         private void ExecuteCommand()
         {
             byte opcode = (byte)(command & 0x3F);
@@ -568,11 +526,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Queues sector data from the mounted DFS image into the controller read FIFO.</summary>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="sector">The sector number value.</param>
-        /// <param name="sectorSize">The sector size in bytes value.</param>
-        /// <param name="count">The count value.</param>
         private void ReadSectors(int track, int sector, int sectorSize, int count)
         {
             if (!IsDriveReady(selectedDrive))
@@ -609,11 +562,6 @@ namespace BBC
             RequestNmi(BeginMediaAccess(track, sector));
         }
 
-        /// <summary>Simulates an 8271 scan command by validating the requested sector range.</summary>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="sector">The sector number value.</param>
-        /// <param name="sectorSize">The sector size in bytes value.</param>
-        /// <param name="count">The count value.</param>
         private void ScanSectors(int track, int sector, int sectorSize, int count)
         {
 
@@ -639,11 +587,6 @@ namespace BBC
             SetResult(ResultOk, BeginMediaAccess(track, sector));
         }
 
-        /// <summary>Collects target sector offsets and prepares the controller for a write-data transfer.</summary>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="sector">The sector number value.</param>
-        /// <param name="sectorSize">The sector size in bytes value.</param>
-        /// <param name="count">The count value.</param>
         private void PrepareWrite(int track, int sector, int sectorSize, int count)
         {
 
@@ -676,9 +619,6 @@ namespace BBC
             RequestNmi(BeginMediaAccess(track, sector));
         }
 
-        /// <summary>Commits a completed write transfer into the mounted DFS image buffers.</summary>
-        /// <param name="write">The write value.</param>
-        /// <param name="bytes">The bytes value.</param>
         private void WriteSectors(PendingWrite write, List<byte> bytes)
         {
             if (writeProtected)
@@ -696,9 +636,6 @@ namespace BBC
             imageDirty = true;
         }
 
-        /// <summary>Queues synthetic sector ID records for the requested DFS track.</summary>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="count">The count value.</param>
         private void ReadSectorIds(int track, int count)
         {
 
@@ -723,18 +660,11 @@ namespace BBC
             RequestNmi(BeginMediaAccess(track, 0));
         }
 
-        /// <summary>Checks whether the selected DFS sector exists in drive 0.</summary>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="sector">The sector number value.</param>
-        /// <returns>True when sector is available; otherwise, false.</returns>
         private bool HasSector(int track, int sector)
         {
             return TryGetOffset(selectedDrive, track, sector, out int offset) && offset + SectorSize <= drives[selectedDrive].Length;
         }
 
-        /// <summary>Validates that a sector exists and returns the corresponding 8271 result code.</summary>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="sector">The sector number value.</param>
         private void VerifySector(int track, int sector)
         {
             if (!IsDriveReady(selectedDrive))
@@ -746,10 +676,6 @@ namespace BBC
             SetResult(HasSector(track, sector) ? ResultOk : ResultSectorNotFound, BeginMediaAccess(track, sector));
         }
 
-        /// <summary>Starts a timed disc access, including motor spin-up, seek, settle, and rotational latency.</summary>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="sector">The sector number value.</param>
-        /// <returns>The resulting value.</returns>
         private int BeginMediaAccess(int track, int sector)
         {
             int delayCycles = 0;
@@ -772,11 +698,6 @@ namespace BBC
             return delayCycles + GetRotationalLatencyCycles(selectedDrive, sector, elapsedCycles + delayCycles);
         }
 
-        /// <summary>Computes the cycle delay until the requested sector rotates under the head.</summary>
-        /// <param name="drive">The drive number value.</param>
-        /// <param name="sector">The sector number value.</param>
-        /// <param name="readyAtCycle">The ready at cycle value.</param>
-        /// <returns>The computed value.</returns>
         private int GetRotationalLatencyCycles(int drive, int sector, long readyAtCycle)
         {
             int physicalSector = Math.Clamp(sector, 0, SectorsPerTrack - 1);
@@ -788,12 +709,6 @@ namespace BBC
             return (int)((targetPhase - phase + RevolutionCycles) % RevolutionCycles);
         }
 
-        /// <summary>Translates a DFS drive, track, and sector into an image byte offset.</summary>
-        /// <param name="drive">The drive number value.</param>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="sector">The sector number value.</param>
-        /// <param name="offset">The buffer or image offset.</param>
-        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryGetOffset(int drive, int track, int sector, out int offset)
         {
             if (!IsDriveReady(drive) || track < 0 || sector < 0 || sector >= SectorsPerTrack)
@@ -807,9 +722,6 @@ namespace BBC
             return offset >= 0 && offset < drives[drive].Length;
         }
 
-        /// <summary>Stores an 8271 command result and schedules the completion interrupt.</summary>
-        /// <param name="value">The input value.</param>
-        /// <param name="nmiDelayCycles">The NMI delay cycles value.</param>
         private void SetResult(byte value, int nmiDelayCycles = 0)
         {
             result = value;
@@ -819,8 +731,6 @@ namespace BBC
             RequestNmi(nmiDelayCycles);
         }
 
-        /// <summary>Schedules or raises a disc NMI to notify the CPU of controller progress.</summary>
-        /// <param name="delayCycles">The delay cycles value.</param>
         private void RequestNmi(int delayCycles = 0)
         {
             if (nmiPending)
@@ -836,24 +746,16 @@ namespace BBC
             nmiDelayCycles = delayCycles;
         }
 
-        /// <summary>Checks whether a mounted drive has spun up and is ready for media access.</summary>
-        /// <param name="drive">The drive number value.</param>
-        /// <returns>True when drive ready is true; otherwise, false.</returns>
         private bool IsDriveReady(int drive)
         {
             return drive >= 0 && drive < drives.Length && driveMounted[drive] && drives[drive].Length > 0;
         }
 
-        /// <summary>Writes one controller diagnostic event when tracing is enabled.</summary>
-        /// <param name="message">The diagnostic message.</param>
         private void Trace(string message)
         {
             traceWriter?.WriteLine($"{elapsedCycles,12} {message}");
         }
 
-        /// <summary>Advances a DFS track/sector pair to the next sector, wrapping at the end of a track.</summary>
-        /// <param name="track">The disc track number value.</param>
-        /// <param name="sector">The sector number value.</param>
         private static void AdvanceSector(ref int track, ref int sector)
         {
             sector++;
@@ -864,9 +766,6 @@ namespace BBC
             track++;
         }
 
-        /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
-        /// <param name="command">The command value.</param>
-        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryGetAutoLoadCommand(out string? command)
         {
             command = null;
@@ -904,9 +803,6 @@ namespace BBC
             return true;
         }
 
-        /// <summary>Reads the DFS catalogue entries from the mounted drive 0 image.</summary>
-        /// <param name="files">The files value.</param>
-        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryReadCatalogue(out List<DfsFile> files)
         {
             files = new List<DfsFile>();
@@ -934,8 +830,6 @@ namespace BBC
             return files.Count > 0;
         }
 
-        /// <summary>Reads the DFS catalogue boot option from the mounted image.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBootOption()
         {
             if (!HasMountedDisc || drives[0].Length <= 0x106)
@@ -944,9 +838,6 @@ namespace BBC
             return (drives[0][0x106] >> 4) & 0x03;
         }
 
-        /// <summary>Checks catalogue metadata for a file shape that should be run from BASIC.</summary>
-        /// <param name="file">The file value.</param>
-        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         private bool LooksLikeBasicFile(DfsFile file)
         {
             int offset = file.StartSector * SectorSize;
@@ -955,9 +846,6 @@ namespace BBC
                 || (offset + 2 < drives[0].Length && drives[0][offset] == 0x0D && drives[0][offset + 1] == 0x00);
         }
 
-        /// <summary>Returns how many parameter bytes the current 8271 command expects.</summary>
-        /// <param name="command">The command value.</param>
-        /// <returns>The computed value.</returns>
         private static int GetParameterCount(byte command)
         {
             return (command & 0x3F) switch
@@ -976,9 +864,6 @@ namespace BBC
             };
         }
 
-        /// <summary>Decodes the byte size represented by an 8271 sector-size code.</summary>
-        /// <param name="sectorSizeAndCount">The sector size and count value.</param>
-        /// <returns>The computed value.</returns>
         private static int GetSectorSize(byte sectorSizeAndCount)
         {
             int sizeCode = sectorSizeAndCount >> 5;
@@ -991,19 +876,12 @@ namespace BBC
             };
         }
 
-        /// <summary>Decodes the sector-count field from an 8271 size/count parameter byte.</summary>
-        /// <param name="sectorSizeAndCount">The sector size and count value.</param>
-        /// <returns>The computed value.</returns>
         private static int GetSectorCount(byte sectorSizeAndCount)
         {
             int count = sectorSizeAndCount & 0x1F;
             return count == 0 ? 32 : count;
         }
 
-        /// <summary>Reads and normalizes a DFS catalogue filename from raw image bytes.</summary>
-        /// <param name="image">The disc image data.</param>
-        /// <param name="offset">The buffer or image offset.</param>
-        /// <returns>The normalized name.</returns>
         private static string ReadDfsName(byte[] image, int offset)
         {
             string leaf = Encoding.ASCII.GetString(image, offset, 7).Trim();

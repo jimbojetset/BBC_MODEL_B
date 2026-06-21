@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        Display.cs
-// Description: SDL2 window, framebuffer presentation, keyboard/joystick input,
-//              drag/drop disc loading, and native file picker integration.
+// Description: Host display and input boundary for BBC video frames, keyboard
+//              matrix events, BREAK, disc drops, and joystick inputs.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -18,9 +18,6 @@ using System.IO.Compression;
 namespace BBC
 {
 
-    /// <summary>
-    /// Owns an SDL2 window, renderer, texture, and ARGB framebuffer suitable for BBC video output.
-    /// </summary>
     public sealed class Display : IDisposable
     {
         public const int DefaultWidth = 768;
@@ -87,36 +84,25 @@ namespace BBC
         private string notificationBody = string.Empty;
         private long notificationVisibleUntilTicks;
 
-        /// <summary>Initializes a new Display instance.</summary>
         static Display()
         {
             NativeLibrary.SetDllImportResolver(typeof(Display).Assembly, ResolveNativeLibrary);
         }
 
-        /// <summary>Gets the display texture width in pixels.</summary>
         public int Width { get; }
 
-        /// <summary>Gets the display texture height in pixels.</summary>
         public int Height { get; }
 
-        /// <summary>Gets the host-side display framebuffer.</summary>
         public uint[] FrameBuffer => frameBuffer;
 
-        /// <summary>Gets whether the host display has requested emulator shutdown.</summary>
         public bool QuitRequested { get; private set; }
 
-        /// <summary>Gets whether host Caps Lock is currently enabled.</summary>
         public bool HostCapsLockEnabled => hostCapsLockEnabled;
 
-        /// <summary>Gets or sets whether the drive activity LED should be lit.</summary>
         public bool DiscActivityLedActive { get; set; }
 
-        /// <summary>Gets or sets whether the drive glyph should show a mounted disc.</summary>
         public bool DiscMounted { get; set; }
 
-        /// <summary>Shows a host-rendered notification over the BBC display.</summary>
-        /// <param name="title">The title text.</param>
-        /// <param name="body">The body text.</param>
         public void ShowNotification(string title, string body)
         {
             notificationTitle = title.Trim();
@@ -125,11 +111,6 @@ namespace BBC
                 + (NotificationDurationMilliseconds * Stopwatch.Frequency / 1000);
         }
 
-        /// <summary>Initializes a new SDL display window.</summary>
-        /// <param name="title">Window title.</param>
-        /// <param name="width">Framebuffer width in pixels.</param>
-        /// <param name="height">Framebuffer height in pixels.</param>
-        /// <param name="scanlines">Whether to draw a CRT-style scanline overlay.</param>
         public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, bool scanlines = true)
         {
             if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
@@ -181,8 +162,6 @@ namespace BBC
             Present();
         }
 
-        /// <summary>Pumps pending SDL events and returns false after the user requests to close the window.</summary>
-        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         public bool PumpEvents()
         {
             while (SDL_PollEvent(out SdlEvent ev) != 0)
@@ -237,9 +216,6 @@ namespace BBC
             return !QuitRequested;
         }
 
-        /// <summary>Copies pending host keyboard input into a caller-provided buffer.</summary>
-        /// <param name="destination">The destination buffer.</param>
-        /// <returns>The number of bytes copied.</returns>
         public int DrainInput(Span<byte> destination)
         {
             int count = 0;
@@ -250,9 +226,6 @@ namespace BBC
             return count;
         }
 
-        /// <summary>Copies pending BREAK key requests into a caller-provided buffer.</summary>
-        /// <param name="destination">The destination buffer.</param>
-        /// <returns>The number of break requests copied.</returns>
         public int DrainBreaks(Span<BreakKeyPress> destination)
         {
             int count = 0;
@@ -263,9 +236,6 @@ namespace BBC
             return count;
         }
 
-        /// <summary>Copies pending BBC keyboard matrix changes into a caller-provided buffer.</summary>
-        /// <param name="destination">The destination buffer.</param>
-        /// <returns>The number of changes copied.</returns>
         public int DrainKeyChanges(Span<HostKeyChange> destination)
         {
             int count = 0;
@@ -276,9 +246,6 @@ namespace BBC
             return count;
         }
 
-        /// <summary>Copies pending joystick changes into a caller-provided buffer.</summary>
-        /// <param name="destination">The destination buffer.</param>
-        /// <returns>The number of changes copied.</returns>
         public int DrainJoystickChanges(Span<HostJoystickChange> destination)
         {
             int count = 0;
@@ -289,9 +256,6 @@ namespace BBC
             return count;
         }
 
-        /// <summary>Copies pending analogue joystick axis changes into a caller-provided buffer.</summary>
-        /// <param name="destination">The destination buffer.</param>
-        /// <returns>The number of changes copied.</returns>
         public int DrainAnalogJoystickChanges(Span<HostAnalogJoystickChange> destination)
         {
             int count = 0;
@@ -302,8 +266,6 @@ namespace BBC
             return count;
         }
 
-        /// <summary>Gets the latest host mouse state mapped into BBC framebuffer coordinates.</summary>
-        /// <returns>The latest host mouse state.</returns>
         public HostMouseState GetMouseState()
         {
             HostMouseState state = mouseState;
@@ -311,11 +273,8 @@ namespace BBC
             return state;
         }
 
-        /// <summary>Gets whether host mouse movement is currently captured as relative deltas.</summary>
         public bool RelativeMouseMode => relativeMouseMode;
 
-        /// <summary>Enables or disables host relative mouse capture.</summary>
-        /// <param name="enabled">Whether relative mouse mode should be enabled.</param>
         public void SetRelativeMouseMode(bool enabled)
         {
             if (relativeMouseMode == enabled)
@@ -326,16 +285,12 @@ namespace BBC
             mouseState = new HostMouseState(mouseState.X, mouseState.Y, mouseState.Buttons, 0, 0);
         }
 
-        /// <summary>Copies pending host disc/file mount requests into a caller-provided list.</summary>
-        /// <param name="destination">The destination collection.</param>
         public void DrainDiscLoads(ICollection<string> destination)
         {
             while (pendingDiscLoads.Count > 0)
                 destination.Add(pendingDiscLoads.Dequeue());
         }
 
-        /// <summary>Consumes queued screenshot requests events and applies them to emulator state.</summary>
-        /// <returns>The number of requested screenshots.</returns>
         public int DrainScreenshotRequests()
         {
             int count = pendingScreenshotRequests;
@@ -343,8 +298,6 @@ namespace BBC
             return count;
         }
 
-        /// <summary>Consumes queued trace toggle requests events and applies them to emulator state.</summary>
-        /// <returns>The number of requested trace toggles.</returns>
         public int DrainTraceToggleRequests()
         {
             int count = pendingTraceToggleRequests;
@@ -352,8 +305,6 @@ namespace BBC
             return count;
         }
 
-        /// <summary>Copies ARGB8888 pixels into the display framebuffer.</summary>
-        /// <param name="pixels">A complete width * height frame.</param>
         public void CopyFrame(ReadOnlySpan<uint> pixels)
         {
             if (pixels.Length != frameBuffer.Length)
@@ -362,7 +313,6 @@ namespace BBC
             pixels.CopyTo(frameBuffer);
         }
 
-        /// <summary>Uploads and displays the current framebuffer.</summary>
         public void Present()
         {
             ObjectDisposedException.ThrowIf(disposed, this);
@@ -389,7 +339,6 @@ namespace BBC
             SDL_RenderPresent(renderer);
         }
 
-        /// <summary>Draws the small host-drive icon in the display status area.</summary>
         private void DrawDriveGlyph()
         {
             int glyphX = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
@@ -406,9 +355,6 @@ namespace BBC
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         }
 
-        /// <summary>Draws the host-drive activity LED beside the drive icon.</summary>
-        /// <param name="glyphX">The glyph x value.</param>
-        /// <param name="glyphY">The glyph y value.</param>
         private void DrawDriveLed(int glyphX, int glyphY)
         {
             int radius = DriveLedDiameter / 2;
@@ -424,7 +370,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Draws the transient host notification into the presented framebuffer.</summary>
         private void DrawNotificationOverlay()
         {
             if (notificationVisibleUntilTicks <= Stopwatch.GetTimestamp()
@@ -470,13 +415,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Draws embedded bitmap text into the framebuffer.</summary>
-        /// <param name="text">The text to draw.</param>
-        /// <param name="x">The left coordinate.</param>
-        /// <param name="y">The top coordinate.</param>
-        /// <param name="cellWidth">The cell width.</param>
-        /// <param name="cellHeight">The cell height.</param>
-        /// <param name="colour">The ARGB colour.</param>
         private void DrawNotificationText(string text, int x, int y, int cellWidth, int cellHeight, uint colour)
         {
             int scale = Math.Max(1, Math.Min(cellWidth / (NotificationGlyphWidth + 1), cellHeight / NotificationGlyphHeight));
@@ -512,10 +450,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Wraps notification text to the requested character width.</summary>
-        /// <param name="text">The source text.</param>
-        /// <param name="columns">The maximum character count per line.</param>
-        /// <returns>The wrapped lines.</returns>
         private static List<string> WrapNotificationText(string text, int columns)
         {
             List<string> lines = new List<string>();
@@ -546,7 +480,6 @@ namespace BBC
             return lines;
         }
 
-        /// <summary>Provides a small readable 5x7 bitmap font for host overlays.</summary>
         private static class NotificationFont
         {
             private static readonly byte[] Fallback = [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100];
@@ -655,10 +588,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Builds a static overlay texture that darkens every other row for a CRT scanline look.</summary>
-        /// <param name="width">The pixel width.</param>
-        /// <param name="height">The height value.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         private IntPtr CreateScanlineTexture(int width, int height)
         {
             IntPtr overlay = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
@@ -689,9 +618,6 @@ namespace BBC
             return overlay;
         }
 
-        /// <summary>Creates drive glyph texture.</summary>
-        /// <param name="colour">The colour value.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         private IntPtr CreateDriveGlyphTexture(uint colour)
         {
             IntPtr glyph = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, DriveGlyphWidth, DriveGlyphHeight);
@@ -718,15 +644,6 @@ namespace BBC
             return glyph;
         }
 
-        /// <summary>Draws a rectangular outline directly into the pixel framebuffer.</summary>
-        /// <param name="pixels">The pixels value.</param>
-        /// <param name="textureWidth">The texture width.</param>
-        /// <param name="textureHeight">The texture height value.</param>
-        /// <param name="x">The low result byte value.</param>
-        /// <param name="y">The high result byte value.</param>
-        /// <param name="width">The pixel width.</param>
-        /// <param name="height">The height value.</param>
-        /// <param name="colour">The colour value.</param>
         private static void DrawPixelRectOutline(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height, uint colour)
         {
             FillPixelRect(pixels, textureWidth, textureHeight, x, y, width, 1, colour);
@@ -735,15 +652,6 @@ namespace BBC
             FillPixelRect(pixels, textureWidth, textureHeight, x + width - 1, y, 1, height, colour);
         }
 
-        /// <summary>Fills pixel rect.</summary>
-        /// <param name="pixels">The pixels value.</param>
-        /// <param name="textureWidth">The texture width.</param>
-        /// <param name="textureHeight">The texture height value.</param>
-        /// <param name="x">The low result byte value.</param>
-        /// <param name="y">The high result byte value.</param>
-        /// <param name="width">The pixel width.</param>
-        /// <param name="height">The height value.</param>
-        /// <param name="colour">The colour value.</param>
         private static void FillPixelRect(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height, uint colour)
         {
             int x0 = Math.Clamp(x, 0, textureWidth);
@@ -759,16 +667,12 @@ namespace BBC
             }
         }
 
-        /// <summary>Copies and displays a complete ARGB8888 frame.</summary>
-        /// <param name="pixels">A complete width * height frame.</param>
         public void Present(ReadOnlySpan<uint> pixels)
         {
             CopyFrame(pixels);
             Present();
         }
 
-        /// <summary>Saves the current framebuffer as a PNG image.</summary>
-        /// <param name="path">The destination PNG path.</param>
         public void SavePng(string path)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
@@ -776,7 +680,6 @@ namespace BBC
             WritePng(path, frameBuffer, Width, Height);
         }
 
-        /// <summary>Releases SDL resources owned by this display.</summary>
         public void Dispose()
         {
             if (disposed)
@@ -824,8 +727,6 @@ namespace BBC
             disposed = true;
         }
 
-        /// <summary>Converts an SDL key-down event into BBC text, matrix, or host command input.</summary>
-        /// <param name="keySym">The key sym value.</param>
         private void EnqueueKeyDown(int keySym)
         {
             int modifiers = SDL_GetModState();
@@ -885,8 +786,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Converts an SDL key-up event into BBC matrix and joystick release events.</summary>
-        /// <param name="keySym">The key sym value.</param>
         private void EnqueueKeyUp(int keySym)
         {
             if (keySym == SDLK_CAPSLOCK)
@@ -909,9 +808,6 @@ namespace BBC
                 pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, false));
         }
 
-        /// <summary>Queues an emulated joystick direction or fire-button transition.</summary>
-        /// <param name="keySym">The key sym value.</param>
-        /// <param name="pressed">The key press state.</param>
         private void EnqueueKeyboardJoystickChange(int keySym, bool pressed)
         {
             JoystickControl? control = keySym switch
@@ -928,10 +824,6 @@ namespace BBC
                 SetJoystickSource(control.Value, HostJoystickSource.Keyboard, pressed);
         }
 
-        /// <summary>Updates one physical/source contribution to a joystick control.</summary>
-        /// <param name="control">The joystick control.</param>
-        /// <param name="source">The input source.</param>
-        /// <param name="pressed">Whether the source is pressed.</param>
         private void SetJoystickSource(JoystickControl control, HostJoystickSource source, bool pressed)
         {
             int index = (int)control;
@@ -944,7 +836,6 @@ namespace BBC
                 pendingJoystickChanges.Enqueue(new HostJoystickChange(control, isPressed));
         }
 
-        /// <summary>Opens the first available SDL game controller or joystick.</summary>
         private void OpenFirstGameInput()
         {
             if (gameController != IntPtr.Zero || joystick != IntPtr.Zero)
@@ -976,8 +867,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Handles physical joystick or controller removal.</summary>
-        /// <param name="instanceId">The SDL joystick instance id.</param>
         private void HandleGameInputRemoved(int instanceId)
         {
             if (instanceId != activeJoystickInstanceId)
@@ -987,7 +876,6 @@ namespace BBC
             ClearJoystickSource(HostJoystickSource.ControllerButton | HostJoystickSource.ControllerAxis);
         }
 
-        /// <summary>Closes the active SDL game input device.</summary>
         private void CloseGameInput()
         {
             if (gameController != IntPtr.Zero)
@@ -1005,17 +893,12 @@ namespace BBC
             activeJoystickInstanceId = -1;
         }
 
-        /// <summary>Clears joystick states contributed by a source mask.</summary>
-        /// <param name="source">The source mask.</param>
         private void ClearJoystickSource(HostJoystickSource source)
         {
             foreach (JoystickControl control in Enum.GetValues<JoystickControl>())
                 SetJoystickSource(control, source, false);
         }
 
-        /// <summary>Updates BBC joystick state from an SDL game-controller axis.</summary>
-        /// <param name="axis">The SDL controller axis.</param>
-        /// <param name="value">The signed axis value.</param>
         private void UpdateControllerAxis(byte axis, short value)
         {
             if (axis == SDL_CONTROLLER_AXIS_LEFTX)
@@ -1032,9 +915,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Updates BBC joystick state from an SDL game-controller button.</summary>
-        /// <param name="button">The SDL controller button.</param>
-        /// <param name="pressed">Whether the button is pressed.</param>
         private void UpdateControllerButton(byte button, bool pressed)
         {
             switch (button)
@@ -1061,9 +941,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Updates BBC joystick state from a raw SDL joystick axis.</summary>
-        /// <param name="axis">The SDL joystick axis.</param>
-        /// <param name="value">The signed axis value.</param>
         private void UpdateJoystickAxis(byte axis, short value)
         {
             if (axis == 0)
@@ -1080,16 +957,11 @@ namespace BBC
             }
         }
 
-        /// <summary>Queues an analogue joystick axis change.</summary>
-        /// <param name="axis">The BBC analogue joystick axis.</param>
-        /// <param name="value">The signed SDL axis value.</param>
         private void EnqueueAnalogJoystickChange(JoystickAxis axis, short value)
         {
             pendingAnalogJoystickChanges.Enqueue(new HostAnalogJoystickChange(axis, value));
         }
 
-        /// <summary>Updates BBC joystick state from a raw SDL joystick hat.</summary>
-        /// <param name="value">The SDL hat value.</param>
         private void UpdateJoystickHat(byte value)
         {
             SetJoystickSource(JoystickControl.Up, HostJoystickSource.ControllerButton, (value & SDL_HAT_UP) != 0);
@@ -1098,21 +970,12 @@ namespace BBC
             SetJoystickSource(JoystickControl.Right, HostJoystickSource.ControllerButton, (value & SDL_HAT_RIGHT) != 0);
         }
 
-        /// <summary>Updates BBC joystick state from a raw SDL joystick button.</summary>
-        /// <param name="button">The SDL joystick button.</param>
-        /// <param name="pressed">Whether the button is pressed.</param>
         private void UpdateJoystickButton(byte button, bool pressed)
         {
             if (button == 0)
                 SetJoystickSource(JoystickControl.Fire, HostJoystickSource.ControllerButton, pressed);
         }
 
-        /// <summary>Updates the latest host mouse position in BBC framebuffer coordinates.</summary>
-        /// <param name="hostX">The host-window X coordinate.</param>
-        /// <param name="hostY">The host-window Y coordinate.</param>
-        /// <param name="relativeX">The host relative X movement.</param>
-        /// <param name="relativeY">The host relative Y movement.</param>
-        /// <param name="buttons">The current host mouse button mask.</param>
         private void UpdateMouseState(int hostX, int hostY, int relativeX, int relativeY, byte buttons)
         {
             float logicalX = hostX;
@@ -1135,11 +998,6 @@ namespace BBC
                 mouseState.DeltaY + relativeY);
         }
 
-        /// <summary>Updates the latest host mouse button state.</summary>
-        /// <param name="button">The SDL mouse button number.</param>
-        /// <param name="pressed">Whether the button is pressed.</param>
-        /// <param name="hostX">The host-window X coordinate.</param>
-        /// <param name="hostY">The host-window Y coordinate.</param>
         private void UpdateMouseButtonState(byte button, bool pressed, int hostX, int hostY)
         {
             byte mask = button switch
@@ -1157,7 +1015,6 @@ namespace BBC
             UpdateMouseState(hostX, hostY, 0, 0, buttons);
         }
 
-        /// <summary>Queues a BBC Caps Lock transition when the host Caps Lock state changes.</summary>
         private void SyncHostCapsLockState()
         {
             bool enabled = IsHostCapsLockEnabled();
@@ -1168,17 +1025,11 @@ namespace BBC
             pendingKeyChanges.Enqueue(new HostKeyChange(BbcCapsLockKey, enabled));
         }
 
-        /// <summary>Checks whether host caps lock enabled is true for the current emulator state.</summary>
-        /// <returns>True when host caps lock enabled is true; otherwise, false.</returns>
         private static bool IsHostCapsLockEnabled()
         {
             return (SDL_GetModState() & KMOD_CAPS) != 0;
         }
 
-        /// <summary>Applies synthetic Shift key transitions needed for host-to-BBC key mapping.</summary>
-        /// <param name="adjustment">The adjustment value.</param>
-        /// <param name="hostShiftDown">The host shift down.</param>
-        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         private bool ApplyShiftAdjustment(ShiftAdjustment adjustment, bool hostShiftDown)
         {
             if (adjustment == ShiftAdjustment.Suppress && hostShiftDown)
@@ -1196,9 +1047,6 @@ namespace BBC
             return false;
         }
 
-        /// <summary>Releases a synthetic shift adjustment after the host key transition is complete.</summary>
-        /// <param name="activeKey">The active key value.</param>
-        /// <param name="hostShiftDown">The host shift down.</param>
         private void RestoreAdjustedShift(ActiveHostKey activeKey, bool hostShiftDown)
         {
             if (!activeKey.ShiftAdjusted)
@@ -1211,10 +1059,6 @@ namespace BBC
                 pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, false));
         }
 
-        /// <summary>Maps an SDL scancode and modifier state to a BBC keyboard matrix key.</summary>
-        /// <param name="keySym">The key sym value.</param>
-        /// <param name="modifiers">The modifiers value.</param>
-        /// <returns>The resulting value.</returns>
         private static BbcKeyChord? MapHostKeyToBbcKey(int keySym, int modifiers)
         {
             if ((modifiers & KMOD_ALT) != 0)
@@ -1312,9 +1156,6 @@ namespace BBC
             };
         }
 
-        /// <summary>Maps shifted host punctuation keys to BBC keyboard positions.</summary>
-        /// <param name="keySym">The key sym value.</param>
-        /// <returns>The resulting value.</returns>
         private static BbcKeyChord? MapShiftedHostKeyToBbcKey(int keySym)
         {
             return keySym switch
@@ -1333,9 +1174,6 @@ namespace BBC
             };
         }
 
-        /// <summary>Maps Option-modified host punctuation keys to BBC keyboard positions.</summary>
-        /// <param name="keySym">The key sym value.</param>
-        /// <returns>The resulting value.</returns>
         private static BbcKeyChord? MapOptionHostKeyToBbcKey(int keySym)
         {
             return keySym switch
@@ -1345,10 +1183,6 @@ namespace BBC
             };
         }
 
-        /// <summary>Creates a BBC keyboard matrix key mapping entry.</summary>
-        /// <param name="internalKey">The BBC keyboard matrix key.</param>
-        /// <param name="shiftAdjustment">The shift adjustment value.</param>
-        /// <returns>The resulting value.</returns>
         private static BbcKeyChord Key(byte internalKey, ShiftAdjustment shiftAdjustment = ShiftAdjustment.Preserve)
         {
             return new BbcKeyChord(internalKey, shiftAdjustment);
@@ -1365,7 +1199,6 @@ namespace BBC
             Force
         }
 
-        /// <summary>Queues clipboard text as host keyboard input for the emulator.</summary>
         private void EnqueueClipboardText()
         {
             IntPtr textPointer = SDL_GetClipboardText();
@@ -1384,8 +1217,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Queues a host file path dropped onto the SDL window.</summary>
-        /// <param name="filePointer">The file pointer value.</param>
         private void EnqueueDroppedFile(IntPtr filePointer)
         {
             if (filePointer == IntPtr.Zero)
@@ -1403,7 +1234,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Opens the native file picker and queues the chosen file for mounting.</summary>
         private void EnqueueSelectedFile()
         {
             string? path = SelectNativeFile();
@@ -1411,8 +1241,6 @@ namespace BBC
                 pendingDiscLoads.Enqueue(path);
         }
 
-        /// <summary>Shows the host file picker and returns the selected path.</summary>
-        /// <returns>The resulting string.</returns>
         private static string? SelectNativeFile()
         {
             try
@@ -1439,10 +1267,6 @@ namespace BBC
             return null;
         }
 
-        /// <summary>Runs a host utility process and returns its first line of standard output.</summary>
-        /// <param name="fileName">The file name value.</param>
-        /// <param name="arguments">The arguments.</param>
-        /// <returns>The resulting string.</returns>
         private static string? RunProcessForSingleLine(string fileName, params string[] arguments)
         {
             ProcessStartInfo startInfo = new ProcessStartInfo(fileName)
@@ -1462,8 +1286,6 @@ namespace BBC
             return process.ExitCode == 0 ? output.Trim() : null;
         }
 
-        /// <summary>Converts host text into BBC keypress text and queues it for the emulator.</summary>
-        /// <param name="text">The text.</param>
         private void EnqueueHostText(string text)
         {
             for (int i = 0; i < text.Length; i++)
@@ -1496,29 +1318,18 @@ namespace BBC
             }
         }
 
-        /// <summary>Throws when an SDL-created native pointer is null.</summary>
-        /// <param name="value">The input value.</param>
-        /// <param name="operation">The operation value.</param>
         private static void ThrowIfNull(IntPtr value, string operation)
         {
             if (value == IntPtr.Zero)
                 throw new InvalidOperationException($"{operation} failed: {GetSdlError()}");
         }
 
-        /// <summary>Throws an exception when an SDL call reports a failure.</summary>
-        /// <param name="result">The result value.</param>
-        /// <param name="operation">The operation value.</param>
         private static void ThrowIfSdlFailed(int result, string operation)
         {
             if (result < 0)
                 throw new InvalidOperationException($"{operation} failed: {GetSdlError()}");
         }
 
-        /// <summary>Encodes the display framebuffer as a PNG file on the host filesystem.</summary>
-        /// <param name="path">The host file path.</param>
-        /// <param name="argbPixels">The argb pixels value.</param>
-        /// <param name="width">The pixel width.</param>
-        /// <param name="height">The height value.</param>
         private static void WritePng(string path, ReadOnlySpan<uint> argbPixels, int width, int height)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
@@ -1557,10 +1368,6 @@ namespace BBC
             WriteChunk(file, "IEND", []);
         }
 
-        /// <summary>Writes one PNG chunk, including its length, type, payload, and CRC.</summary>
-        /// <param name="stream">The stream value.</param>
-        /// <param name="type">The type value.</param>
-        /// <param name="data">The data byte or buffer.</param>
         private static void WriteChunk(Stream stream, string type, ReadOnlySpan<byte> data)
         {
             Span<byte> header = stackalloc byte[8];
@@ -1577,10 +1384,6 @@ namespace BBC
             stream.Write(crcBytes);
         }
 
-        /// <summary>Computes the PNG CRC-32 over a chunk type and payload.</summary>
-        /// <param name="type">The type value.</param>
-        /// <param name="data">The data byte or buffer.</param>
-        /// <returns>The resulting value.</returns>
         private static uint Crc32(ReadOnlySpan<byte> type, ReadOnlySpan<byte> data)
         {
             uint crc = 0xFFFFFFFF;
@@ -1589,10 +1392,6 @@ namespace BBC
             return crc ^ 0xFFFFFFFF;
         }
 
-        /// <summary>Refreshes crc32 after related emulator state changes.</summary>
-        /// <param name="crc">The crc value.</param>
-        /// <param name="data">The data byte or buffer.</param>
-        /// <returns>The resulting value.</returns>
         private static uint UpdateCrc32(uint crc, ReadOnlySpan<byte> data)
         {
             foreach (byte value in data)
@@ -1605,10 +1404,6 @@ namespace BBC
             return crc;
         }
 
-        /// <summary>Writes a 32-bit integer to a stream in PNG big-endian byte order.</summary>
-        /// <param name="destination">The destination value.</param>
-        /// <param name="offset">The buffer or image offset.</param>
-        /// <param name="value">The input value.</param>
         private static void WriteBigEndian(Span<byte> destination, int offset, int value)
         {
             destination[offset] = (byte)(value >> 24);
@@ -1617,19 +1412,12 @@ namespace BBC
             destination[offset + 3] = (byte)value;
         }
 
-        /// <summary>Computes SDL error from the current emulated hardware state.</summary>
-        /// <returns>The resulting string.</returns>
         private static string GetSdlError()
         {
             IntPtr error = SDL_GetError();
             return error == IntPtr.Zero ? "unknown SDL error" : Marshal.PtrToStringAnsi(error) ?? "unknown SDL error";
         }
 
-        /// <summary>Resolves native library.</summary>
-        /// <param name="libraryName">The library name value.</param>
-        /// <param name="assembly">The assembly value.</param>
-        /// <param name="searchPath">The search path.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         private static IntPtr ResolveNativeLibrary(string libraryName, System.Reflection.Assembly assembly, DllImportSearchPath? searchPath)
         {
             if (libraryName != SdlLibrary)
@@ -1862,248 +1650,119 @@ namespace BBC
             ];
         }
 
-        /// <summary>Imports SDL_InitSubSystem for starting the SDL video subsystem.</summary>
-        /// <param name="flags">The flag mask.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_InitSubSystem(uint flags);
 
-        /// <summary>Imports SDL_QuitSubSystem for shutting down the SDL video subsystem.</summary>
-        /// <param name="flags">The flag mask.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_QuitSubSystem(uint flags);
 
-        /// <summary>Imports SDL_CreateWindow for opening the emulator display window.</summary>
-        /// <param name="title">The title value.</param>
-        /// <param name="x">The low result byte value.</param>
-        /// <param name="y">The high result byte value.</param>
-        /// <param name="w">The w value.</param>
-        /// <param name="h">The h value.</param>
-        /// <param name="flags">The flag mask.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         private static extern IntPtr SDL_CreateWindow(string title, int x, int y, int w, int h, uint flags);
 
-        /// <summary>Imports SDL_DestroyWindow for closing the emulator display window.</summary>
-        /// <param name="window">The screen memory window value.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_DestroyWindow(IntPtr window);
 
-        /// <summary>Imports SDL_CreateRenderer for creating the display renderer.</summary>
-        /// <param name="window">The screen memory window value.</param>
-        /// <param name="index">The index register value.</param>
-        /// <param name="flags">The flag mask.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_CreateRenderer(IntPtr window, int index, uint flags);
 
-        /// <summary>Imports SDL_DestroyRenderer for releasing the SDL renderer.</summary>
-        /// <param name="renderer">The renderer value.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_DestroyRenderer(IntPtr renderer);
 
-        /// <summary>Imports SDL_SetRenderDrawColor for renderer clear and overlay colours.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <param name="r">The r value.</param>
-        /// <param name="g">The g value.</param>
-        /// <param name="b">The b value.</param>
-        /// <param name="a">The a value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_SetRenderDrawColor(IntPtr renderer, byte r, byte g, byte b, byte a);
 
-        /// <summary>Imports SDL_RenderSetLogicalSize for BBC display scaling.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <param name="w">The w value.</param>
-        /// <param name="h">The h value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderSetLogicalSize(IntPtr renderer, int w, int h);
 
-        /// <summary>Imports SDL_RenderSetIntegerScale for pixel-perfect integer scaling.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <param name="enable">The enable value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderSetIntegerScale(IntPtr renderer, int enable);
 
-        /// <summary>Imports SDL_SetRelativeMouseMode for host mouse capture.</summary>
-        /// <param name="enabled">Whether relative mouse mode should be enabled.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_SetRelativeMouseMode(int enabled);
 
-        /// <summary>Imports SDL_RenderWindowToLogical for coordinate conversion.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <param name="windowX">The window X coordinate.</param>
-        /// <param name="windowY">The window Y coordinate.</param>
-        /// <param name="logicalX">The logical X coordinate.</param>
-        /// <param name="logicalY">The logical Y coordinate.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_RenderWindowToLogical(IntPtr renderer, int windowX, int windowY, out float logicalX, out float logicalY);
 
-        /// <summary>Imports SDL_CreateTexture for allocating the framebuffer texture.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <param name="format">The format value.</param>
-        /// <param name="access">The access value.</param>
-        /// <param name="w">The w value.</param>
-        /// <param name="h">The h value.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_CreateTexture(IntPtr renderer, uint format, int access, int w, int h);
 
-        /// <summary>Imports SDL_DestroyTexture for releasing the framebuffer texture.</summary>
-        /// <param name="texture">The texture value.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_DestroyTexture(IntPtr texture);
 
-        /// <summary>Imports SDL_SetTextureBlendMode for texture blending configuration.</summary>
-        /// <param name="texture">The texture value.</param>
-        /// <param name="blendMode">The blend mode value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_SetTextureBlendMode(IntPtr texture, int blendMode);
 
-        /// <summary>Imports SDL_UpdateTexture for uploading framebuffer pixels.</summary>
-        /// <param name="texture">The texture value.</param>
-        /// <param name="rect">The rect value.</param>
-        /// <param name="pixels">The pixels value.</param>
-        /// <param name="pitch">The pitch value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_UpdateTexture(IntPtr texture, IntPtr rect, IntPtr pixels, int pitch);
 
-        /// <summary>Imports SDL_RenderClear for clearing the host renderer.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderClear(IntPtr renderer);
 
-        /// <summary>Imports SDL_RenderCopy for copying the framebuffer texture to the renderer.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <param name="texture">The texture value.</param>
-        /// <param name="srcrect">The srcrect value.</param>
-        /// <param name="dstrect">The dstrect value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderCopy(IntPtr renderer, IntPtr texture, IntPtr srcrect, IntPtr dstrect);
 
-        /// <summary>Imports SDL_RenderCopy for copying the framebuffer texture to the renderer.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <param name="texture">The texture value.</param>
-        /// <param name="srcrect">The srcrect value.</param>
-        /// <param name="dstrect">The dstrect value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SDL_RenderCopy")]
         private static extern int SDL_RenderCopy(IntPtr renderer, IntPtr texture, IntPtr srcrect, ref SdlRect dstrect);
 
-        /// <summary>Imports SDL_RenderFillRect for drawing host overlay rectangles.</summary>
-        /// <param name="renderer">The renderer value.</param>
-        /// <param name="rect">The rect value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderFillRect(IntPtr renderer, ref SdlRect rect);
 
-        /// <summary>Imports SDL_RenderPresent for presenting the completed host frame.</summary>
-        /// <param name="renderer">The renderer value.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_RenderPresent(IntPtr renderer);
 
-        /// <summary>Imports SDL_PollEvent for reading host input and window events.</summary>
-        /// <param name="ev">The ev value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_PollEvent(out SdlEvent ev);
 
-        /// <summary>Imports SDL_NumJoysticks for enumerating host game input devices.</summary>
-        /// <returns>The number of attached SDL joystick devices.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_NumJoysticks();
 
-        /// <summary>Imports SDL_IsGameController for detecting controller-compatible devices.</summary>
-        /// <param name="joystickIndex">The SDL joystick device index.</param>
-        /// <returns>SDL_TRUE when the device has a game-controller mapping.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_IsGameController(int joystickIndex);
 
-        /// <summary>Imports SDL_GameControllerOpen for opening a mapped game controller.</summary>
-        /// <param name="joystickIndex">The SDL joystick device index.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_GameControllerOpen(int joystickIndex);
 
-        /// <summary>Imports SDL_GameControllerClose for closing a mapped game controller.</summary>
-        /// <param name="controller">The controller pointer.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_GameControllerClose(IntPtr controller);
 
-        /// <summary>Imports SDL_GameControllerGetJoystick for obtaining the controller's joystick handle.</summary>
-        /// <param name="controller">The controller pointer.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_GameControllerGetJoystick(IntPtr controller);
 
-        /// <summary>Imports SDL_GameControllerEventState for enabling controller events.</summary>
-        /// <param name="state">The requested event state.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_GameControllerEventState(int state);
 
-        /// <summary>Imports SDL_JoystickOpen for opening an unmapped joystick.</summary>
-        /// <param name="joystickIndex">The SDL joystick device index.</param>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_JoystickOpen(int joystickIndex);
 
-        /// <summary>Imports SDL_JoystickClose for closing an unmapped joystick.</summary>
-        /// <param name="joystick">The joystick pointer.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_JoystickClose(IntPtr joystick);
 
-        /// <summary>Imports SDL_JoystickInstanceID for matching joystick removal events.</summary>
-        /// <param name="joystick">The joystick pointer.</param>
-        /// <returns>The SDL joystick instance id.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_JoystickInstanceID(IntPtr joystick);
 
-        /// <summary>Imports SDL_JoystickEventState for enabling raw joystick events.</summary>
-        /// <param name="state">The requested event state.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_JoystickEventState(int state);
 
-        /// <summary>Imports SDL_GetModState for host modifier state queries.</summary>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_GetModState();
 
-        /// <summary>Imports SDL_GetClipboardText for paste support.</summary>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_GetClipboardText();
 
-        /// <summary>Imports SDL_free for releasing SDL-owned clipboard memory.</summary>
-        /// <param name="memblock">The memblock value.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_free(IntPtr memblock);
 
-        /// <summary>Imports SDL_StartTextInput for enabling host text input.</summary>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_StartTextInput();
 
-        /// <summary>Imports SDL_StopTextInput for disabling host text input.</summary>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_StopTextInput();
 
-        /// <summary>Imports SDL_GetError for retrieving native SDL failure details.</summary>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_GetError();
     }
 
-    /// <summary>Describes a host BREAK key request.</summary>
-    /// <param name="Shift">Whether Shift was held.</param>
-    /// <param name="Control">Whether Control was held.</param>
+    /// <summary>BREAK is a BBC key with Shift/Ctrl variants that MOS treats differently during reset.</summary>
     public readonly record struct BreakKeyPress(bool Shift, bool Control);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -2114,11 +1773,6 @@ namespace BBC
         public int W;
         public int H;
 
-        /// <summary>Initializes a new SdlRect instance.</summary>
-        /// <param name="x">The low result byte value.</param>
-        /// <param name="y">The high result byte value.</param>
-        /// <param name="w">The w value.</param>
-        /// <param name="h">The h value.</param>
         public SdlRect(int x, int y, int w, int h)
         {
             X = x;
@@ -2128,30 +1782,18 @@ namespace BBC
         }
     }
 
-    /// <summary>Describes a BBC keyboard matrix key transition from the host keyboard.</summary>
-    /// <param name="InternalKey">The BBC internal key number.</param>
-    /// <param name="Pressed">Whether the key is now pressed.</param>
+    /// <summary>BBC keys are delivered as internal matrix positions, not host key symbols.</summary>
     public readonly record struct HostKeyChange(byte InternalKey, bool Pressed);
 
-    /// <summary>Describes an emulated joystick transition from the host keyboard.</summary>
-    /// <param name="Control">The joystick control that changed.</param>
-    /// <param name="Pressed">Whether the control is now pressed.</param>
+    /// <summary>Digital joystick input is converted to the active-low lines expected by BBC games.</summary>
     public readonly record struct HostJoystickChange(JoystickControl Control, bool Pressed);
 
-    /// <summary>Describes an analogue joystick axis transition from the host.</summary>
-    /// <param name="Axis">The analogue joystick axis.</param>
-    /// <param name="Value">The signed SDL axis value.</param>
+    /// <summary>Analogue joystick movement eventually reaches software through the BBC's uPD7002 ADC path.</summary>
     public readonly record struct HostAnalogJoystickChange(JoystickAxis Axis, short Value);
 
-    /// <summary>Describes the current host mouse state in BBC framebuffer coordinates.</summary>
-    /// <param name="X">The BBC framebuffer X coordinate.</param>
-    /// <param name="Y">The BBC framebuffer Y coordinate.</param>
-    /// <param name="Buttons">Pressed buttons as left/right/middle bits.</param>
-    /// <param name="DeltaX">Relative X movement since the last read.</param>
-    /// <param name="DeltaY">Relative Y movement since the last read.</param>
+    /// <summary>AMX-style mouse code works in BBC screen coordinates plus relative movement pulses.</summary>
     public readonly record struct HostMouseState(int X, int Y, byte Buttons, int DeltaX, int DeltaY);
 
-    /// <summary>Emulated joystick controls.</summary>
     public enum JoystickControl
     {
         Left,
@@ -2161,14 +1803,12 @@ namespace BBC
         Fire
     }
 
-    /// <summary>Emulated analogue joystick axes.</summary>
     public enum JoystickAxis
     {
         X,
         Y
     }
 
-    /// <summary>Tracks which host input sources currently hold a BBC joystick control down.</summary>
     [Flags]
     internal enum HostJoystickSource
     {

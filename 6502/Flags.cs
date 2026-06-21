@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        Flags.cs
-// Description: 6502 processor status register model and helpers for flag
-//              packing, unpacking, and instruction flag updates.
+// Description: 6502 processor status byte, including the reserved stack bit
+//              behaviour that BBC MOS interrupt handlers rely on.
 // Author:      James Booth
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root
@@ -16,14 +16,10 @@ using System.Runtime.CompilerServices;
 namespace BBC.CPU
 {
 
-    /// <summary>
-    /// Stores the 6502 processor status register and exposes named flag accessors used by instruction implementations.
-    /// </summary>
     public class Flags
     {
-        /// Bit layout of the 6502 status register:
-        /// 7 6 5 4 3 2 1 0
-        /// N V T B D I Z C   (T = unused-by-CPU "Test" flag in bit 5)
+        // 6502 status byte on the stack: N V 1 B D I Z C.
+        // Bit 5 is not a real flag, but interrupt frames preserve it as set.
         private const byte FLAG_C = 0x01;
 
         private const byte FLAG_Z = 0x02;
@@ -34,35 +30,28 @@ namespace BBC.CPU
 
         private byte p;
 
-        public bool C { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_C) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_C) : (byte)(p & ~FLAG_C); } /// Carry
-        public bool Z { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_Z) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_Z) : (byte)(p & ~FLAG_Z); } /// Zero
-        public bool I { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_I) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_I) : (byte)(p & ~FLAG_I); } /// Interrupt Disable
-        public bool D { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_D) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_D) : (byte)(p & ~FLAG_D); } /// Decimal
-        public bool V { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_V) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_V) : (byte)(p & ~FLAG_V); } /// Overflow
-        public bool N { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_N) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_N) : (byte)(p & ~FLAG_N); } /// Negative
+        public bool C { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_C) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_C) : (byte)(p & ~FLAG_C); }
+        public bool Z { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_Z) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_Z) : (byte)(p & ~FLAG_Z); }
+        public bool I { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_I) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_I) : (byte)(p & ~FLAG_I); }
+        public bool D { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_D) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_D) : (byte)(p & ~FLAG_D); }
+        public bool V { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_V) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_V) : (byte)(p & ~FLAG_V); }
+        public bool N { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => (p & FLAG_N) != 0; [MethodImpl(MethodImplOptions.AggressiveInlining)] set => p = value ? (byte)(p | FLAG_N) : (byte)(p & ~FLAG_N); }
 
-        /// <summary>Initializes a new Flags instance.</summary>
         public Flags()
         {
         }
 
-        /// <summary>Clears this instance to its reset state.</summary>
         public void Clear()
         {
             p = (byte)(p & 0x20);
         }
 
-        /// <summary>Updates selected processor status flags from a packed status byte.</summary>
-        /// <param name="flags">The packed processor status bits to apply.</param>
-        /// <param name="bits">The status bits that are allowed to change.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetFlagsFromByte(byte flags, byte bits = 0xFF)
         {
             p = (byte)((p & (byte)~bits) | (flags & bits));
         }
 
-        /// <summary>Computes flags as byte from the current emulated hardware state.</summary>
-        /// <returns>The computed value.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public byte GetFlagsAsByte() => p;
     }

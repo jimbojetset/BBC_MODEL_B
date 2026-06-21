@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        TapeACIAStub.cs
-// Description: Minimal BBC cassette and serial ACIA state used by software
-//              probing cassette/RS423 hardware registers.
+// Description: Minimal cassette/RS423 ACIA response for software that probes
+//              the BBC's tape hardware even when loading from disc images.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -15,8 +15,8 @@ namespace BBC
 {
 
     /// <summary>
-    /// Models enough of the BBC Micro cassette/serial hardware for software that
-    /// probes whether a tape is still running after being converted to disc.
+    /// Some disc conversions still touch the cassette ACIA. This keeps those
+    /// probes harmless without pretending to implement tape loading.
     /// </summary>
     public sealed class TapeACIAStub
     {
@@ -32,28 +32,17 @@ namespace BBC
 
         private byte serialUlaControl;
 
-        /// <summary>
-        /// Gets or sets whether the emulated cassette deck motor is running.
-        /// </summary>
         public bool MotorRunning { get; private set; }
 
-        /// <summary>
-        /// Gets or sets whether cassette input data is currently available.
-        /// </summary>
         public bool TapePlaying { get; private set; }
 
-        /// <summary>Checks whether a SHEILA address belongs to the cassette ACIA range.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>True when address is true; otherwise, false.</returns>
+        /// <summary>The cassette/RS423 ACIA occupies the FE08-FE0F part of SHEILA.</summary>
         public static bool IsAddress(ushort address)
         {
             return address is >= AciaStart and <= AciaEnd
                 || address is >= SerialUlaStart and <= SerialUlaEnd;
         }
 
-        /// <summary>Reads  from emulated memory or device state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>The value read from emulated memory or device state.</returns>
         public byte Read(ushort address)
         {
             if (address is >= AciaStart and <= AciaEnd)
@@ -66,9 +55,6 @@ namespace BBC
             return serialUlaControl;
         }
 
-        /// <summary>Writes  into emulated memory or device state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <param name="value">The input value.</param>
         public void Write(ushort address, byte value)
         {
             if (address is >= AciaStart and <= AciaEnd)
@@ -81,15 +67,12 @@ namespace BBC
             MotorRunning = (value & 0x80) != 0;
         }
 
-        /// <summary>Stops tape.</summary>
         public void StopTape()
         {
             TapePlaying = false;
             MotorRunning = false;
         }
 
-        /// <summary>Builds the cassette ACIA status byte from motor and data-available state.</summary>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadAciaStatus()
         {
             byte status = AciaStatusTransmitDataEmpty | AciaStatusClearToSend;
@@ -102,8 +85,6 @@ namespace BBC
             return status;
         }
 
-        /// <summary>Returns the current cassette ACIA receive-data byte.</summary>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadAciaData()
         {
             return 0x00;

@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        UserVia.cs
-// Description: BBC user VIA timer and interrupt model used by games and
-//              user-port polling code.
+// Description: BBC user 6522 VIA: user-port I/O, game-control inputs, AMX-style
+//              mouse pulses, and timer IRQ behaviour.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -15,7 +15,8 @@ namespace BBC
 {
 
     /// <summary>
-    /// Models the subset of the BBC user VIA needed by game timer IRQs.
+    /// The user VIA exposes the BBC's user port. Games and add-ons often depend
+    /// on 6522 timer IRQs and active-low input lines rather than MOS services.
     /// </summary>
     public sealed class UserVia
     {
@@ -52,20 +53,14 @@ namespace BBC
         private bool timer2HasInterrupted;
         private int peripheralCycleRemainder;
 
-        /// <summary>Checks whether address is true for the current emulator state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>True when the address is within &amp;FE60-&amp;FE6F.</returns>
         public static bool IsAddress(ushort address)
         {
             return address is >= 0xFE60 and <= 0xFE6F;
         }
 
-        /// <summary>Gets whether the VIA IRQ output is currently asserted.</summary>
         public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;
 
-        /// <summary>Sets externally-driven user-port B input bits.</summary>
-        /// <param name="mask">The bits controlled by the external device.</param>
-        /// <param name="value">The bit values exposed on the user port.</param>
+        /// <summary>External user-port devices drive PB lines only where their mask owns the pin.</summary>
         public void SetPortBInputBits(byte mask, byte value)
         {
             mouseInputActive = false;
@@ -77,12 +72,7 @@ namespace BBC
             externalPortBValue = (byte)(value & mask);
         }
 
-        /// <summary>Sets active-low switched-joystick inputs on the user port.</summary>
-        /// <param name="left">Whether left is pressed.</param>
-        /// <param name="right">Whether right is pressed.</param>
-        /// <param name="up">Whether up is pressed.</param>
-        /// <param name="down">Whether down is pressed.</param>
-        /// <param name="fire">Whether fire is pressed.</param>
+        /// <summary>Switched joysticks pull user-port lines low when a direction or fire button is pressed.</summary>
         public void SetSwitchedJoystickInput(bool left, bool right, bool up, bool down, bool fire)
         {
             byte value = 0x1F;
@@ -105,10 +95,7 @@ namespace BBC
             SetPortBInputBits(0x1F, value);
         }
 
-        /// <summary>Sets mouse-style user-port inputs and raises edge interrupt flags for movement.</summary>
-        /// <param name="activeLowButtons">The active-low button bits exposed on PB0-PB2.</param>
-        /// <param name="deltaX">The host mouse X movement steps.</param>
-        /// <param name="deltaY">The host mouse Y movement steps.</param>
+        /// <summary>AMX-style mice report movement as user-port pulses, with buttons held active-low.</summary>
         public void SetMouseInput(byte activeLowButtons, int deltaX, int deltaY)
         {
             mouseInputActive = true;
@@ -118,7 +105,6 @@ namespace BBC
             RefreshMouseInputBits();
         }
 
-        /// <summary>Resets the modelled VIA state.</summary>
         public void Reset()
         {
             Array.Clear(registers);
@@ -148,8 +134,7 @@ namespace BBC
             peripheralCycleRemainder = 0;
         }
 
-        /// <summary>Advances user VIA timers for the supplied CPU cycle count.</summary>
-        /// <param name="cycles">The elapsed 6502 cycles.</param>
+        /// <summary>The user 6522 timers run from the same 1 MHz peripheral clock as the system VIA.</summary>
         public void Tick(int cycles)
         {
             if (cycles <= 0)
@@ -168,9 +153,6 @@ namespace BBC
                 TickTimer2(peripheralCycles);
         }
 
-        /// <summary>Reads  from emulated memory or device state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>The register value.</returns>
         public byte Read(ushort address)
         {
             int register = address & 0x0F;
@@ -193,9 +175,6 @@ namespace BBC
             };
         }
 
-        /// <summary>Writes  into emulated memory or device state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <param name="value">The value written by the CPU.</param>
         public void Write(ushort address, byte value)
         {
             int register = address & 0x0F;
@@ -267,8 +246,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Advances user VIA timer 1 and raises its interrupt on underflow.</summary>
-        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void TickTimer1(int cycles)
         {
             if (!timer1Running)
@@ -299,20 +276,16 @@ namespace BBC
             }
         }
 
-        /// <summary>Reloads user VIA timer 1 from its latch after underflow.</summary>
         private void ReloadTimer1Counter()
         {
             timer1Counter = AddTimerOffset(timer1Latch, Timer1ReloadExtraCycles);
         }
 
-        /// <summary>Loads user VIA timer 1 from its latch and clears the timer interrupt.</summary>
         private void LoadTimer1Counter()
         {
             timer1Counter = AddTimerOffset(timer1Latch, Timer1LoadExtraCycles);
         }
 
-        /// <summary>Advances user VIA timer 2 and raises its interrupt on underflow.</summary>
-        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void TickTimer2(int cycles)
         {
             if (timer2HasInterrupted)
@@ -330,18 +303,12 @@ namespace BBC
             SetInterrupt(InterruptFlagTimer2);
         }
 
-        /// <summary>Reads a user VIA timer low byte and clears the associated interrupt flag.</summary>
-        /// <param name="value">The input value.</param>
-        /// <param name="interruptFlag">The interrupt flag value.</param>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadTimerLow(ushort value, byte interruptFlag)
         {
             ClearInterrupt(interruptFlag);
             return (byte)value;
         }
 
-        /// <summary>Returns the user VIA interrupt flag register with bit 7 reflecting enabled active interrupts.</summary>
-        /// <returns>The computed value.</returns>
         private byte GetInterruptFlags()
         {
             byte flags = interruptFlags;
@@ -351,15 +318,11 @@ namespace BBC
             return flags;
         }
 
-        /// <summary>Sets a user VIA interrupt flag and refreshes derived IRQ state.</summary>
-        /// <param name="flag">The flag value.</param>
         private void SetInterrupt(byte flag)
         {
             interruptFlags |= flag;
         }
 
-        /// <summary>Clears selected user VIA interrupt flags and updates derived IRQ state.</summary>
-        /// <param name="mask">The bit mask.</param>
         private void ClearInterrupt(byte mask)
         {
             if ((mask & 0x08) != 0 && (interruptFlags & 0x08) != 0)
@@ -372,9 +335,6 @@ namespace BBC
             RefreshMouseInputBits();
         }
 
-        /// <summary>Maps host active-low buttons to the AMX mouse user-port button lines.</summary>
-        /// <param name="activeLowButtons">The host active-low button bits.</param>
-        /// <returns>The AMX PB5-PB7 button bits.</returns>
         private static byte MapAmxButtonBits(byte activeLowButtons)
         {
             byte value = 0xE0;
@@ -391,7 +351,6 @@ namespace BBC
             return value;
         }
 
-        /// <summary>Refreshes AMX mouse user-port direction, button, and interrupt state.</summary>
         private void RefreshMouseInputBits()
         {
             if (!mouseInputActive)
@@ -415,24 +374,16 @@ namespace BBC
                 SetInterrupt(0x10);
         }
 
-        /// <summary>Applies the VIA timer reload offset used by the 6522 counter pipeline.</summary>
-        /// <param name="value">The input value.</param>
-        /// <param name="offset">The buffer or image offset.</param>
-        /// <returns>The resulting value.</returns>
         private static ushort AddTimerOffset(ushort value, int offset)
         {
             return (ushort)Math.Clamp(value + offset, 0, 0xFFFF);
         }
 
-        /// <summary>Checks whether user VIA timer 1 is configured for free-running reloads.</summary>
-        /// <returns>True when timer1 free running is true; otherwise, false.</returns>
         private bool IsTimer1FreeRunning()
         {
             return (registers[0xB] & 0x40) != 0;
         }
 
-        /// <summary>Reads user VIA port B, including the printer acknowledge input bit.</summary>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadPortB()
         {
             byte value = ReadPort(portB, dataDirectionB);
@@ -465,10 +416,6 @@ namespace BBC
             return value;
         }
 
-        /// <summary>Combines a user VIA output latch and data-direction register into the visible port value.</summary>
-        /// <param name="output">The port output latch value.</param>
-        /// <param name="direction">The I/O direction register value.</param>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private static byte ReadPort(byte output, byte direction)
         {
             return (byte)((output & direction) | (0xFF & ~direction));

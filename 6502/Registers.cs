@@ -1,8 +1,7 @@
 // ============================================================================
 // Project:     BBC
 // File:        Registers.cs
-// Description: 6502 register container exposing program counter, stack pointer,
-//              accumulator, index registers, and status flags.
+// Description: 6502 register set used by the BBC CPU core.
 // Author:      James Booth
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root
@@ -14,39 +13,29 @@
 namespace BBC.CPU
 {
 
-    /// <summary>
-    /// Holds the CPU register set and maps the processor status byte through the structured flag model.
-    /// </summary>
     public class Registers
     {
 
-        /// <summary>Gets or sets the CPU program counter.</summary>
-        public ulong PC { get; set; } /// Program Counter
+        public ulong PC { get; set; }
 
-        /// <summary>Gets or sets the CPU stack pointer.</summary>
-        public byte S { get; set; } /// Stack Pointer
+        public byte S { get; set; }
 
         public byte P
         { get { return Flags.GetFlagsAsByte(); } set { Flags.SetFlagsFromByte(value); } }
 
-        /// <summary>Gets or sets the CPU accumulator.</summary>
-        public byte A { get; set; } /// Accumulator
+        public byte A { get; set; }
 
-        /// <summary>Gets or sets the CPU X index register.</summary>
-        public byte X { get; set; } /// X Index Register
+        public byte X { get; set; }
 
-        /// <summary>Gets or sets the CPU Y index register.</summary>
-        public byte Y { get; set; } /// Y Index Register
+        public byte Y { get; set; }
 
         public Flags Flags = new Flags();
 
-        /// <summary>Initializes a new Registers instance.</summary>
         public Registers()
         {
             Clear();
         }
 
-        /// <summary>Clears this instance to its reset state.</summary>
         public void Clear()
         {
             PC = S = A = X = Y = 0;

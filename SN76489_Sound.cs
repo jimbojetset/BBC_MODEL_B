@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        SN76489_Sound.cs
-// Description: BBC Model B SN76489 sound generator emulation with SDL audio
-//              mixing and playback.
+// Description: BBC Model B SN76489 sound path: VIA slow-bus writes, PSG tone
+//              counters, noise generation, and the small internal speaker.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -17,8 +17,9 @@ namespace BBC
 {
 
     /// <summary>
-    /// Emulates the BBC Micro SN76489 sound chip. BBC MOS SOUND/ENVELOPE queues are
-    /// handled by the OS ROM; this class only consumes bytes written through the VIA slow bus.
+    /// The BBC drives the SN76489 through the system VIA slow data bus. MOS turns
+    /// SOUND and ENVELOPE commands into latched PSG bytes; the chip itself only
+    /// sees tone, noise, and attenuation register writes.
     /// </summary>
     public sealed class SN76489_Sound : IDisposable
     {
@@ -71,16 +72,13 @@ namespace BBC
         private bool running;
         private bool disposed;
 
-        /// <summary>Gets or sets whether generated audio may throttle emulation to real-time playback.</summary>
         public bool ThrottleToPlayback { get; set; } = true;
 
-        /// <summary>Initializes a new sound generator.</summary>
         public SN76489_Sound()
         {
             Reset();
         }
 
-        /// <summary>Resets all tone/noise registers to silence.</summary>
         public void Reset()
         {
             lock (syncRoot)
@@ -110,7 +108,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Starts SDL audio output.</summary>
         public void Start()
         {
             ObjectDisposedException.ThrowIf(disposed, this);
@@ -142,7 +139,7 @@ namespace BBC
             SDL_PauseAudioDevice(audioDevice, 0);
         }
 
-        /// <summary>Queues the host power-on tone before MOS-generated sound begins.</summary>
+        /// <summary>The real machine gives a short speaker thump before MOS has programmed the PSG.</summary>
         public void QueuePowerOnBeep()
         {
             lock (syncRoot)
@@ -166,10 +163,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Shapes the measured power-on tone with a fast rise and short release.</summary>
-        /// <param name="sampleIndex">The sample position inside the generated tone.</param>
-        /// <param name="sampleCount">The total number of samples in the generated tone.</param>
-        /// <returns>The computed amplitude multiplier.</returns>
         private static double GetPowerOnBeepEnvelope(int sampleIndex, int sampleCount)
         {
             int attackSamples = SampleRate * PowerOnBeepAttackMilliseconds / 1000;
@@ -186,9 +179,6 @@ namespace BBC
             return envelope;
         }
 
-        /// <summary>Adds subtle speaker-style compression to the synthetic power-on tone.</summary>
-        /// <param name="signal">The normalized input sample.</param>
-        /// <returns>The lightly saturated sample.</returns>
         private static double ApplyPowerOnSpeakerSaturation(double signal)
         {
             double biased = signal + PowerOnBeepSaturationBias;
@@ -196,8 +186,7 @@ namespace BBC
             return PowerOnBeepSaturationLevel * (Math.Tanh(biased * PowerOnBeepSaturationDrive) - zero) / PowerOnBeepSaturationDrive;
         }
 
-        /// <summary>Accepts one byte on the SN76489 data bus.</summary>
-        /// <param name="value">The latched or data byte written by the BBC slow bus.</param>
+        /// <summary>SN76489 writes are latched by WE after the VIA slow-bus delay, not at the CPU write edge.</summary>
         public void WriteData(byte value)
         {
             lock (syncRoot)
@@ -206,9 +195,7 @@ namespace BBC
             }
         }
 
-        /// <summary>Refreshes slow data bus after related emulator state changes.</summary>
-        /// <param name="value">The input value.</param>
-        /// <param name="active">Whether PSG write enable is active.</param>
+        /// <summary>IC32 controls the PSG write-enable line while VIA port A carries the eight data bits.</summary>
         public void UpdateSlowDataBus(byte value, bool active)
         {
             lock (syncRoot)
@@ -224,8 +211,7 @@ namespace BBC
             }
         }
 
-        /// <summary>Advances scheduled PSG writes and generates audio for elapsed CPU cycles.</summary>
-        /// <param name="cycles">The number of elapsed CPU cycles.</param>
+        /// <summary>The PSG tone counters advance with emulated CPU time, while host audio drains independently.</summary>
         public void Tick(int cycles)
         {
             if (cycles <= 0)
@@ -249,7 +235,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Releases the SDL audio device.</summary>
         public void Dispose()
         {
             if (disposed)
@@ -273,7 +258,6 @@ namespace BBC
             disposed = true;
         }
 
-        /// <summary>Runs the SDL audio worker loop that drains queued PSG samples to the audio device.</summary>
         private void RunAudio()
         {
             while (running)
@@ -296,8 +280,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Fills samples.</summary>
-        /// <param name="samples">The samples value.</param>
         private void FillSamples(short[] samples)
         {
             lock (syncRoot)
@@ -320,8 +302,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Generates one normalized audio sample from the current PSG state.</summary>
-        /// <returns>The resulting value.</returns>
         private short GenerateSample()
         {
             double exactChipSamples = (ChipSampleRate / (double)SampleRate) + chipSampleRemainder;
@@ -336,8 +316,6 @@ namespace BBC
             return (short)Math.Clamp(mixed * short.MaxValue, short.MinValue, short.MaxValue);
         }
 
-        /// <summary>Generates enough audio samples to cover the supplied emulated CPU cycles.</summary>
-        /// <param name="cycles">The number of emulated CPU cycles.</param>
         private void GenerateSamplesForCycles(int cycles)
         {
             if (cycles <= 0)
@@ -351,8 +329,6 @@ namespace BBC
                 EnqueueGeneratedSample(GenerateSample());
         }
 
-        /// <summary>Applies a latched SN76489 data byte to tone, noise, or volume registers.</summary>
-        /// <param name="value">The input value.</param>
         private void ApplyWriteData(byte value)
         {
             if ((value & 0x80) != 0)
@@ -390,8 +366,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Applies a scheduled PSG write or slow-bus sample at its target emulated cycle.</summary>
-        /// <param name="scheduledEvent">The scheduled event value.</param>
         private void ApplyScheduledEvent(ScheduledPsgEvent scheduledEvent)
         {
             if (scheduledEvent.SampleSlowBus)
@@ -406,8 +380,6 @@ namespace BBC
             ApplyWriteData(scheduledEvent.Value);
         }
 
-        /// <summary>Mixes the current SN76489 tone and noise channel outputs into one sample.</summary>
-        /// <returns>The computed floating-point value.</returns>
         private double GenerateChipSample()
         {
             double mixed = 0;
@@ -419,8 +391,6 @@ namespace BBC
             return mixed;
         }
 
-        /// <summary>Queues one generated SDL audio sample while keeping the buffer bounded.</summary>
-        /// <param name="sample">The sample value.</param>
         private void EnqueueGeneratedSample(short sample)
         {
             if (generatedCount >= generatedSamples.Length)
@@ -432,7 +402,6 @@ namespace BBC
             generatedCount++;
         }
 
-        /// <summary>Waits until the queued audio buffer has room for more generated samples.</summary>
         private void WaitForGeneratedHeadroom()
         {
             if (!ThrottleToPlayback || audioDevice == 0 || !Volatile.Read(ref running))
@@ -445,10 +414,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Advances one SN76489 tone channel and toggles output when its counter expires.</summary>
-        /// <param name="channel">The channel value.</param>
-        /// <param name="period">The period value.</param>
-        /// <returns>The computed floating-point value.</returns>
         private double AdvanceTone(int channel, int period)
         {
             int effectivePeriod = period == 0 ? 1024 : period;
@@ -463,10 +428,6 @@ namespace BBC
             return tonePolarity[channel] > 0 ? 1.0 : 0.0;
         }
 
-        /// <summary>Advances the SN76489 noise channel according to its configured period.</summary>
-        /// <param name="control">The control value.</param>
-        /// <param name="tone2Period">The tone2 period value.</param>
-        /// <returns>The computed floating-point value.</returns>
         private double AdvanceNoise(byte control, int tone2Period)
         {
             int period = GetNoisePeriod(control, tone2Period);
@@ -482,8 +443,6 @@ namespace BBC
             return noisePolarity;
         }
 
-        /// <summary>Advances the SN76489 noise LFSR using white or periodic feedback.</summary>
-        /// <param name="control">The control value.</param>
         private void StepNoiseShiftRegister(byte control)
         {
             int feedback;
@@ -498,8 +457,6 @@ namespace BBC
                 noiseShiftRegister = 0x4000;
         }
 
-        /// <summary>Applies a SN76489 noise-control register write and resets the noise shift register.</summary>
-        /// <param name="control">The control value.</param>
         private void SetNoiseControl(byte control)
         {
             noiseControl = control;
@@ -508,10 +465,6 @@ namespace BBC
             noiseShiftRegister = 0x4000;
         }
 
-        /// <summary>Returns the active SN76489 noise period, including tone-2-derived noise.</summary>
-        /// <param name="control">The control value.</param>
-        /// <param name="tone2Period">The tone2 period value.</param>
-        /// <returns>The computed value.</returns>
         private static int GetNoisePeriod(byte control, int tone2Period)
         {
             return (control & 0x03) switch
@@ -523,16 +476,11 @@ namespace BBC
             };
         }
 
-        /// <summary>Converts a SN76489 volume register value into a linear sample amplitude.</summary>
-        /// <param name="attenuation">The attenuation value.</param>
-        /// <returns>The computed floating-point value.</returns>
         private static double GetVolume(int attenuation)
         {
             return VolumeTable[Math.Clamp(attenuation, 0, 15)];
         }
 
-        /// <summary>Creates volume table.</summary>
-        /// <returns>The resulting collection.</returns>
         private static double[] CreateVolumeTable()
         {
             double[] table = new double[16];
@@ -547,35 +495,23 @@ namespace BBC
         private readonly record struct ScheduledPsgEvent(long Cycle, byte Value, bool SampleSlowBus)
         {
 
-            /// <summary>Creates a scheduled PSG write event for a latched SN76489 value.</summary>
-            /// <param name="cycle">The cycle value.</param>
-            /// <param name="value">The input value.</param>
-            /// <returns>The resulting value.</returns>
             public static ScheduledPsgEvent ForLatchedValue(long cycle, byte value)
             {
                 return new ScheduledPsgEvent(cycle, value, SampleSlowBus: false);
             }
 
-            /// <summary>Creates a scheduled event that samples the slow sound data bus.</summary>
-            /// <param name="cycle">The cycle value.</param>
-            /// <returns>The resulting value.</returns>
             public static ScheduledPsgEvent ForSlowBusSample(long cycle)
             {
                 return new ScheduledPsgEvent(cycle, 0, SampleSlowBus: true);
             }
         }
 
-        /// <summary>Throws an exception when an SDL call reports a failure.</summary>
-        /// <param name="result">The result value.</param>
-        /// <param name="operation">The operation value.</param>
         private static void ThrowIfSdlFailed(int result, string operation)
         {
             if (result < 0)
                 throw new InvalidOperationException($"{operation} failed: {GetSdlError()}");
         }
 
-        /// <summary>Reads the current SDL error string and converts it to managed text.</summary>
-        /// <returns>The resulting string.</returns>
         private static string GetSdlError()
         {
             IntPtr error = SDL_GetError();
@@ -599,59 +535,30 @@ namespace BBC
             public IntPtr UserData;
         }
 
-        /// <summary>Imports SDL_InitSubSystem for starting the SDL audio subsystem.</summary>
-        /// <param name="flags">The flag mask.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_InitSubSystem(uint flags);
 
-        /// <summary>Imports SDL_QuitSubSystem for shutting down the SDL audio subsystem.</summary>
-        /// <param name="flags">The flag mask.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_QuitSubSystem(uint flags);
 
-        /// <summary>Imports SDL_OpenAudioDevice for creating the host audio device.</summary>
-        /// <param name="device">The device value.</param>
-        /// <param name="iscapture">The iscapture value.</param>
-        /// <param name="desired">The desired value.</param>
-        /// <param name="obtained">The obtained value.</param>
-        /// <param name="allowedChanges">The allowed changes value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         private static extern uint SDL_OpenAudioDevice(string? device, int iscapture, ref SdlAudioSpec desired, out SdlAudioSpec obtained, int allowedChanges);
 
-        /// <summary>Imports SDL_CloseAudioDevice for closing the host audio device.</summary>
-        /// <param name="dev">The dev value.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_CloseAudioDevice(uint dev);
 
-        /// <summary>Imports SDL_PauseAudioDevice for pausing or resuming audio playback.</summary>
-        /// <param name="dev">The dev value.</param>
-        /// <param name="pauseOn">The pause on value.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_PauseAudioDevice(uint dev, int pauseOn);
 
-        /// <summary>Imports SDL_QueueAudio for submitting generated samples to the host device.</summary>
-        /// <param name="dev">The dev value.</param>
-        /// <param name="data">The data byte or buffer.</param>
-        /// <param name="len">The len value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_QueueAudio(uint dev, IntPtr data, uint len);
 
-        /// <summary>Imports SDL_GetQueuedAudioSize for measuring queued audio bytes.</summary>
-        /// <param name="dev">The dev value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern uint SDL_GetQueuedAudioSize(uint dev);
 
-        /// <summary>Imports SDL_ClearQueuedAudio for dropping queued audio samples.</summary>
-        /// <param name="dev">The dev value.</param>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_ClearQueuedAudio(uint dev);
 
-        /// <summary>Imports SDL_GetError for retrieving native SDL failure details.</summary>
-        /// <returns>The native pointer returned by the host API.</returns>
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_GetError();
     }

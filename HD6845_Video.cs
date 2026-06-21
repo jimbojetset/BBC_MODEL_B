@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        HD6845_Video.cs
-// Description: BBC Model B video subsystem, combining HD6845-compatible CRTC
-//              timing, Video ULA modes/palette, teletext, and framebuffer output.
+// Description: BBC Model B video hardware: 6845 CRTC timing, Video ULA colour
+//              decoding, SAA5050 teletext, and screen-memory wrap.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -15,7 +15,8 @@ namespace BBC
 {
 
     /// <summary>
-    /// Tracks CRTC/Video ULA state and renders BBC video memory into the SDL display framebuffer.
+    /// The BBC combines a 6845-style CRTC address generator with a Video ULA
+    /// that interprets RAM differently in bitmap modes and Mode 7 teletext.
     /// </summary>
     public sealed class HD6845_Video
     {
@@ -158,33 +159,25 @@ namespace BBC
         private bool beamCursorDisplayEnabled = true;
         private bool beamCursorOnThisFrame = true;
 
-        /// <summary>Checks whether sheila address is true for the current emulator state.</summary>
         public BbcScreenMode CurrentMode { get; private set; } = BbcScreenMode.Mode7;
 
-        /// <summary>Checks whether sheila address is true for the current emulator state.</summary>
         public byte UlaControl { get; private set; }
 
-        /// <summary>Raised when the emulated CRTC VSYNC output changes state.</summary>
+        /// <summary>The CRTC VSYNC output feeds the system VIA and drives the BBC's 50 Hz frame interrupt.</summary>
         public event Action<bool>? VsyncChanged;
 
-        /// <summary>Checks whether sheila address is true for the current emulator state.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>True when the address is handled by this component.</returns>
         public static bool IsSheilaAddress(ushort address)
         {
             return address is >= 0xFE00 and <= 0xFE01
                 or >= 0xFE20 and <= 0xFE23;
         }
 
-        /// <summary>Initializes a new video component.</summary>
-        /// <param name="memory">The emulator's 64 KiB CPU-visible memory.</param>
         public HD6845_Video(byte[] memory)
         {
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
             ResetBeamState();
         }
 
-        /// <summary>Resets video device state.</summary>
         public void Reset()
         {
             Array.Clear(crtcRegisters);
@@ -197,8 +190,6 @@ namespace BBC
             ResetBeamState();
         }
 
-        /// <summary>Applies screen memory window to the emulated hardware state.</summary>
-        /// <param name="window">The selected video RAM window and BBC hardware scroll mapping.</param>
         public void SetScreenMemoryWindow(ScreenMemoryWindow window)
         {
             if (window.Start < 0 || window.Start >= memory.Length)
@@ -210,15 +201,13 @@ namespace BBC
             screenMemoryWindow = window;
         }
 
-        /// <summary>Advances the CRTC beam renderer by the supplied CPU cycle count.</summary>
-        /// <param name="cycles">The number of 2 MHz CPU cycles to advance.</param>
+        /// <summary>The CRTC advances with CPU time so mid-frame ULA and CRTC changes take effect on the beam.</summary>
         public void Tick(int cycles)
         {
             for (int i = 0; i < cycles; i++)
                 TickBeamClock();
         }
 
-        /// <summary>Resets all CRTC beam counters, display-enable flags, and render buffers.</summary>
         private void ResetBeamState()
         {
             lock (beamFrameLock)
@@ -292,8 +281,6 @@ namespace BBC
             VsyncChanged?.Invoke(false);
         }
 
-        /// <summary>Applies a Video ULA control write to beam rendering state and mode tracking.</summary>
-        /// <param name="control">The control value.</param>
         private void UpdateBeamUlaControl(byte control)
         {
             BbcScreenMode previousBeamMode = DecodeModeFromUlaControl(beamUlaControl);
@@ -321,10 +308,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Checks whether a mode 4-to-5 transition should keep the previous ULA pixel decode for this scanline.</summary>
-        /// <param name="previousBeamMode">The previous beam display mode value.</param>
-        /// <param name="nextBeamMode">The next beam display mode value.</param>
-        /// <returns>True when hold previous pixel ula control should be applied; otherwise, false.</returns>
         private bool ShouldHoldPreviousPixelUlaControl(BbcScreenMode previousBeamMode, BbcScreenMode nextBeamMode)
         {
             if (previousBeamMode != BbcScreenMode.Mode4 || nextBeamMode != BbcScreenMode.Mode5)
@@ -336,16 +319,11 @@ namespace BBC
             return beamScanlineCounter != 0;
         }
 
-        /// <summary>Returns the ULA control value currently driving bitmap pixel decoding.</summary>
-        /// <returns>The computed value.</returns>
         private byte GetBeamPixelUlaControl()
         {
             return beamPixelUlaControlOverrideValid ? beamPixelUlaControlOverride : beamUlaControl;
         }
 
-        /// <summary>Updates cached beam timing values after a CRTC register write.</summary>
-        /// <param name="register">The hardware register number value.</param>
-        /// <param name="value">The input value.</param>
         private void UpdateBeamCrtcDerivedState(int register, byte value)
         {
             switch (register)
@@ -395,7 +373,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Advances the CRTC beam by one character clock and handles display-enable transitions.</summary>
         private void TickBeamClock()
         {
             _ = beamInDummyRaster;
@@ -460,7 +437,6 @@ namespace BBC
                 beamDoEvenFrameLogic = (beamFrameCount & 1) != 0;
         }
 
-        /// <summary>Updates VSYNC state from the current CRTC beam counters.</summary>
         private void TickBeamVSync()
         {
             bool isInterlace = beamInterlaceMode != CrtcInterlaceMode.NonInterlace;
@@ -499,7 +475,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Renders the current CRTC character cell as bitmap or teletext pixels.</summary>
         private void RenderBeamCharacter()
         {
             bool insideBorder = BeamHorizontalDisplayEnabled && BeamVerticalDisplayEnabled;
@@ -553,24 +528,17 @@ namespace BBC
                 HandleBeamCursor(offset, doubledLines);
         }
 
-        /// <summary>Computes the beam display-enable skew including the BBC teletext pipeline offset.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBeamDisplayEnablePosition()
         {
             return beamDisplayEnableSkew + (IsBeamTeletextMode ? 2 : 0);
         }
 
-        /// <summary>Renders one SAA5050 teletext character cell into the beam framebuffer.</summary>
-        /// <param name="offset">The buffer or image offset.</param>
-        /// <param name="y">The high result byte value.</param>
         private void RenderBeamTeletextCharacter(int offset, int y)
         {
             beamTeletext.Render(beamRenderFrame, offset, BeamFramebufferWidth);
             RecordBeamActiveRun(beamBitmapX, y, beamPixelsPerCharacter, doubledLines: false);
         }
 
-        /// <summary>Reads the BBC video RAM byte addressed by the current CRTC beam position.</summary>
-        /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadBeamVideoMemory()
         {
             if ((beamAddress & 0x2000) != 0)
@@ -589,10 +557,6 @@ namespace BBC
             return memory[address];
         }
 
-        /// <summary>Blits bitmap-mode pixels into the beam render frame.</summary>
-        /// <param name="data">The data byte or buffer.</param>
-        /// <param name="offset">The buffer or image offset.</param>
-        /// <param name="pixelCount">The pixel count value.</param>
         private void BlitBeamBitmap(byte data, int offset, int pixelCount)
         {
             int visiblePixels = Math.Min(pixelCount, BeamFramebufferWidth - beamBitmapX);
@@ -603,10 +567,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Converts a video byte and pixel position into a logical palette index for the active mode.</summary>
-        /// <param name="value">The input value.</param>
-        /// <param name="pixel">The pixel value.</param>
-        /// <returns>The decoded value.</returns>
         private int DecodeBeamPaletteIndex(byte value, int pixel)
         {
             int ulaMode = (GetBeamPixelUlaControl() >> 2) & 0x03;
@@ -627,9 +587,6 @@ namespace BBC
             return index;
         }
 
-        /// <summary>Resolves beam physical colour.</summary>
-        /// <param name="physicalColour">The physical colour value.</param>
-        /// <returns>The resulting value.</returns>
         private uint ResolveBeamPhysicalColour(byte physicalColour)
         {
             int colour = physicalColour & 0x0F;
@@ -641,9 +598,6 @@ namespace BBC
             return BbcColours[colour];
         }
 
-        /// <summary>Overlays the hardware cursor onto the beam framebuffer when the cursor raster is active.</summary>
-        /// <param name="offset">The buffer or image offset.</param>
-        /// <param name="doubledLines">The doubled lines value.</param>
         private void HandleBeamCursor(int offset, bool doubledLines)
         {
             if (beamCursorOnThisFrame && (beamUlaControl & GetBeamCursorMask()) != 0)
@@ -663,8 +617,6 @@ namespace BBC
                 beamCursorDrawIndex = 0;
         }
 
-        /// <summary>Selects the Video ULA cursor visibility mask for the current cursor flash phase.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBeamCursorMask()
         {
             return beamCursorDrawIndex switch
@@ -676,8 +628,6 @@ namespace BBC
             };
         }
 
-        /// <summary>Checks whether the current raster line falls inside the programmed cursor height.</summary>
-        /// <returns>True when beam cursor raster active is true; otherwise, false.</returns>
         private bool IsBeamCursorRasterActive()
         {
             int cursorMode = (crtcRegisters[CrtcCursorStartRegister] >> 5) & 0x03;
@@ -693,7 +643,6 @@ namespace BBC
                 && rasterAddress <= cursorEnd;
         }
 
-        /// <summary>Processes a CRTC HSYNC pulse and advances horizontal beam timing.</summary>
         private void HandleBeamHSync()
         {
             beamHpulseCounter = (beamHpulseCounter + 1) & 0x0F;
@@ -713,7 +662,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Completes one raster scanline and prepares beam state for the next line.</summary>
         private void EndBeamScanline()
         {
             beamFirstScanline = false;
@@ -770,8 +718,6 @@ namespace BBC
             beamTeletext.SetRA0((GetBeamRasterAddress() & 1) != 0);
         }
 
-        /// <summary>Computes the active CRTC raster address with interlace and dummy-raster handling.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBeamRasterAddress()
         {
             int rasterAddress = beamScanlineCounter;
@@ -781,11 +727,8 @@ namespace BBC
             return rasterAddress & 0x1F;
         }
 
-        /// <summary>Returns the current CRTC maximum raster address for a character row.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBeamMaximumRasterAddress() => crtcRegisters[CrtcScanLinesPerCharacterRegister] & 0x1F;
 
-        /// <summary>Completes one CRTC character row and advances vertical counters.</summary>
         private void EndBeamCharacterLine()
         {
             beamVerticalCounter = (beamVerticalCounter + 1) & 0x7F;
@@ -820,7 +763,6 @@ namespace BBC
             BeamDisplayEnableSet(ScanlineDisplayEnable);
         }
 
-        /// <summary>Completes a beam-rendered frame and resets CRTC frame counters.</summary>
         private void EndBeamFrame()
         {
             beamVerticalCounter = 0;
@@ -840,7 +782,6 @@ namespace BBC
                 beamDoEvenFrameLogic = false;
         }
 
-        /// <summary>Advances the CRTC vertical-adjust scanlines after the main frame.</summary>
         private void TickBeamVerticalAdjust()
         {
             if (!beamCheckVertAdjust)
@@ -855,7 +796,6 @@ namespace BBC
             beamVerticalAdjustCounter = (beamVerticalAdjustCounter + 1) & 0x1F;
         }
 
-        /// <summary>Captures the end of the CRTC main frame and prepares vertical adjust timing.</summary>
         private void LatchBeamEndOfMainFrame()
         {
             if (beamHorizontalCounter != 1)
@@ -871,7 +811,6 @@ namespace BBC
             beamCheckVertAdjust = true;
         }
 
-        /// <summary>Publishes the completed beam frame and clears the render buffer for the next frame.</summary>
         private void PaintAndClearBeamFrame()
         {
             lock (beamFrameLock)
@@ -901,7 +840,6 @@ namespace BBC
                 beamBitmapY = -1;
         }
 
-        /// <summary>Clears the beam render buffer outside the currently published frame.</summary>
         private void ClearBeamRenderFrame()
         {
             if (beamInterlacedSyncAndVideo)
@@ -919,30 +857,24 @@ namespace BBC
             }
         }
 
-        /// <summary>Sets beam display-enable bits and updates teletext display timing.</summary>
-        /// <param name="flags">The flag mask.</param>
         private void BeamDisplayEnableSet(int flags)
         {
             beamDisplayEnabled |= flags;
             UpdateBeamTeletextDisplayTiming();
         }
 
-        /// <summary>Clears beam display-enable bits and updates teletext display timing.</summary>
-        /// <param name="flags">The flag mask.</param>
         private void BeamDisplayEnableClear(int flags)
         {
             beamDisplayEnabled &= ~flags;
             UpdateBeamTeletextDisplayTiming();
         }
 
-        /// <summary>Drives the SAA5050 display-timing input from the beam display-enable flags.</summary>
         private void UpdateBeamTeletextDisplayTiming()
         {
             const int displayTimingMask = HDisplayEnable | VDisplayEnable | UserDisplayEnable;
             beamTeletext.SetDISPTMG((beamDisplayEnabled & displayTimingMask) == displayTimingMask);
         }
 
-        /// <summary>Clears the visible-pixel bounds collected for the next beam frame.</summary>
         private void ResetBeamActiveBounds()
         {
             beamActiveMinX = BeamFramebufferWidth;
@@ -951,11 +883,6 @@ namespace BBC
             beamActiveMaxY = 0;
         }
 
-        /// <summary>Tracks the bounding box of visible pixels drawn during beam rendering.</summary>
-        /// <param name="x">The low result byte value.</param>
-        /// <param name="y">The high result byte value.</param>
-        /// <param name="width">The pixel width.</param>
-        /// <param name="doubledLines">The doubled lines value.</param>
         private void RecordBeamActiveRun(int x, int y, int width, bool doubledLines)
         {
             if (x >= BeamFramebufferWidth || y >= BeamFramebufferHeight)
@@ -981,9 +908,7 @@ namespace BBC
 
         private bool IsBeamTeletextMode => (beamUlaControl & UlaTeletext) != 0;
 
-        /// <summary>Reads the CRTC or Video ULA register selected by the SHEILA address.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <returns>The byte value read.</returns>
+        /// <summary>The CRTC and Video ULA share the FE00-FE23 SHEILA video range.</summary>
         public byte ReadSheila(ushort address)
         {
             return address switch
@@ -996,9 +921,7 @@ namespace BBC
             };
         }
 
-        /// <summary>Writes CRTC or Video ULA registers through the SHEILA video address range.</summary>
-        /// <param name="address">The CPU-visible address.</param>
-        /// <param name="value">The value to write.</param>
+        /// <summary>BBC software often changes CRTC start, ULA mode, and palette registers during display.</summary>
         public void WriteSheila(ushort address, byte value)
         {
             switch (address)
@@ -1048,8 +971,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Checks whether the current beam position requires palette writes to be delayed.</summary>
-        /// <returns>True when defer palette write should be applied; otherwise, false.</returns>
         private bool ShouldDeferPaletteWrite()
         {
             if (beamPixelUlaControlOverrideValid)
@@ -1060,7 +981,6 @@ namespace BBC
                 && beamScanlineCounter != 0;
         }
 
-        /// <summary>Applies deferred Video ULA palette writes once the beam timing allows them.</summary>
         private void ApplyPendingPaletteWrites()
         {
             for (int i = 0; i < PaletteRegisterCount; i++)
@@ -1073,17 +993,12 @@ namespace BBC
             }
         }
 
-        /// <summary>Renders the current video frame into the display framebuffer.</summary>
-        /// <param name="display">The SDL-backed display to render into.</param>
         public void Render(Display display)
         {
             if (!TryCopyBeamFrameToDisplay(display))
                 Array.Fill(display.FrameBuffer, Background);
         }
 
-        /// <summary>Copies the latest complete beam frame into the host display buffer when one is available.</summary>
-        /// <param name="display">The target display.</param>
-        /// <returns>True when the value was read or handled successfully; otherwise, false.</returns>
         private bool TryCopyBeamFrameToDisplay(Display display)
         {
             lock (beamFrameLock)
@@ -1119,8 +1034,6 @@ namespace BBC
             }
         }
 
-        /// <summary>Tracks mid-frame CRTC display-start changes that create visible rupture timing.</summary>
-        /// <param name="register">The hardware register number value.</param>
         private void HandleBeamDisplayStartRupture(int register)
         {
             if (register != CrtcDisplayStartHighRegister)
@@ -1137,8 +1050,6 @@ namespace BBC
             beamPendingDisplayStartRupture = true;
         }
 
-        /// <summary>Checks DEBUG CRTC register values for unusual beam timing combinations.</summary>
-        /// <param name="changedRegister">The changed register value.</param>
         [System.Diagnostics.Conditional("DEBUG")]
         private void ValidateBeamCrtcProgramming(int changedRegister)
         {
@@ -1192,15 +1103,12 @@ namespace BBC
             }
         }
 
-        /// <summary>Writes a DEBUG-only CRTC timing diagnostic for beam-rendering validation.</summary>
-        /// <param name="message">The message value.</param>
         [System.Diagnostics.Conditional("DEBUG")]
         private static void TraceBeamCrtcDiagnostic(string message)
         {
             System.Diagnostics.Debug.WriteLine($"CRTC diagnostic: {message}");
         }
 
-        /// <summary>Refreshes stable vertical timing values when rupture detection is inactive.</summary>
         private void UpdateBeamStableVerticalTiming()
         {
             if (crtcRegisters[CrtcVerticalTotalRegister] < 0x10
@@ -1222,27 +1130,17 @@ namespace BBC
             && crtcRegisters[CrtcVerticalDisplayedRegister] <= 0x01
             && crtcRegisters[CrtcVerticalSyncRegister] <= 0x03;
 
-        /// <summary>Returns the vertical-total value used by stable or rupture beam timing.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBeamVerticalTotal() =>
             BeamVisibleRuptureTimingActive ? beamStableVerticalTotal : crtcRegisters[CrtcVerticalTotalRegister];
 
-        /// <summary>Returns the vertical-adjust value used by stable or rupture beam timing.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBeamVerticalAdjust() =>
             BeamVisibleRuptureTimingActive ? beamStableVerticalAdjust : crtcRegisters[CrtcVerticalAdjustRegister];
 
-        /// <summary>Returns the CRTC vertical displayed character-row count.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBeamVerticalDisplayed() => crtcRegisters[CrtcVerticalDisplayedRegister];
 
-        /// <summary>Returns the vertical-sync position used by stable or rupture beam timing.</summary>
-        /// <returns>The computed value.</returns>
         private int GetBeamVerticalSync() =>
             BeamVisibleRuptureTimingActive ? beamStableVerticalSync : crtcRegisters[CrtcVerticalSyncRegister];
 
-        /// <summary>Counts non-blank mode 7 screen cells for smoke tests.</summary>
-        /// <returns>The number of non-blank cells in the physical mode 7 screen buffer.</returns>
         public int CountMode7NonBlankCells()
         {
             int count = 0;
@@ -1257,32 +1155,23 @@ namespace BBC
             return count;
         }
 
-        /// <summary>Restores both active and beam palettes to the BBC power-on colours.</summary>
         private void ResetPalette()
         {
             ResetPaletteArray(paletteRegisters);
             lastPaletteWrite = 0;
         }
 
-        /// <summary>Initializes a Video ULA palette array with the default logical-to-physical colours.</summary>
-        /// <param name="palette">The palette value.</param>
         private static void ResetPaletteArray(byte[] palette)
         {
             for (int i = 0; i < palette.Length; i++)
                 palette[i] = (byte)(i & 0x07);
         }
 
-        /// <summary>Converts a Video ULA palette register value into a BBC physical colour index.</summary>
-        /// <param name="paletteRegisterValue">The palette register value.</param>
-        /// <returns>The decoded value.</returns>
         private static byte DecodePhysicalColour(byte paletteRegisterValue)
         {
             return (byte)((paletteRegisterValue & 0x0F) ^ 0x07);
         }
 
-        /// <summary>Decodes the BBC screen mode implied by the Video ULA control register.</summary>
-        /// <param name="control">The control value.</param>
-        /// <returns>The resulting value.</returns>
         private static BbcScreenMode DecodeModeFromUlaControl(byte control)
         {
             if ((control & UlaTeletext) != 0)
@@ -1337,15 +1226,12 @@ namespace BBC
             private GlyphSet heldGlyphSet;
             private const int TeletextCellWidth = 16;
 
-            /// <summary>Initializes a new TeletextChip instance.</summary>
-            /// <param name="colours">The colours value.</param>
             public TeletextChip(uint[] colours)
             {
                 this.colours = colours;
                 Reset();
             }
 
-            /// <summary>Resets state.</summary>
             public void Reset()
             {
                 Array.Clear(dataQueue);
@@ -1372,8 +1258,7 @@ namespace BBC
                 heldGlyphSet = GlyphSet.Normal;
             }
 
-            /// <summary>Feeds a character byte into the SAA5050 pipeline, applying control codes or latching glyph data.</summary>
-            /// <param name="data">The data byte or buffer.</param>
+            /// <summary>The SAA5050 sees a delayed character stream, so control codes affect following cells.</summary>
             public void FetchData(byte data)
             {
                 dataQueue[0] = dataQueue[1];
@@ -1382,8 +1267,7 @@ namespace BBC
                 dataQueue[3] = (byte)(data & 0x7F);
             }
 
-            /// <summary>Updates the SAA5050 data-entry-window input and resets row state on the falling edge.</summary>
-            /// <param name="level">The signal level value.</param>
+            /// <summary>DEW falling marks the end of the teletext data entry window for a row.</summary>
             public void SetDEW(bool level)
             {
                 bool oldLevel = dewLevel;
@@ -1398,8 +1282,7 @@ namespace BBC
                 flashOn = flashTime < 16;
             }
 
-            /// <summary>Updates the SAA5050 display-timing input and clears double-height holdover when display ends.</summary>
-            /// <param name="level">The signal level value.</param>
+            /// <summary>DISPTMG falling ends a teletext character row and advances double-height state.</summary>
             public void SetDISPTMG(bool level)
             {
                 bool oldLevel = displayTimingLevel;
@@ -1431,17 +1314,12 @@ namespace BBC
                 sawDoubleHeight = false;
             }
 
-            /// <summary>Updates the SAA5050 raster-address bit used for separated mosaic timing.</summary>
-            /// <param name="level">The signal level value.</param>
+            /// <summary>RA0 selects the upper or lower half of separated mosaic pixels within the scanline pair.</summary>
             public void SetRA0(bool level)
             {
                 rowAddressBit0 = level;
             }
 
-            /// <summary>Renders .</summary>
-            /// <param name="buffer">The target pixel buffer.</param>
-            /// <param name="offset">The buffer or image offset.</param>
-            /// <param name="width">The pixel width.</param>
             public void Render(uint[] buffer, int offset, int width)
             {
                 if (offset < 0 || offset >= buffer.Length)
@@ -1500,9 +1378,6 @@ namespace BBC
                     buffer[offset + pixel] = (mask & (1 << (15 - pixel))) != 0 ? foreground : background;
             }
 
-            /// <summary>Applies a teletext control code to the SAA5050 rendering state.</summary>
-            /// <param name="data">The data byte or buffer.</param>
-            /// <returns>The resulting value.</returns>
             private byte HandleControlCode(byte data)
             {
                 bool wasGraphics = graphicsMode;
@@ -1584,7 +1459,6 @@ namespace BBC
                 return data;
             }
 
-            /// <summary>Chooses the SAA5050 glyph set for subsequent teletext characters.</summary>
             private void SetNextGlyphSet()
             {
                 nextGlyphSet = graphicsMode
@@ -1592,12 +1466,6 @@ namespace BBC
                     : GlyphSet.Normal;
             }
 
-            /// <summary>Builds the teletext glyph row mask for alphanumeric or mosaic characters.</summary>
-            /// <param name="data">The data byte or buffer.</param>
-            /// <param name="scanline">The glyph scanline value.</param>
-            /// <param name="glyphSet">The glyph set value.</param>
-            /// <param name="horizontalExpand">The horizontal expansion state.</param>
-            /// <returns>The computed value.</returns>
             private static ushort GetRowMask(byte data, int scanline, GlyphSet glyphSet, bool horizontalExpand)
             {
                 if ((uint)scanline >= 20)
@@ -1611,11 +1479,6 @@ namespace BBC
                 };
             }
 
-            /// <summary>Fills a run of teletext pixels in the destination framebuffer.</summary>
-            /// <param name="buffer">The target pixel buffer.</param>
-            /// <param name="offset">The buffer or image offset.</param>
-            /// <param name="width">The pixel width.</param>
-            /// <param name="colour">The colour value.</param>
             private static void FillRun(uint[] buffer, int offset, int width, uint colour)
             {
                 int rowStart = offset - (offset % width);
@@ -1626,11 +1489,11 @@ namespace BBC
         }
     }
 
-    /// <summary>BBC Micro display modes supported by the video component.</summary>
+    /// <summary>The BBC Video ULA mode bits map to these MOS display modes.</summary>
     public enum BbcScreenMode
     {
 
-        /// <summary>Unknown or currently undecodable video mode.</summary>
+        /// <summary>Used when a ULA control value does not map cleanly to a supported BBC mode.</summary>
         Unknown = -1,
 
         /// <summary>Mode 0: 640 x 256, 2 logical colours.</summary>
@@ -1642,7 +1505,7 @@ namespace BBC
         /// <summary>Mode 2: 160 x 256, 16 logical colours.</summary>
         Mode2 = 2,
 
-        /// <summary>Mode 3: 80 column text. Currently detected as the mode 0 ULA group.</summary>
+        /// <summary>Mode 3 uses the Mode 0 ULA group with a different CRTC character layout.</summary>
         Mode3 = 3,
 
         /// <summary>Mode 4: 320 x 256, 2 logical colours.</summary>
@@ -1651,10 +1514,10 @@ namespace BBC
         /// <summary>Mode 5: 160 x 256, 4 logical colours.</summary>
         Mode5 = 5,
 
-        /// <summary>Mode 6: 40 column text. Currently detected as the mode 4 ULA group.</summary>
+        /// <summary>Mode 6 uses the Mode 4 ULA group with a different CRTC character layout.</summary>
         Mode6 = 6,
 
-        /// <summary>Mode 7 teletext/text display. This is the current baseline renderer.</summary>
+        /// <summary>Mode 7 bypasses bitmap pixel decoding and uses the SAA5050 teletext character generator.</summary>
         Mode7 = 7
     }
 }

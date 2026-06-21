@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        CPU_6502.cs
-// Description: NMOS 6502 CPU emulator core with documented and common
-//              undocumented opcodes, interrupts, timing, and bus callbacks.
+// Description: NMOS 6502 core for the BBC Micro, including IRQ/NMI stack
+//              semantics, page-cross timing, and common undocumented opcodes.
 // Author:      James Booth
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root
@@ -21,22 +21,16 @@ namespace BBC.CPU
 {
 
     /// <summary>
-    /// Emulates an NMOS 6502-compatible CPU core, including opcode dispatch, interrupt processing, reset handling, cycle accounting, and pacing.
-    /// Memory access is routed through a flat bus with host-defined hooks for BBC hardware mapping.
+    /// The BBC Model B uses a 2 MHz NMOS 6502. Exact interrupt stack bits,
+    /// branch timing, and undocumented opcodes matter for games, demos, and MOS.
     /// </summary>
     public class CPU_6502
     {
 
-        /// <summary>Requests high-resolution Windows timer scheduling.</summary>
-        /// <param name="uMilliseconds">The timer period in milliseconds value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
         [SupportedOSPlatform("windows")]
         private static extern uint TimeBeginPeriod(uint uMilliseconds);
 
-        /// <summary>Releases high-resolution Windows timer scheduling.</summary>
-        /// <param name="uMilliseconds">The timer period in milliseconds value.</param>
-        /// <returns>The resulting value.</returns>
         [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
         [SupportedOSPlatform("windows")]
         private static extern uint TimeEndPeriod(uint uMilliseconds);
@@ -45,10 +39,6 @@ namespace BBC.CPU
 
         public Registers registers = new Registers();
 
-        /// <summary>
-        /// Legacy flat memory bus used when no host-specific bus is supplied.
-        /// Emulator hosts can provide their own FlatMemoryBus via the Bus property or constructor.
-        /// </summary>
         public FlatMemoryBus memory = new FlatMemoryBus(0x10000);
         private FlatMemoryBus bus = null!;
 
@@ -65,22 +55,16 @@ namespace BBC.CPU
         private readonly ConcurrentQueue<ulong> NMI_Buffer = new ConcurrentQueue<ulong>();
         private int irqLineAsserted;
 
-        /// <summary>Queues an IRQ request for the CPU.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         public void InitiateIRQ(ulong value)
         {
             IRQ_Buffer.Enqueue(value);
         }
 
-        /// <summary>Applies IRQ line to the emulated hardware state.</summary>
-        /// <param name="asserted">Whether the IRQ line is currently asserted.</param>
         public void SetIrqLine(bool asserted)
         {
             Volatile.Write(ref irqLineAsserted, asserted ? 1 : 0);
         }
 
-        /// <summary>Queues an NMI request for the CPU.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         public void InitiateNMI(ulong value)
         {
             NMI_Buffer.Enqueue(value);
@@ -95,8 +79,8 @@ namespace BBC.CPU
         public double SpeedScale { get; set; } = 1.0;
 
         /// <summary>
-        /// Optional per-access cycle-stretch hook. The host returns extra CPU cycles for a read or write
-        /// (e.g. BBC 1 MHz bus stretching for SHEILA &amp; FRED/JIM).
+        /// BBC peripheral pages are slower than main RAM; SHEILA, FRED, and JIM
+        /// can stretch accesses onto the 1 MHz bus.
         /// </summary>
         public Func<ulong, int>? OnAccessStretch;
 
@@ -104,8 +88,6 @@ namespace BBC.CPU
         private bool deferredIFlagValue;
         private bool iFlagBeforeInstruction;
 
-        /// <summary>Schedules a deferred interrupt-disable flag update.</summary>
-        /// <param name="value">The input value.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ScheduleIFlag(bool value)
         {
@@ -113,25 +95,18 @@ namespace BBC.CPU
             deferredIFlagValue = value;
         }
 
-        /// <summary>Adds externally requested CPU stall cycles.</summary>
-        /// <param name="cycles">The number of emulated CPU cycles to advance.</param>
         public void RequestExternalStallCycles(int cycles)
         {
             if (cycles <= 0) return;
             Interlocked.Add(ref externalStallCycles, cycles);
         }
 
-        /// <summary>Initializes a new CPU_6502 instance.</summary>
-        /// <param name="freq">The target CPU frequency in cycles per second.</param>
         public CPU_6502(int freq = 1000000)
         {
             Initialise();
             clockFreq = freq;
         }
 
-        /// <summary>Initializes a new CPU_6502 instance with an external CPU bus.</summary>
-        /// <param name="bus">The CPU-visible bus implementation.</param>
-        /// <param name="freq">The target CPU frequency in cycles per second.</param>
         public CPU_6502(FlatMemoryBus bus, int freq = 1000000)
         {
             Initialise();
@@ -139,14 +114,12 @@ namespace BBC.CPU
             clockFreq = freq;
         }
 
-        /// <summary>Gets or sets the CPU-visible bus used for instruction fetches and data access.</summary>
         public FlatMemoryBus Bus
         {
             get => bus;
             set => bus = value ?? throw new ArgumentNullException(nameof(value));
         }
 
-        /// <summary>Initializes this component.</summary>
         public void Initialise()
         {
             registers = new Registers();
@@ -159,23 +132,17 @@ namespace BBC.CPU
         public Action? OnReset;
         private int resetPending;
 
-        /// <summary>Requests a CPU reset at the next safe point.</summary>
         public void RequestReset() => Interlocked.Exchange(ref resetPending, 1);
 
-        /// <summary>Requests the CPU run loop to stop at the next safe point.</summary>
         public void Stop() => Volatile.Write(ref running, false);
 
-        /// <summary>Immediately resets CPU registers and loads the reset vector on the current thread.</summary>
         public void ResetNow()
         {
             DoReset();
         }
 
-        /// <summary>Applies paused to the emulated hardware state.</summary>
-        /// <param name="value">The input value.</param>
         public void SetPaused(bool value) => Volatile.Write(ref paused, value);
 
-        /// <summary>Resets CPU state on the CPU thread.</summary>
         private void DoReset()
         {
             OnReset?.Invoke();
@@ -192,12 +159,9 @@ namespace BBC.CPU
             Interlocked.Exchange(ref totalCycles, 0);
         }
 
-        /// Keep CPU pacing in small cycle chunks so raster IRQ-driven effects
-        /// are not serviced in large bursts.
+        // Small slices keep raster IRQ effects from arriving in visible bursts.
         private const int SliceCycles = 64;
 
-        /// <summary>Runs the main emulator loop.</summary>
-        /// <param name="startVector">The start vector value used by the operation.</param>
         public void Run(ulong startVector = 0xFFFC)
         {
             registers.PC = ReadWordFromBus(startVector);
@@ -336,8 +300,6 @@ namespace BBC.CPU
             }
         }
 
-        /// <summary>Attempts to begin high resolution timer.</summary>
-        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         private static bool TryBeginHighResolutionTimer()
         {
             if (!OperatingSystem.IsWindows()) return false;
@@ -346,7 +308,6 @@ namespace BBC.CPU
             catch (EntryPointNotFoundException) { return false; }
         }
 
-        /// <summary>Attempts to end high resolution timer.</summary>
         private static void TryEndHighResolutionTimer()
         {
             if (!OperatingSystem.IsWindows()) return;
@@ -355,8 +316,6 @@ namespace BBC.CPU
             catch (EntryPointNotFoundException) { }
         }
 
-        /// <summary>Waits until the specified stopwatch deadline.</summary>
-        /// <param name="deadlineTicks">The high-resolution timer deadline to wait for.</param>
         private static void WaitUntil(long deadlineTicks)
         {
             long remaining = deadlineTicks - Stopwatch.GetTimestamp();
@@ -371,8 +330,6 @@ namespace BBC.CPU
                 Thread.SpinWait(64);
         }
 
-        /// <summary>Decodes and executes one 6502 opcode, including cycle accounting.</summary>
-        /// <param name="opcode">The 6502 opcode byte to execute.</param>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public void Execute(byte opcode)
         {
@@ -1090,11 +1047,10 @@ namespace BBC.CPU
 
                 #region Illegal / undocumented opcodes
 
-                /// Some 6502 software uses these heavily (LAX, DCP, SLO, ISC, SAX,
-                /// etc.) for tighter inner loops. Without them the CPU would silently
-                /// skip the instruction and program logic would drift off.
+                // BBC games and copy-protected loaders do use NMOS illegal opcodes;
+                // treating them as NOPs breaks real software.
 
-                /// ---- LAX: load A and X from memory together. ----
+                // LAX: load A and X from memory together.
                 case 0xA3: LAX(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 6; break;
                 case 0xA7: LAX(Zero_Page()); cyclesThisOperation += 3; break;
                 case 0xAF: LAX(Absolute()); cyclesThisOperation += 4; break;
@@ -1102,13 +1058,13 @@ namespace BBC.CPU
                 case 0xB7: LAX(Y_Indexed_Zero_Page()); cyclesThisOperation += 4; break;
                 case 0xBF: LAX(Y_Indexed_Absolute()); cyclesThisOperation += 4; break;
 
-                /// ---- SAX: store (A AND X) - no flags affected. ----
+                // SAX: store A AND X; flags are untouched.
                 case 0x83: SAX(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 6; break;
                 case 0x87: SAX(Zero_Page()); cyclesThisOperation += 3; break;
                 case 0x8F: SAX(Absolute()); cyclesThisOperation += 4; break;
                 case 0x97: SAX(Y_Indexed_Zero_Page()); cyclesThisOperation += 4; break;
 
-                /// ---- DCP: DEC memory, CMP result with A. ----
+                // DCP: decrement memory, then compare with A.
                 case 0xC3: DCP(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
                 case 0xC7: DCP(Zero_Page()); cyclesThisOperation += 5; break;
                 case 0xCF: DCP(Absolute()); cyclesThisOperation += 6; break;
@@ -1117,7 +1073,7 @@ namespace BBC.CPU
                 case 0xDB: DCP(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0xDF: DCP(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
 
-                /// ---- ISC/ISB: INC memory, SBC result from A. ----
+                // ISC/ISB: increment memory, then subtract with carry.
                 case 0xE3: ISC(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
                 case 0xE7: ISC(Zero_Page()); cyclesThisOperation += 5; break;
                 case 0xEF: ISC(Absolute()); cyclesThisOperation += 6; break;
@@ -1126,7 +1082,7 @@ namespace BBC.CPU
                 case 0xFB: ISC(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0xFF: ISC(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
 
-                /// ---- SLO: ASL memory, ORA result into A. ----
+                // SLO: shift memory left, then OR into A.
                 case 0x03: SLO(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
                 case 0x07: SLO(Zero_Page()); cyclesThisOperation += 5; break;
                 case 0x0F: SLO(Absolute()); cyclesThisOperation += 6; break;
@@ -1135,7 +1091,7 @@ namespace BBC.CPU
                 case 0x1B: SLO(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0x1F: SLO(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
 
-                /// ---- SRE: LSR memory, EOR result into A. ----
+                // SRE: shift memory right, then EOR into A.
                 case 0x43: SRE(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
                 case 0x47: SRE(Zero_Page()); cyclesThisOperation += 5; break;
                 case 0x4F: SRE(Absolute()); cyclesThisOperation += 6; break;
@@ -1144,7 +1100,7 @@ namespace BBC.CPU
                 case 0x5B: SRE(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0x5F: SRE(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
 
-                /// ---- RLA: ROL memory, AND result into A. ----
+                // RLA: rotate memory left, then AND into A.
                 case 0x23: RLA(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
                 case 0x27: RLA(Zero_Page()); cyclesThisOperation += 5; break;
                 case 0x2F: RLA(Absolute()); cyclesThisOperation += 6; break;
@@ -1153,7 +1109,7 @@ namespace BBC.CPU
                 case 0x3B: RLA(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0x3F: RLA(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
 
-                /// ---- RRA: ROR memory, ADC result with A. ----
+                // RRA: rotate memory right, then add with carry.
                 case 0x63: RRA(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
                 case 0x67: RRA(Zero_Page()); cyclesThisOperation += 5; break;
                 case 0x6F: RRA(Absolute()); cyclesThisOperation += 6; break;
@@ -1162,8 +1118,7 @@ namespace BBC.CPU
                 case 0x7B: RRA(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0x7F: RRA(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
 
-                /// ---- Multi-byte NOPs. They consume their operand bytes
-                /// so PC advances correctly; flags unaffected. ----
+                // Multi-byte NOPs still consume operand bytes on NMOS 6502.
                 case 0x1A:
                 case 0x3A:
                 case 0x5A:
@@ -1198,7 +1153,7 @@ namespace BBC.CPU
                 case 0xFC:
                     X_Indexed_Absolute(); cyclesThisOperation += 4; break;
 
-                /// ---- Immediate-only logic ops. ----
+                // Immediate-only illegal ALU forms.
                 case 0x0B: case 0x2B: ANC_IM(); cyclesThisOperation += 2; break;
                 case 0x4B: ALR_IM(); cyclesThisOperation += 2; break;
                 case 0x6B: ARR_IM(); cyclesThisOperation += 2; break;
@@ -1206,17 +1161,16 @@ namespace BBC.CPU
                 case 0xAB: LAX_IM(); cyclesThisOperation += 2; break;
                 case 0xBB: LAS_AY(); cyclesThisOperation += 4; break;
                 case 0xCB: AXS_IM(); cyclesThisOperation += 2; break;
-                case 0xEB: SBCI();   /* duplicate of $E9 SBC #imm */ break;
+                case 0xEB: SBCI(); break; // NMOS $EB behaves like SBC #imm.
 
-                /// ---- Store-high variants used by some packed/cracked code. ----
+                // Store-high variants used by some packed or protected code.
                 case 0x93: AHX_IY(); cyclesThisOperation += 6; break;
                 case 0x9B: TAS_AY(); cyclesThisOperation += 5; break;
                 case 0x9C: SHY_AX(); cyclesThisOperation += 5; break;
                 case 0x9E: SHX_AY(); cyclesThisOperation += 5; break;
                 case 0x9F: AHX_AY(); cyclesThisOperation += 5; break;
 
-                /// ---- JAM / KIL: real CPU halts until reset. Keep the CPU
-                /// thread alive so a later reset request can recover.
+                // JAM/KIL halts a real NMOS 6502 until reset.
                 case 0x02:
                 case 0x12:
                 case 0x22:
@@ -1241,8 +1195,6 @@ namespace BBC.CPU
             }
         }
 
-        /// <summary>Runs one instruction through fetch, interrupt handling, dispatch, and cycle accounting.</summary>
-        /// <returns>The number of CPU cycles consumed by the instruction.</returns>
         public int StepInstruction()
         {
             if (jammed)
@@ -1287,8 +1239,6 @@ namespace BBC.CPU
 
         #region Illegal opcode helpers
 
-        /// <summary>Loads the fetched operand into both accumulator and X.</summary>
-        /// <param name="addr">The emulated address to access.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void LAX(ulong addr)
         {
@@ -1298,16 +1248,12 @@ namespace BBC.CPU
             Set_FlagsNZ(v);
         }
 
-        /// <summary>Stores accumulator AND X to the target address.</summary>
-        /// <param name="addr">The emulated address to access.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SAX(ulong addr)
         {
             WriteByteToMemory(addr, (byte)(registers.A & registers.X));
         }
 
-        /// <summary>Decrements memory and compares the result with the accumulator.</summary>
-        /// <param name="addr">The emulated address to access.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void DCP(ulong addr)
         {
@@ -1318,8 +1264,6 @@ namespace BBC.CPU
             Set_FlagsNZ((byte)diff);
         }
 
-        /// <summary>Increments memory and subtracts the result from the accumulator.</summary>
-        /// <param name="addr">The emulated address to access.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ISC(ulong addr)
         {
@@ -1328,8 +1272,6 @@ namespace BBC.CPU
             SBC(v);
         }
 
-        /// <summary>Shifts memory left and ORs the result into the accumulator.</summary>
-        /// <param name="addr">The emulated address to access.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SLO(ulong addr)
         {
@@ -1341,8 +1283,6 @@ namespace BBC.CPU
             Set_FlagsNZ(registers.A);
         }
 
-        /// <summary>Shifts memory right and exclusive-ORs the result into the accumulator.</summary>
-        /// <param name="addr">The emulated address to access.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SRE(ulong addr)
         {
@@ -1354,8 +1294,6 @@ namespace BBC.CPU
             Set_FlagsNZ(registers.A);
         }
 
-        /// <summary>Rotates memory left and ANDs the result into the accumulator.</summary>
-        /// <param name="addr">The emulated address to access.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void RLA(ulong addr)
         {
@@ -1368,8 +1306,6 @@ namespace BBC.CPU
             Set_FlagsNZ(registers.A);
         }
 
-        /// <summary>Rotates memory right and adds the result to the accumulator.</summary>
-        /// <param name="addr">The emulated address to access.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void RRA(ulong addr)
         {
@@ -1381,10 +1317,7 @@ namespace BBC.CPU
             ADC(v);
         }
 
-        /// ANC: AND with immediate, then copy bit 7 (N) into C. Used in
-        /// some bit-test routines as a faster "AND # / BMI" pair.
 
-        /// <summary>ANDs an immediate operand into A and copies bit 7 into carry. Uses immediate addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ANC_IM()
         {
@@ -1393,9 +1326,7 @@ namespace BBC.CPU
             registers.Flags.C = registers.Flags.N;
         }
 
-        /// ALR: AND with immediate, then LSR A.
 
-        /// <summary>ANDs an immediate operand into A, then logical-shifts A right. Uses immediate addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ALR_IM()
         {
@@ -1405,10 +1336,7 @@ namespace BBC.CPU
             Set_FlagsNZ(registers.A);
         }
 
-        /// ARR: AND with immediate, then ROR A. Has unusual flag effects:
-        /// C = bit 6 of result; V = bit 6 XOR bit 5 of result.
 
-        /// <summary>ANDs an immediate operand into A, then rotates A right through carry. Uses immediate addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ARR_IM()
         {
@@ -1439,9 +1367,7 @@ namespace BBC.CPU
             }
         }
 
-        /// AXS: X = (A AND X) - immediate. No borrow input; C set normally.
 
-        /// <summary>Stores A AND X minus the immediate operand into X. Uses immediate addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void AXS_IM()
         {
@@ -1451,10 +1377,7 @@ namespace BBC.CPU
             Set_FlagsNZ(registers.X);
         }
 
-        /// XAA / ANE (unstable on real silicon). Common practical approximation:
-        /// A = X AND immediate.
 
-        /// <summary>Applies the unstable XAA immediate transfer into the accumulator. Uses immediate addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void XAA_IM()
         {
@@ -1462,9 +1385,7 @@ namespace BBC.CPU
             Set_FlagsNZ(registers.A);
         }
 
-        /// LAX immediate unofficial variant.
 
-        /// <summary>Loads the fetched operand into both accumulator and X. Uses immediate addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void LAX_IM()
         {
@@ -1474,7 +1395,6 @@ namespace BBC.CPU
             Set_FlagsNZ(v);
         }
 
-        /// <summary>Loads A, X, and S from memory AND stack pointer. Uses absolute Y-indexed addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void LAS_AY()
         {
@@ -1486,11 +1406,7 @@ namespace BBC.CPU
             Set_FlagsNZ(v);
         }
 
-        /// AHX stores (A AND X AND (high_byte_of_effective_address + 1)).
-        /// With page-boundary crossing addressing modes, the actual address calculation
-        /// may wrap differently than expected. The high-byte formula captures this subtlety.
 
-        /// <summary>Stores A AND X AND high-address bits using unstable indexed addressing. Uses indirect Y-indexed addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void AHX_IY()
         {
@@ -1498,7 +1414,6 @@ namespace BBC.CPU
             WriteByteToMemory(addr, value);
         }
 
-        /// <summary>Stores A AND X AND high-address bits using unstable indexed addressing. Uses absolute Y-indexed addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void AHX_AY()
         {
@@ -1506,7 +1421,6 @@ namespace BBC.CPU
             WriteByteToMemory(addr, value);
         }
 
-        /// <summary>Transfers A AND X to S and stores unstable high-address data. Uses absolute Y-indexed addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void TAS_AY()
         {
@@ -1516,7 +1430,6 @@ namespace BBC.CPU
             WriteByteToMemory(addr, value);
         }
 
-        /// <summary>Stores Y AND high-address bits using unstable absolute indexed addressing. Uses absolute X-indexed addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SHY_AX()
         {
@@ -1524,7 +1437,6 @@ namespace BBC.CPU
             WriteByteToMemory(addr, value);
         }
 
-        /// <summary>Stores X AND high-address bits using unstable absolute indexed addressing. Uses absolute Y-indexed addressing.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void SHX_AY()
         {
@@ -1561,8 +1473,6 @@ namespace BBC.CPU
 
         #region Addressing Modes
 
-        /// <summary>Reads the next immediate operand byte from the instruction stream.</summary>
-        /// <returns>The byte value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private byte Immediate()
         {
@@ -1570,8 +1480,6 @@ namespace BBC.CPU
             return addr;
         }
 
-        /// <summary>Reads a 16-bit absolute operand address from the instruction stream.</summary>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private ulong Absolute()
         {
@@ -1579,8 +1487,6 @@ namespace BBC.CPU
             return addr & 0xFFFF;
         }
 
-        /// <summary>Reads an absolute indirect JMP target, including the NMOS page-wrap behaviour.</summary>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private ulong AbsoluteIndirect()
         {
@@ -1602,9 +1508,6 @@ namespace BBC.CPU
             return value & 0xFFFF;
         }
 
-        /// <summary>Computes an absolute X-indexed operand address and optional page-crossing cycle penalty.</summary>
-        /// <param name="checkBoundary">The check boundary value used by the operation.</param>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private ulong X_Indexed_Absolute(bool checkBoundary = true)
         {
@@ -1614,9 +1517,6 @@ namespace BBC.CPU
             return addr & 0xFFFF;
         }
 
-        /// <summary>Computes an absolute Y-indexed operand address and optional page-crossing cycle penalty.</summary>
-        /// <param name="checkBoundary">The check boundary value used by the operation.</param>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private ulong Y_Indexed_Absolute(bool checkBoundary = true)
         {
@@ -1626,8 +1526,6 @@ namespace BBC.CPU
             return addr & 0xFFFF;
         }
 
-        /// <summary>Reads the next zero-page operand address.</summary>
-        /// <returns>The byte value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private byte Zero_Page()
         {
@@ -1635,8 +1533,6 @@ namespace BBC.CPU
             return addr;
         }
 
-        /// <summary>Computes a zero-page X-indexed operand address with wraparound.</summary>
-        /// <returns>The byte value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private byte X_Indexed_Zero_Page()
         {
@@ -1644,8 +1540,6 @@ namespace BBC.CPU
             return addr;
         }
 
-        /// <summary>Computes a zero-page Y-indexed operand address with wraparound.</summary>
-        /// <returns>The byte value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private byte Y_Indexed_Zero_Page()
         {
@@ -1653,8 +1547,6 @@ namespace BBC.CPU
             return addr;
         }
 
-        /// <summary>Computes an indexed-indirect zero-page operand address.</summary>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private ulong X_Indexed_Zero_Page_Indirect()
         {
@@ -1665,9 +1557,6 @@ namespace BBC.CPU
             return addr & 0xFFFF;
         }
 
-        /// <summary>Computes an indirect-indexed zero-page operand address and optional page-crossing cycle penalty.</summary>
-        /// <param name="checkBoundary">The check boundary value used by the operation.</param>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private ulong Zero_Page_Indirect_Y_Indexed(bool checkBoundary = true)
         {
@@ -1680,8 +1569,6 @@ namespace BBC.CPU
             return addr & 0xFFFF;
         }
 
-        /// <summary>Updates the 6502 negative and zero flags from a result byte.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void Set_FlagsNZ(byte value)
         {
@@ -1695,7 +1582,6 @@ namespace BBC.CPU
 
         #region LD*
 
-        /// <summary>Loads the fetched operand into the accumulator and updates N/Z flags. Uses immediate addressing.</summary>
         private void LDA_IM()
         {
             registers.A = Immediate();
@@ -1703,7 +1589,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Loads the fetched operand into the accumulator and updates N/Z flags. Uses absolute addressing.</summary>
         private void LDA_AB()
         {
             registers.A = ReadByteFromMemory(Absolute());
@@ -1711,7 +1596,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the accumulator and updates N/Z flags. Uses absolute X-indexed addressing.</summary>
         private void LDA_ABX()
         {
             registers.A = ReadByteFromMemory(X_Indexed_Absolute());
@@ -1719,7 +1603,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the accumulator and updates N/Z flags. Uses absolute Y-indexed addressing.</summary>
         private void LDA_ABY()
         {
             registers.A = ReadByteFromMemory(Y_Indexed_Absolute());
@@ -1727,7 +1610,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the accumulator and updates N/Z flags. Uses zero-page addressing.</summary>
         private void LDA_ZP()
         {
             registers.A = ReadByteFromMemory(Zero_Page());
@@ -1735,7 +1617,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Loads the fetched operand into the accumulator and updates N/Z flags. Uses zero-page X-indexed addressing.</summary>
         private void LDA_ZPX()
         {
             registers.A = ReadByteFromMemory(X_Indexed_Zero_Page());
@@ -1743,7 +1624,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the accumulator and updates N/Z flags. Uses indexed-indirect zero-page addressing.</summary>
         private void LDA_ZPIX()
         {
             registers.A = ReadByteFromMemory(X_Indexed_Zero_Page_Indirect());
@@ -1751,7 +1631,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Loads the fetched operand into the accumulator and updates N/Z flags. Uses indirect-indexed zero-page addressing.</summary>
         private void LDA_ZPIY()
         {
             registers.A = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
@@ -1759,7 +1638,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Loads the fetched operand into the X register and updates N/Z flags. Uses immediate addressing.</summary>
         private void LDX_IM()
         {
             registers.X = Immediate();
@@ -1767,7 +1645,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Loads the fetched operand into the X register and updates N/Z flags. Uses absolute addressing.</summary>
         private void LDX_AB()
         {
             registers.X = ReadByteFromMemory(Absolute());
@@ -1775,7 +1652,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the X register and updates N/Z flags. Uses absolute Y-indexed addressing.</summary>
         private void LDX_ABY()
         {
             registers.X = ReadByteFromMemory(Y_Indexed_Absolute());
@@ -1783,7 +1659,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the X register and updates N/Z flags. Uses zero-page addressing.</summary>
         private void LDX_ZP()
         {
             registers.X = ReadByteFromMemory(Zero_Page());
@@ -1791,7 +1666,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Loads the fetched operand into the X register and updates N/Z flags. Uses zero-page Y-indexed addressing.</summary>
         private void LDX_ZPY()
         {
             registers.X = ReadByteFromMemory(Y_Indexed_Zero_Page());
@@ -1799,7 +1673,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the Y register and updates N/Z flags. Uses immediate addressing.</summary>
         private void LDY_IM()
         {
             registers.Y = Immediate();
@@ -1807,7 +1680,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Loads the fetched operand into the Y register and updates N/Z flags. Uses absolute addressing.</summary>
         private void LDY_AB()
         {
             registers.Y = ReadByteFromMemory(Absolute());
@@ -1815,7 +1687,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the Y register and updates N/Z flags. Uses absolute X-indexed addressing.</summary>
         private void LDY_ABX()
         {
             registers.Y = ReadByteFromMemory(X_Indexed_Absolute());
@@ -1823,7 +1694,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Loads the fetched operand into the Y register and updates N/Z flags. Uses zero-page addressing.</summary>
         private void LDY_ZP()
         {
             registers.Y = ReadByteFromMemory(Zero_Page());
@@ -1831,7 +1701,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Loads the fetched operand into the Y register and updates N/Z flags. Uses zero-page X-indexed addressing.</summary>
         private void LDY_ZPX()
         {
             registers.Y = ReadByteFromMemory(X_Indexed_Zero_Page());
@@ -1843,91 +1712,78 @@ namespace BBC.CPU
 
         #region ST*
 
-        /// <summary>Stores the accumulator to the target address. Uses absolute addressing.</summary>
         private void STA_AB()
         {
             WriteByteToMemory(Absolute(), registers.A);
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Stores the accumulator to the target address. Uses absolute X-indexed addressing.</summary>
         private void STA_ABX()
         {
             WriteByteToMemory(X_Indexed_Absolute(false), registers.A);
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Stores the accumulator to the target address. Uses absolute Y-indexed addressing.</summary>
         private void STA_ABY()
         {
             WriteByteToMemory(Y_Indexed_Absolute(false), registers.A);
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Stores the accumulator to the target address. Uses zero-page addressing.</summary>
         private void STA_ZP()
         {
             WriteByteToMemory(Zero_Page(), registers.A);
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Stores the accumulator to the target address. Uses zero-page X-indexed addressing.</summary>
         private void STA_ZPX()
         {
             WriteByteToMemory(X_Indexed_Zero_Page(), registers.A);
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Stores the accumulator to the target address. Uses indexed-indirect zero-page addressing.</summary>
         private void STA_ZPIX()
         {
             WriteByteToMemory(X_Indexed_Zero_Page_Indirect(), registers.A);
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Stores the accumulator to the target address. Uses indirect-indexed zero-page addressing.</summary>
         private void STA_ZPIY()
         {
             WriteByteToMemory(Zero_Page_Indirect_Y_Indexed(false), registers.A);
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Stores the X register to the target address. Uses absolute addressing.</summary>
         private void STX_AB()
         {
             WriteByteToMemory(Absolute(), registers.X);
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Stores the X register to the target address. Uses zero-page addressing.</summary>
         private void STX_ZP()
         {
             WriteByteToMemory(Zero_Page(), registers.X);
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Stores the X register to the target address. Uses zero-page Y-indexed addressing.</summary>
         private void STX_ZPY()
         {
             WriteByteToMemory(Y_Indexed_Zero_Page(), registers.X);
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Stores the Y register to the target address. Uses absolute addressing.</summary>
         private void STY_AB()
         {
             WriteByteToMemory(Absolute(), registers.Y);
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Stores the Y register to the target address. Uses zero-page addressing.</summary>
         private void STY_ZP()
         {
             WriteByteToMemory(Zero_Page(), registers.Y);
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Stores the Y register to the target address. Uses zero-page X-indexed addressing.</summary>
         private void STY_ZPX()
         {
             WriteByteToMemory(X_Indexed_Zero_Page(), registers.Y);
@@ -1938,7 +1794,6 @@ namespace BBC.CPU
 
         #region T**
 
-        /// <summary>Transfers the accumulator to X and updates N/Z flags.</summary>
         private void TAX()
         {
             registers.X = registers.A;
@@ -1946,7 +1801,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Transfers the accumulator to Y and updates N/Z flags.</summary>
         private void TAY()
         {
             registers.Y = registers.A;
@@ -1954,7 +1808,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Transfers the stack pointer to X and updates N/Z flags.</summary>
         private void TSX()
         {
             registers.X = registers.S;
@@ -1962,7 +1815,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Transfers X to the accumulator and updates N/Z flags.</summary>
         private void TXA()
         {
             registers.A = registers.X;
@@ -1970,14 +1822,12 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Transfers X to the stack pointer.</summary>
         private void TXS()
         {
             registers.S = registers.X;
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Transfers Y to the accumulator and updates N/Z flags.</summary>
         private void TYA()
         {
             registers.A = registers.Y;
@@ -1989,21 +1839,18 @@ namespace BBC.CPU
 
         #region SE*
 
-        /// <summary>Sets the carry flag.</summary>
         private void SEC()
         {
             registers.Flags.C = true;
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Sets decimal mode.</summary>
         private void SED()
         {
             registers.Flags.D = true;
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Sets interrupt-disable after the NMOS 6502 delay.</summary>
         private void SEI()
         {
             ScheduleIFlag(true);
@@ -2014,14 +1861,12 @@ namespace BBC.CPU
 
         #region PH*
 
-        /// <summary>Pushes the accumulator onto the 6502 stack.</summary>
         private void PHA()
         {
             PushByteToStack(registers.A);
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Pushes the processor status byte onto the 6502 stack.</summary>
         private void PHP()
         {
             byte addr = registers.Flags.GetFlagsAsByte();
@@ -2035,7 +1880,6 @@ namespace BBC.CPU
 
         #region PL*
 
-        /// <summary>Pulls the accumulator from the 6502 stack and updates N/Z flags.</summary>
         private void PLA()
         {
             registers.A = PopByteFromStack();
@@ -2043,7 +1887,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Pulls processor status from the stack with NMOS interrupt-delay handling.</summary>
         private void PLP()
         {
             byte value = PopByteFromStack();
@@ -2057,28 +1900,24 @@ namespace BBC.CPU
 
         #region CL*
 
-        /// <summary>Clears the carry flag.</summary>
         private void CLC()
         {
             registers.Flags.C = false;
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Clears decimal mode.</summary>
         private void CLD()
         {
             registers.Flags.D = false;
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Clears interrupt-disable after the NMOS 6502 delay.</summary>
         private void CLI()
         {
             ScheduleIFlag(false);
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Clears the overflow flag.</summary>
         private void CLV()
         {
             registers.Flags.V = false;
@@ -2089,7 +1928,6 @@ namespace BBC.CPU
 
         #region DE*
 
-        /// <summary>Decrements the target memory operand. Uses absolute addressing.</summary>
         private void DECA()
         {
             ulong addr = Absolute();
@@ -2100,7 +1938,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Decrements the target memory operand. Uses absolute X-indexed addressing.</summary>
         private void DECXA()
         {
             ulong addr = X_Indexed_Absolute(false);
@@ -2111,7 +1948,6 @@ namespace BBC.CPU
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Decrements the target memory operand. Uses zero-page addressing.</summary>
         private void DECZP()
         {
             ulong addr = Zero_Page();
@@ -2122,7 +1958,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Decrements the target memory operand. Uses zero-page X-indexed addressing.</summary>
         private void DECXZP()
         {
             ulong addr = X_Indexed_Zero_Page();
@@ -2133,7 +1968,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Decrements the X register and updates N/Z flags.</summary>
         private void DEX()
         {
             byte value2 = (byte)(registers.X - 1);
@@ -2142,7 +1976,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Decrements the Y register and updates N/Z flags.</summary>
         private void DEY()
         {
             byte value2 = (byte)(registers.Y - 1);
@@ -2155,7 +1988,6 @@ namespace BBC.CPU
 
         #region IN*
 
-        /// <summary>Increments the target memory operand. Uses absolute addressing.</summary>
         private void INCA()
         {
             ulong addr = Absolute();
@@ -2166,7 +1998,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Increments the target memory operand. Uses absolute X-indexed addressing.</summary>
         private void INCXA()
         {
             ulong addr = X_Indexed_Absolute(false);
@@ -2177,7 +2008,6 @@ namespace BBC.CPU
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Increments the target memory operand. Uses zero-page addressing.</summary>
         private void INCZP()
         {
             ulong addr = Zero_Page();
@@ -2188,7 +2018,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Increments the target memory operand. Uses zero-page X-indexed addressing.</summary>
         private void INCXZP()
         {
             ulong addr = X_Indexed_Zero_Page();
@@ -2199,7 +2028,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Increments the X register and updates N/Z flags.</summary>
         private void INX()
         {
             byte value1 = (byte)(registers.X + 1);
@@ -2208,7 +2036,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Increments the Y register and updates N/Z flags.</summary>
         private void INY()
         {
             byte value1 = (byte)(registers.Y + 1);
@@ -2221,7 +2048,6 @@ namespace BBC.CPU
 
         #region CM*
 
-        /// <summary>Compares the accumulator with the fetched operand. Uses immediate addressing.</summary>
         private void CMPI()
         {
             byte addr = Immediate();
@@ -2231,7 +2057,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Compares the accumulator with the fetched operand. Uses absolute addressing.</summary>
         private void CMPA()
         {
             byte addr = ReadByteFromMemory(Absolute());
@@ -2241,7 +2066,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Compares the accumulator with the fetched operand. Uses absolute X-indexed addressing.</summary>
         private void CMPXA()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Absolute());
@@ -2251,7 +2075,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Compares the accumulator with the fetched operand. Uses absolute Y-indexed addressing.</summary>
         private void CMPYA()
         {
             byte addr = ReadByteFromMemory(Y_Indexed_Absolute());
@@ -2261,7 +2084,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Compares the accumulator with the fetched operand. Uses zero-page addressing.</summary>
         private void CMPZ()
         {
             byte addr = ReadByteFromMemory(Zero_Page());
@@ -2271,7 +2093,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Compares the accumulator with the fetched operand. Uses zero-page X-indexed addressing.</summary>
         private void CMPXZ()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Zero_Page());
@@ -2281,7 +2102,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Compares the accumulator with the fetched operand. Uses indexed-indirect zero-page addressing.</summary>
         private void CMPXZI()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Zero_Page_Indirect());
@@ -2291,7 +2111,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Compares the accumulator with the fetched operand. Uses indirect-indexed zero-page addressing.</summary>
         private void CMPYZI()
         {
             byte addr = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
@@ -2305,7 +2124,6 @@ namespace BBC.CPU
 
         #region CPX
 
-        /// <summary>Compares the X register with the fetched operand. Uses immediate addressing.</summary>
         private void CPXI()
         {
             byte addr = Immediate();
@@ -2315,7 +2133,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Compares the X register with the fetched operand. Uses absolute addressing.</summary>
         private void CPXA()
         {
             byte addr = ReadByteFromMemory(Absolute());
@@ -2325,7 +2142,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Compares the X register with the fetched operand. Uses zero-page addressing.</summary>
         private void CPXZ()
         {
             byte addr = ReadByteFromMemory(Zero_Page());
@@ -2339,7 +2155,6 @@ namespace BBC.CPU
 
         #region CPY
 
-        /// <summary>Compares the Y register with the fetched operand. Uses immediate addressing.</summary>
         private void CPYI()
         {
             byte addr = Immediate();
@@ -2349,7 +2164,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Compares the Y register with the fetched operand. Uses absolute addressing.</summary>
         private void CPYA()
         {
             byte addr = ReadByteFromMemory(Absolute());
@@ -2359,7 +2173,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Compares the Y register with the fetched operand. Uses zero-page addressing.</summary>
         private void CPYZ()
         {
             byte addr = ReadByteFromMemory(Zero_Page());
@@ -2373,7 +2186,6 @@ namespace BBC.CPU
 
         #region ADC
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator. Uses immediate addressing.</summary>
         private void ADCI()
         {
             byte value = Immediate();
@@ -2381,7 +2193,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator. Uses absolute addressing.</summary>
         private void ADCA()
         {
             byte value = ReadByteFromMemory(Absolute());
@@ -2389,7 +2200,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator. Uses absolute X-indexed addressing.</summary>
         private void ADCXA()
         {
             byte value = ReadByteFromMemory(X_Indexed_Absolute());
@@ -2397,7 +2207,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator. Uses absolute Y-indexed addressing.</summary>
         private void ADCYA()
         {
             byte value = ReadByteFromMemory(Y_Indexed_Absolute());
@@ -2405,7 +2214,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator. Uses zero-page addressing.</summary>
         private void ADCZ()
         {
             byte value = ReadByteFromMemory(Zero_Page());
@@ -2413,7 +2221,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator. Uses zero-page X-indexed addressing.</summary>
         private void ADCXZ()
         {
             byte value = ReadByteFromMemory(X_Indexed_Zero_Page());
@@ -2421,7 +2228,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator. Uses indexed-indirect zero-page addressing.</summary>
         private void ADCXZI()
         {
             byte value = ReadByteFromMemory(X_Indexed_Zero_Page_Indirect());
@@ -2429,7 +2235,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator. Uses indirect-indexed zero-page addressing.</summary>
         private void ADCYZI()
         {
             byte value = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
@@ -2437,8 +2242,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Adds the fetched operand and carry flag to the accumulator.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         private void ADC(byte value)
         {
             int carry = registers.Flags.C ? 1 : 0;
@@ -2472,7 +2275,6 @@ namespace BBC.CPU
 
         #region SBC
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator. Uses immediate addressing.</summary>
         private void SBCI()
         {
             byte value = Immediate();
@@ -2480,7 +2282,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator. Uses absolute addressing.</summary>
         private void SBCA()
         {
             byte value = ReadByteFromMemory(Absolute());
@@ -2488,7 +2289,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator. Uses absolute X-indexed addressing.</summary>
         private void SBCXA()
         {
             byte value = ReadByteFromMemory(X_Indexed_Absolute());
@@ -2496,7 +2296,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator. Uses absolute Y-indexed addressing.</summary>
         private void SBCYA()
         {
             byte value = ReadByteFromMemory(Y_Indexed_Absolute());
@@ -2504,7 +2303,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator. Uses zero-page addressing.</summary>
         private void SBCZ()
         {
             byte value = ReadByteFromMemory(Zero_Page());
@@ -2512,7 +2310,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator. Uses zero-page X-indexed addressing.</summary>
         private void SBCXZ()
         {
             byte value = ReadByteFromMemory(X_Indexed_Zero_Page());
@@ -2520,7 +2317,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator. Uses indexed-indirect zero-page addressing.</summary>
         private void SBCXZI()
         {
             byte value = ReadByteFromMemory(X_Indexed_Zero_Page_Indirect());
@@ -2528,7 +2324,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator. Uses indirect-indexed zero-page addressing.</summary>
         private void SBCYZI()
         {
             byte value = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
@@ -2536,8 +2331,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Subtracts the fetched operand and inverted carry from the accumulator.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         private void SBC(byte value)
         {
             int carry = registers.Flags.C ? 1 : 0;
@@ -2570,7 +2363,6 @@ namespace BBC.CPU
 
         #region EOR
 
-        /// <summary>Exclusive-ORs the fetched operand into the accumulator. Uses immediate addressing.</summary>
         private void EORI()
         {
             byte addr = Immediate();
@@ -2580,7 +2372,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Exclusive-ORs the fetched operand into the accumulator. Uses absolute addressing.</summary>
         private void EORA()
         {
             byte addr = ReadByteFromMemory(Absolute());
@@ -2590,7 +2381,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Exclusive-ORs the fetched operand into the accumulator. Uses absolute X-indexed addressing.</summary>
         private void EORXA()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Absolute());
@@ -2600,7 +2390,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Exclusive-ORs the fetched operand into the accumulator. Uses absolute Y-indexed addressing.</summary>
         private void EORYA()
         {
             byte addr = ReadByteFromMemory(Y_Indexed_Absolute());
@@ -2610,7 +2399,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Exclusive-ORs the fetched operand into the accumulator. Uses zero-page addressing.</summary>
         private void EORZ()
         {
             byte addr = ReadByteFromMemory(Zero_Page());
@@ -2620,7 +2408,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Exclusive-ORs the fetched operand into the accumulator. Uses zero-page X-indexed addressing.</summary>
         private void EORXZ()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Zero_Page());
@@ -2630,7 +2417,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Exclusive-ORs the fetched operand into the accumulator. Uses indexed-indirect zero-page addressing.</summary>
         private void EORXZI()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Zero_Page_Indirect());
@@ -2640,7 +2426,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Exclusive-ORs the fetched operand into the accumulator. Uses indirect-indexed zero-page addressing.</summary>
         private void EORYZI()
         {
             byte addr = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
@@ -2654,7 +2439,6 @@ namespace BBC.CPU
 
         #region ORA
 
-        /// <summary>ORs the fetched operand into the accumulator. Uses immediate addressing.</summary>
         private void ORAI()
         {
             byte addr = Immediate();
@@ -2664,7 +2448,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>ORs the fetched operand into the accumulator. Uses absolute addressing.</summary>
         private void ORAA()
         {
             byte addr = ReadByteFromMemory(Absolute());
@@ -2674,7 +2457,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>ORs the fetched operand into the accumulator. Uses absolute X-indexed addressing.</summary>
         private void ORAXA()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Absolute());
@@ -2684,7 +2466,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>ORs the fetched operand into the accumulator. Uses absolute Y-indexed addressing.</summary>
         private void ORAYA()
         {
             byte addr = ReadByteFromMemory(Y_Indexed_Absolute());
@@ -2694,7 +2475,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>ORs the fetched operand into the accumulator. Uses zero-page addressing.</summary>
         private void ORAZ()
         {
             byte addr = ReadByteFromMemory(Zero_Page());
@@ -2704,7 +2484,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>ORs the fetched operand into the accumulator. Uses zero-page X-indexed addressing.</summary>
         private void ORAXZ()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Zero_Page());
@@ -2714,7 +2493,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>ORs the fetched operand into the accumulator. Uses indexed-indirect zero-page addressing.</summary>
         private void ORAXZI()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Zero_Page_Indirect());
@@ -2724,7 +2502,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>ORs the fetched operand into the accumulator. Uses indirect-indexed zero-page addressing.</summary>
         private void ORAYZI()
         {
             byte addr = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
@@ -2738,7 +2515,6 @@ namespace BBC.CPU
 
         #region AND
 
-        /// <summary>ANDs the fetched operand into the accumulator. Uses immediate addressing.</summary>
         private void ANDI()
         {
             byte addr = Immediate();
@@ -2748,7 +2524,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>ANDs the fetched operand into the accumulator. Uses absolute addressing.</summary>
         private void ANDA()
         {
             byte addr = ReadByteFromMemory(Absolute());
@@ -2758,7 +2533,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>ANDs the fetched operand into the accumulator. Uses absolute X-indexed addressing.</summary>
         private void ANDXA()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Absolute());
@@ -2768,7 +2542,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>ANDs the fetched operand into the accumulator. Uses absolute Y-indexed addressing.</summary>
         private void ANDYA()
         {
             byte addr = ReadByteFromMemory(Y_Indexed_Absolute());
@@ -2778,7 +2551,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>ANDs the fetched operand into the accumulator. Uses zero-page addressing.</summary>
         private void ANDZ()
         {
             byte addr = ReadByteFromMemory(Zero_Page());
@@ -2788,7 +2560,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>ANDs the fetched operand into the accumulator. Uses zero-page X-indexed addressing.</summary>
         private void ANDXZ()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Zero_Page());
@@ -2798,7 +2569,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>ANDs the fetched operand into the accumulator. Uses indexed-indirect zero-page addressing.</summary>
         private void ANDXZI()
         {
             byte addr = ReadByteFromMemory(X_Indexed_Zero_Page_Indirect());
@@ -2808,7 +2578,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>ANDs the fetched operand into the accumulator. Uses indirect-indexed zero-page addressing.</summary>
         private void ANDYZI()
         {
             byte addr = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
@@ -2822,7 +2591,6 @@ namespace BBC.CPU
 
         #region BIT
 
-        /// <summary>Tests accumulator bits against the fetched operand and updates N, V, and Z. Uses absolute addressing.</summary>
         private void BITA()
         {
             byte addr = ReadByteFromMemory(Absolute());
@@ -2833,7 +2601,6 @@ namespace BBC.CPU
             cyclesThisOperation += 4;
         }
 
-        /// <summary>Tests accumulator bits against the fetched operand and updates N, V, and Z. Uses zero-page addressing.</summary>
         private void BITZ()
         {
             byte addr = ReadByteFromMemory(Zero_Page());
@@ -2848,7 +2615,6 @@ namespace BBC.CPU
 
         #region ASL
 
-        /// <summary>Shifts the target operand left and stores the old bit 7 in carry. Uses accumulator addressing.</summary>
         private void ASLAC()
         {
             byte addr = registers.A;
@@ -2860,7 +2626,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Shifts the target operand left and stores the old bit 7 in carry. Uses absolute addressing.</summary>
         private void ASLA()
         {
             ulong addr = Absolute();
@@ -2873,7 +2638,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Shifts the target operand left and stores the old bit 7 in carry. Uses absolute X-indexed addressing.</summary>
         private void ASLXA()
         {
             ulong addr = X_Indexed_Absolute(false);
@@ -2886,7 +2650,6 @@ namespace BBC.CPU
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Shifts the target operand left and stores the old bit 7 in carry. Uses zero-page addressing.</summary>
         private void ASLZ()
         {
             ulong addr = Zero_Page();
@@ -2899,7 +2662,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Shifts the target operand left and stores the old bit 7 in carry. Uses zero-page X-indexed addressing.</summary>
         private void ASLXZ()
         {
             ulong addr = X_Indexed_Zero_Page();
@@ -2916,7 +2678,6 @@ namespace BBC.CPU
 
         #region LSR
 
-        /// <summary>Shifts the target operand right and stores the old bit 0 in carry. Uses accumulator addressing.</summary>
         private void LSRAC()
         {
             byte addr = registers.A;
@@ -2928,7 +2689,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Shifts the target operand right and stores the old bit 0 in carry. Uses absolute addressing.</summary>
         private void LSRA()
         {
             ulong addr = Absolute();
@@ -2941,7 +2701,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Shifts the target operand right and stores the old bit 0 in carry. Uses absolute X-indexed addressing.</summary>
         private void LSRXA()
         {
             ulong addr = X_Indexed_Absolute(false);
@@ -2954,7 +2713,6 @@ namespace BBC.CPU
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Shifts the target operand right and stores the old bit 0 in carry. Uses zero-page addressing.</summary>
         private void LSRZ()
         {
             ulong addr = Zero_Page();
@@ -2968,7 +2726,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Shifts the target operand right and stores the old bit 0 in carry. Uses zero-page X-indexed addressing.</summary>
         private void LSRXZ()
         {
             ulong addr = X_Indexed_Zero_Page();
@@ -2986,7 +2743,6 @@ namespace BBC.CPU
 
         #region ROL
 
-        /// <summary>Rotates the target operand left through carry. Uses accumulator addressing.</summary>
         private void ROLAC()
         {
             byte addr = registers.A;
@@ -2998,7 +2754,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Rotates the target operand left through carry. Uses absolute addressing.</summary>
         private void ROLA()
         {
             ulong addr = Absolute();
@@ -3011,7 +2766,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Rotates the target operand left through carry. Uses absolute X-indexed addressing.</summary>
         private void ROLXA()
         {
             ulong addr = X_Indexed_Absolute(false);
@@ -3024,7 +2778,6 @@ namespace BBC.CPU
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Rotates the target operand left through carry. Uses zero-page addressing.</summary>
         private void ROLZ()
         {
             ulong addr = Zero_Page();
@@ -3037,7 +2790,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Rotates the target operand left through carry. Uses zero-page X-indexed addressing.</summary>
         private void ROLXZ()
         {
             ulong addr = X_Indexed_Zero_Page();
@@ -3054,7 +2806,6 @@ namespace BBC.CPU
 
         #region ROR
 
-        /// <summary>Rotates the target operand right through carry. Uses accumulator addressing.</summary>
         private void RORAC()
         {
             byte addr = registers.A;
@@ -3067,7 +2818,6 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
-        /// <summary>Rotates the target operand right through carry. Uses absolute addressing.</summary>
         private void RORA()
         {
             ulong addr = Absolute();
@@ -3081,7 +2831,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Rotates the target operand right through carry. Uses absolute X-indexed addressing.</summary>
         private void RORXA()
         {
             ulong addr = X_Indexed_Absolute(false);
@@ -3095,7 +2844,6 @@ namespace BBC.CPU
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Rotates the target operand right through carry. Uses zero-page addressing.</summary>
         private void RORZ()
         {
             ulong addr = Zero_Page();
@@ -3109,7 +2857,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Rotates the target operand right through carry. Uses zero-page X-indexed addressing.</summary>
         private void RORXZ()
         {
             ulong addr = X_Indexed_Zero_Page();
@@ -3127,7 +2874,6 @@ namespace BBC.CPU
 
         #region BRANCH
 
-        /// <summary>Branches when the carry flag is clear.</summary>
         private void BCC()
         {
             cyclesThisOperation += 2;
@@ -3137,7 +2883,6 @@ namespace BBC.CPU
                 Branch(value);
         }
 
-        /// <summary>Branches when the carry flag is set.</summary>
         private void BCS()
         {
             cyclesThisOperation += 2;
@@ -3147,7 +2892,6 @@ namespace BBC.CPU
                 Branch(value);
         }
 
-        /// <summary>Branches when the zero flag is set.</summary>
         private void BEQ()
         {
             cyclesThisOperation += 2;
@@ -3157,7 +2901,6 @@ namespace BBC.CPU
                 Branch(value);
         }
 
-        /// <summary>Branches when the negative flag is set.</summary>
         private void BMI()
         {
             byte value = ReadByteFromMemory(registers.PC);
@@ -3167,7 +2910,6 @@ namespace BBC.CPU
                 Branch(value);
         }
 
-        /// <summary>Branches when the zero flag is clear.</summary>
         private void BNE()
         {
             cyclesThisOperation += 2;
@@ -3177,7 +2919,6 @@ namespace BBC.CPU
                 Branch(value);
         }
 
-        /// <summary>Branches when the negative flag is clear.</summary>
         private void BPL()
         {
             cyclesThisOperation += 2;
@@ -3187,7 +2928,6 @@ namespace BBC.CPU
                 Branch(value);
         }
 
-        /// <summary>Branches when the overflow flag is clear.</summary>
         private void BVC()
         {
             cyclesThisOperation += 2;
@@ -3197,7 +2937,6 @@ namespace BBC.CPU
                 Branch(value);
         }
 
-        /// <summary>Branches when the overflow flag is set.</summary>
         private void BVS()
         {
             cyclesThisOperation += 2;
@@ -3207,13 +2946,10 @@ namespace BBC.CPU
                 Branch(value);
         }
 
-        /// <summary>Forces a software interrupt through the IRQ/BRK vector.</summary>
         private void BRK()
         {
             IncrementProgramCounter();
-            /// BRK pushes the status byte with both B (bit 4) and the
-            /// always-1 reserved bit (bit 5) set. RTI/PLP later restore
-            /// these unchanged - they exist only on the stack.
+            // BRK sets B and the reserved bit in the stacked status byte.
             PushByteToStack((byte)((registers.PC >> 8) & 0xFF));
             PushByteToStack((byte)(registers.PC & 0xFF));
             PushByteToStack((byte)(registers.P | 0x30));
@@ -3222,15 +2958,12 @@ namespace BBC.CPU
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Applies a relative branch target and adds page-crossing cycle penalties.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         private void Branch(ulong value)
         {
-            /// Branch offset is a signed 8-bit value; cast handles both directions.
             ulong oldPc = registers.PC;
             int offset = (sbyte)(byte)value;
             registers.PC = (ulong)((long)registers.PC + offset) & 0xFFFF;
-            /// Taken branch costs +1 cycle, plus +1 on page cross.
+            // A taken branch costs one extra cycle, and another when it crosses a page.
             cyclesThisOperation += 1;
             if (CrossBoundary(oldPc, registers.PC))
                 cyclesThisOperation += 1;
@@ -3240,7 +2973,6 @@ namespace BBC.CPU
 
         #region J**
 
-        /// <summary>Loads the program counter with the target address. Uses absolute addressing.</summary>
         private void JMPA()
         {
             ulong value = Absolute();
@@ -3248,7 +2980,6 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
-        /// <summary>Loads the program counter with the target address. Uses absolute indirect addressing.</summary>
         private void JMPAI()
         {
             ulong addr = AbsoluteIndirect();
@@ -3256,7 +2987,6 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
-        /// <summary>Calls a subroutine by stacking the return address. Uses absolute addressing.</summary>
         private void JSRA()
         {
             byte pclo = ReadByteFromMemory(registers.PC);
@@ -3274,7 +3004,6 @@ namespace BBC.CPU
 
         #region RT*
 
-        /// <summary>Restores processor status and PC from an interrupt stack frame.</summary>
         private void RTI()
         {
             byte flags = PopByteFromStack();
@@ -3285,7 +3014,6 @@ namespace BBC.CPU
             cyclesThisOperation += 6;
         }
 
-        /// <summary>Returns from a subroutine by pulling the stacked return address.</summary>
         private void RTS()
         {
             byte lo = PopByteFromStack();
@@ -3299,18 +3027,12 @@ namespace BBC.CPU
 
         #endregion Documented Opcodes
 
-        /// <summary>Advances the 6502 program counter by the requested byte count.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void IncrementProgramCounter(ulong value = 1)
         {
-            /// Mask is branch-free and equivalent to wrapping the 16-bit PC.
             registers.PC = (registers.PC + value) & 0xFFFF;
         }
 
-        /// <summary>Reads one byte through the CPU bus and applies access-stretch timing.</summary>
-        /// <param name="addr">The emulated address to access.</param>
-        /// <returns>The byte value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private byte ReadByteFromMemory(ulong addr)
         {
@@ -3325,9 +3047,6 @@ namespace BBC.CPU
             return value;
         }
 
-        /// <summary>Writes one byte through the CPU bus and applies access-stretch timing.</summary>
-        /// <param name="addr">The emulated address to access.</param>
-        /// <param name="value">The value supplied to the operation.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void WriteByteToMemory(ulong addr, byte value)
         {
@@ -3341,9 +3060,6 @@ namespace BBC.CPU
             }
         }
 
-        /// <summary>Reads a little-endian 16-bit operand through the CPU bus.</summary>
-        /// <param name="addr">The emulated address to access.</param>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private ulong ReadWordFromBus(ulong addr)
         {
@@ -3352,8 +3068,6 @@ namespace BBC.CPU
             return (ulong)(lo | (hi << 8));
         }
 
-        /// <summary>Computes next byte instruction from the current emulated hardware state.</summary>
-        /// <returns>The byte value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public byte GetNextByteInstruction()
         {
@@ -3362,8 +3076,6 @@ namespace BBC.CPU
             return value;
         }
 
-        /// <summary>Computes next word instruction from the current emulated hardware state.</summary>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private ulong GetNextWordInstruction()
         {
@@ -3372,8 +3084,6 @@ namespace BBC.CPU
             return (ulong)(value1 | (value2 << 8));
         }
 
-        /// <summary>Pushes byte to stack.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void PushByteToStack(byte value)
         {
@@ -3381,8 +3091,6 @@ namespace BBC.CPU
             registers.S--;
         }
 
-        /// <summary>Pops one byte from the 6502 hardware stack and advances the stack pointer.</summary>
-        /// <returns>The byte value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private byte PopByteFromStack()
         {
@@ -3390,37 +3098,28 @@ namespace BBC.CPU
             return ReadByteFromMemory((ulong)(registers.S + 0x100));
         }
 
-        /// <summary>Services an NMI by stacking CPU state and loading the NMI vector.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         private void ProcessNMI(ulong value = 0xFFFA)
         {
             PushByteToStack((byte)((registers.PC >> 8) & 0xFF));
             PushByteToStack((byte)(registers.PC & 0xFF));
-            /// NMI push uses the same bit pattern as IRQ.
+            // NMI stacks status like IRQ: B clear, reserved bit set.
             PushByteToStack((byte)((registers.P & 0xEF) | 0x20));
             registers.Flags.I = true;
             registers.PC = (ushort)(ReadByteFromMemory(value) | (ReadByteFromMemory(value + 1) << 8));
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Services an IRQ by stacking CPU state and loading the IRQ vector.</summary>
-        /// <param name="value">The value supplied to the operation.</param>
         private void ProcessIRQ(ulong value = 0xFFFE)
         {
             PushByteToStack((byte)((registers.PC >> 8) & 0xFF));
             PushByteToStack((byte)(registers.PC & 0xFF));
-            /// IRQ push: B bit (4) clear, reserved bit (5) set. Firmware
-            /// IRQ and BRK handlers can inspect this exact bit pattern on the stack.
+            // IRQ leaves B clear in the stacked status so firmware can tell it from BRK.
             PushByteToStack((byte)((registers.P & 0xEF) | 0x20));
             registers.Flags.I = true;
             registers.PC = (ushort)(ReadByteFromMemory(value) | (ReadByteFromMemory(value + 1) << 8));
             cyclesThisOperation += 7;
         }
 
-        /// <summary>Checks whether two 6502 addresses lie on different memory pages.</summary>
-        /// <param name="addr1">The first address to compare.</param>
-        /// <param name="addr2">The second address to compare.</param>
-        /// <returns>True when the operation succeeds; otherwise, false.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool CrossBoundary(ulong addr1, ulong addr2)
         {

@@ -1,8 +1,7 @@
 // ============================================================================
 // Project:     BBC
 // File:        FlatMemoryBus.cs
-// Description: Flat 64 KiB 6502 memory bus with optional mapped read/write
-//              hooks for BBC hardware devices.
+// Description: 64 KiB 6502 bus with hooks for BBC memory-mapped hardware pages.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -16,31 +15,22 @@ using System.Runtime.CompilerServices;
 namespace BBC.CPU
 {
 
-    /// <summary>
-    /// Provides a generic 64 KiB 6502 bus with optional host-defined mapping hooks.
-    /// </summary>
     public class FlatMemoryBus
     {
 
-        /// <summary>Gets the backing address space.</summary>
         public byte[] Memory { get; }
 
-        /// <summary>Optional whole-address-space write hook. Return true to suppress the backing RAM write.</summary>
+        /// <summary>BBC I/O pages can consume writes instead of storing bytes in RAM.</summary>
         public Func<ulong, byte, bool>? OnWrite;
 
-        /// <summary>Optional whole-address-space read hook. Receives the backing RAM value and returns the CPU-visible value.</summary>
+        /// <summary>BBC I/O reads may return live device state rather than the backing RAM byte.</summary>
         public Func<ulong, byte, byte>? OnRead;
 
-        /// <summary>Initializes a new FlatMemoryBus instance.</summary>
-        /// <param name="size">The bus size in bytes. Defaults to the 6502 64 KiB address space.</param>
         public FlatMemoryBus(int size = 0x10000)
         {
             Memory = new byte[size];
         }
 
-        /// <summary>Reads one byte from the flat CPU-visible memory array.</summary>
-        /// <param name="addr">The emulated address to access.</param>
-        /// <returns>The byte value read from the bus.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public byte ReadByte(ulong addr)
         {
@@ -49,9 +39,6 @@ namespace BBC.CPU
             return OnRead is null ? value : OnRead(addr, value);
         }
 
-        /// <summary>Writes one byte into the flat CPU-visible memory array.</summary>
-        /// <param name="addr">The emulated address to access.</param>
-        /// <param name="value">The value to write to the bus.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void WriteByte(ulong addr, byte value)
         {
@@ -62,18 +49,12 @@ namespace BBC.CPU
             Memory[addr] = value;
         }
 
-        /// <summary>Reads a little-endian 16-bit value from the flat memory bus.</summary>
-        /// <param name="addr">The emulated address to access.</param>
-        /// <returns>The numeric value produced by the operation.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ulong ReadWord(ulong addr)
         {
             return (ulong)(ReadByte(addr) | (ReadByte((addr + 1) & 0xFFFF) << 8));
         }
 
-        /// <summary>Copies data into the backing memory.</summary>
-        /// <param name="startAddr">The first emulated address to fill.</param>
-        /// <param name="data">The bytes to copy into memory.</param>
         public void Load(ulong startAddr, ReadOnlySpan<byte> data)
         {
             for (int i = 0; i < data.Length; i++)
