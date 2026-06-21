@@ -63,6 +63,9 @@ namespace BBC
         private bool running;
         private bool disposed;
 
+        /// <summary>Gets or sets whether generated audio may throttle emulation to real-time playback.</summary>
+        public bool ThrottleToPlayback { get; set; } = true;
+
         /// <summary>Initializes a new sound generator.</summary>
         public SN76489_Sound()
         {
@@ -370,7 +373,7 @@ namespace BBC
         /// <summary>Waits until the queued audio buffer has room for more generated samples.</summary>
         private void WaitForGeneratedHeadroom()
         {
-            if (audioDevice == 0 || !Volatile.Read(ref running))
+            if (!ThrottleToPlayback || audioDevice == 0 || !Volatile.Read(ref running))
                 return;
 
             lock (syncRoot)

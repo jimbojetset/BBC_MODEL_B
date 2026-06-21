@@ -40,6 +40,7 @@ namespace BBC
 
             emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
             emulator.Cpu.SpeedScale = options.SpeedScale;
+            emulator.Sound.ThrottleToPlayback = options.SpeedScale <= 1.0;
 
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
