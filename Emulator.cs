@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC
-// File:        Program.cs
+// File:        Emulator.cs
 // Description: Application entry point and main BBC Model B emulator host,
 //              wiring CPU, memory, ROMs, video, sound, filing, and input.
 // Author:      James Booth
@@ -17,7 +17,10 @@ using System.Text;
 
 namespace BBC
 {
-    internal static class Program
+    /// <summary>
+    /// Coordinates the main BBC Model B emulator components and command-line startup.
+    /// </summary>
+    public sealed class Emulator : IDisposable
     {
 
         /// <summary>Runs the command-line BBC Model B emulator host.</summary>
@@ -29,7 +32,7 @@ namespace BBC
 
             if (!string.IsNullOrEmpty(options.PrintAutoLoadPath))
             {
-                DiscController8271 disc = new DiscController8271();
+                Intel8271_Disk disc = new Intel8271_Disk();
                 disc.Mount(options.PrintAutoLoadPath);
                 Console.WriteLine(disc.AutoLoadCommand ?? string.Empty);
                 return;
@@ -169,13 +172,6 @@ namespace BBC
         }
 
         private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath, double SpeedScale, bool AutoRunDisc);
-    }
-
-    /// <summary>
-    /// Coordinates the main BBC Model B emulator components.
-    /// </summary>
-    public sealed class Emulator : IDisposable
-    {
         public const ushort RamStart = 0x0000;
         public const ushort RamEnd = 0x7FFF;
         public const ushort SidewaysRomStart = 0x8000;
@@ -252,9 +248,9 @@ namespace BBC
         private readonly SystemVia systemVia;
         private readonly UserVia userVia = new UserVia();
         private readonly CassetteInterface cassetteInterface = new CassetteInterface();
-        private readonly Adc7002 adc = new Adc7002();
+        private readonly uPD7002_ADC adc = new uPD7002_ADC();
         private readonly HostFilingSystem hostFilingSystem;
-        private readonly DiscController8271 discController;
+        private readonly Intel8271_Disk discController;
         private JoystickState joystickState;
         private bool mouseEnabled;
         private bool amxMouseRomLoaded;
@@ -275,10 +271,10 @@ namespace BBC
         public CPU_6502 Cpu { get; }
 
         /// <summary>Gets the video display controller.</summary>
-        public Video Video { get; }
+        public HD6845_Video Video { get; }
 
         /// <summary>Gets the SN76489 sound generator.</summary>
-        public Sound Sound { get; }
+        public SN76489_Sound Sound { get; }
 
         /// <summary>Gets the SDL display surface.</summary>
         public Display? Display { get; private set; }
@@ -298,7 +294,7 @@ namespace BBC
         /// <summary>Initializes a new emulator coordinator.</summary>
         public Emulator()
         {
-            Sound = new Sound();
+            Sound = new SN76489_Sound();
             systemVia = new SystemVia(Sound);
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
@@ -306,8 +302,8 @@ namespace BBC
             hostFilingSystem.BreakCommandObserved = QueueBreakContinuation;
             hostFilingSystem.DiscImageLoadActivity = PulseHostDiscActivityLed;
             hostFilingSystem.MouseEnabledChanged = SetMouseEnabled;
-            discController = new DiscController8271();
-            Video = new Video(Memory.Memory);
+            discController = new Intel8271_Disk();
+            Video = new HD6845_Video(Memory.Memory);
             systemVia.ExternalVsyncLineEnabled = true;
             Video.VsyncChanged += systemVia.SetVsyncLine;
             systemVia.ScreenMemoryWindowChanged += Video.SetScreenMemoryWindow;
@@ -1713,7 +1709,7 @@ namespace BBC
         /// <returns>The value read from emulated memory or device state.</returns>
         private byte ReadSheila(ushort address)
         {
-            if (Video.IsSheilaAddress(address))
+            if (HD6845_Video.IsSheilaAddress(address))
                 return Video.ReadSheila(address);
 
             if (SystemVia.IsAddress(address))
@@ -1730,13 +1726,13 @@ namespace BBC
                 return value;
             }
 
-            if (DiscController8271.IsAddress(address))
+            if (Intel8271_Disk.IsAddress(address))
                 return discController.Read(address);
 
             if (CassetteInterface.IsAddress(address))
                 return cassetteInterface.Read(address);
 
-            if (Adc7002.IsAddress(address))
+            if (uPD7002_ADC.IsAddress(address))
                 return adc.Read(address);
 
             return address switch
@@ -1751,7 +1747,7 @@ namespace BBC
         /// <param name="value">The input value.</param>
         private void WriteSheila(ushort address, byte value)
         {
-            if (Video.IsSheilaAddress(address))
+            if (HD6845_Video.IsSheilaAddress(address))
             {
                 Video.WriteSheila(address, value);
                 return;
@@ -1771,7 +1767,7 @@ namespace BBC
                 return;
             }
 
-            if (DiscController8271.IsAddress(address))
+            if (Intel8271_Disk.IsAddress(address))
             {
                 discController.Write(address, value);
                 return;
@@ -1783,7 +1779,7 @@ namespace BBC
                 return;
             }
 
-            if (Adc7002.IsAddress(address))
+            if (uPD7002_ADC.IsAddress(address))
             {
                 adc.Write(address, value);
                 return;

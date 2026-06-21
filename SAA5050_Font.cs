@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC
-// File:        Saa5050Font.cs
+// File:        SAA5050_Font.cs
 // Description: Mullard SAA5050 Mode 7 teletext font data and glyph renderer.
 // Author:      James Booth
 // Created:     2026
@@ -16,7 +16,7 @@ namespace BBC
     /// <summary>
     /// Draws the SAA5050 English teletext alphanumeric character set used by BBC Micro MODE 7.
     /// </summary>
-    internal static class Saa5050Font
+    internal static class SAA5050_Font
     {
         private const int GlyphWidth = 5;
         private const int SourceCellWidth = 6;

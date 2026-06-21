@@ -33,7 +33,7 @@ namespace BBC
         private const int Timer1ReloadExtraCycles = 1;
         private const int Timer1LoadExtraCycles = 128;
         private const byte InterruptSummary = 0x80;
-        private readonly Sound sound;
+        private readonly SN76489_Sound sound;
         private readonly byte[] registers = new byte[16];
         private readonly bool[] pressedKeys = new bool[128];
         private byte addressableLatch = 0xFF;
@@ -58,7 +58,7 @@ namespace BBC
 
         /// <summary>Initializes a new system VIA shim.</summary>
         /// <param name="sound">The sound generator connected to the VIA slow bus.</param>
-        public SystemVia(Sound sound)
+        public SystemVia(SN76489_Sound sound)
         {
             this.sound = sound ?? throw new ArgumentNullException(nameof(sound));
         }

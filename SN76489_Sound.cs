@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC
-// File:        Sound.cs
+// File:        SN76489_Sound.cs
 // Description: BBC Model B SN76489 sound generator emulation with SDL audio
 //              mixing and playback.
 // Author:      James Booth
@@ -20,7 +20,7 @@ namespace BBC
     /// Emulates the BBC Micro SN76489 sound chip. BBC MOS SOUND/ENVELOPE queues are
     /// handled by the OS ROM; this class only consumes bytes written through the VIA slow bus.
     /// </summary>
-    public sealed class Sound : IDisposable
+    public sealed class SN76489_Sound : IDisposable
     {
         private const int ClockHz = 4_000_000;
         private const int CpuClockHz = 2_000_000;
@@ -64,7 +64,7 @@ namespace BBC
         private bool disposed;
 
         /// <summary>Initializes a new sound generator.</summary>
-        public Sound()
+        public SN76489_Sound()
         {
             Reset();
         }

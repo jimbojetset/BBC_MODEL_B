@@ -249,17 +249,17 @@ Screenshots/
 ROMS/                 BBC OS, BASIC, DFS, and optional AMX ROM images
 Software/             DFS disc images used for testing and play
 Screenshots/          Runtime screenshot output
-Adc7002.cs            BBC uPD7002 analogue-to-digital converter
+uPD7002_ADC.cs        BBC uPD7002 analogue-to-digital converter
 CassetteInterface.cs  Cassette interface model
-DiscController8271.cs Acorn 8271 DFS disc controller model
+Intel8271_Disk.cs     Acorn 8271 DFS disc controller model
 Display.cs            SDL window, rendering, keyboard, mouse, joystick input
 HostFilingSystem.cs   Host-backed file/disc helper and OSCLI interception
-Program.cs            Emulator coordinator, memory map, CLI, firmware hooks
-Saa5050Font.cs        Mode 7 teletext font data
-Sound.cs              Sound generator support
+Emulator.cs           Emulator coordinator, memory map, CLI, firmware hooks
+SAA5050_Font.cs       Mode 7 teletext font data
+SN76489_Sound.cs     Sound generator support
 SystemVia.cs          BBC system VIA
 UserVia.cs            BBC user VIA, AMX mouse, switched joystick input
-Video.cs              Video/ULA/CRTC rendering
+HD6845_Video.cs       Video/ULA/CRTC rendering
 ```
 
 ## Compatibility Notes

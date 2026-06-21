@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC_MODEL_B
-// File:        Adc7002.cs
+// File:        uPD7002_ADC.cs
 // Description: Minimal NEC uPD7002 4-channel analogue-to-digital converter
 //              fitted to the BBC Micro Model B for joystick/paddle input.
 //              Mapped at SHEILA &FEC0-&FEC3.
@@ -18,7 +18,7 @@ namespace BBC
     /// Provides 8/10/12-bit conversion of four analogue channels with a programmable
     /// completion delay and an EOC line that can drive System VIA CB1 (bit 4 of IFR).
     /// </summary>
-    public sealed class Adc7002
+    public sealed class uPD7002_ADC
     {
         private const ushort BaseAddress = 0xFEC0;
         private const ushort EndAddress = 0xFEC3;

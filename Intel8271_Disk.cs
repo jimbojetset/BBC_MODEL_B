@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC
-// File:        DiscController8271.cs
+// File:        Intel8271_Disk.cs
 // Description: Intel 8271-compatible floppy disc controller backed by DFS
 //              SSD/DSD images, including command timing and drive activity.
 // Author:      James Booth
@@ -19,7 +19,7 @@ namespace BBC
     /// <summary>
     /// Provides an 8271 FDC surface for Acorn DFS ROM access to SSD/DSD images.
     /// </summary>
-    public sealed class DiscController8271
+    public sealed class Intel8271_Disk
     {
         private const int SectorSize = 256;
         private const int SectorsPerTrack = 10;
@@ -72,7 +72,7 @@ namespace BBC
         private string? tracePath;
 
         /// <summary>Initializes a new 8271-compatible disc controller.</summary>
-        public DiscController8271()
+        public Intel8271_Disk()
         {
         }
 

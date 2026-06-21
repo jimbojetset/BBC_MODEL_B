@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC
-// File:        Video.cs
+// File:        HD6845_Video.cs
 // Description: BBC Model B video subsystem, combining HD6845-compatible CRTC
 //              timing, Video ULA modes/palette, teletext, and framebuffer output.
 // Author:      James Booth
@@ -17,7 +17,7 @@ namespace BBC
     /// <summary>
     /// Tracks CRTC/Video ULA state and renders BBC video memory into the SDL display framebuffer.
     /// </summary>
-    public sealed class Video
+    public sealed class HD6845_Video
     {
         private enum CrtcInterlaceMode
         {
@@ -178,7 +178,7 @@ namespace BBC
 
         /// <summary>Initializes a new video component.</summary>
         /// <param name="memory">The emulator's 64 KiB CPU-visible memory.</param>
-        public Video(byte[] memory)
+        public HD6845_Video(byte[] memory)
         {
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
             ResetBeamState();
@@ -1611,9 +1611,9 @@ namespace BBC
 
                 return glyphSet switch
                 {
-                    GlyphSet.Graphics => Saa5050Font.GetMosaicRowMask(data, scanline, separated: false),
-                    GlyphSet.Separated => Saa5050Font.GetMosaicRowMask(data, scanline, separated: true),
-                    _ => Saa5050Font.GetAlphanumericRowMask(data, scanline, horizontalExpand)
+                    GlyphSet.Graphics => SAA5050_Font.GetMosaicRowMask(data, scanline, separated: false),
+                    GlyphSet.Separated => SAA5050_Font.GetMosaicRowMask(data, scanline, separated: true),
+                    _ => SAA5050_Font.GetAlphanumericRowMask(data, scanline, horizontalExpand)
                 };
             }
 
