@@ -39,8 +39,7 @@ namespace BBC
             }
 
             emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
-            emulator.Cpu.SpeedScale = options.SpeedScale;
-            emulator.Sound.ThrottleToPlayback = options.SpeedScale <= 1.0;
+            emulator.ConfigureStartupSpeedScale(options.SpeedScale);
 
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
@@ -260,6 +259,8 @@ namespace BBC
         private byte lastMouseY;
         private long keyboardInputEnabledAtTicks;
         private long hostDiscActivityLedUntilTicks;
+        private double requestedStartupSpeedScale = 1.0;
+        private bool startupSpeedScaleApplied = true;
         private int capsLockTapPulseCycles;
         private bool capsLockTapPressed;
         private bool hostCapsLockState;
@@ -319,6 +320,16 @@ namespace BBC
                 systemVia.SignalAdcEndOfConversion(eocActive);
                 UpdateCpuIrqLine();
             };
+        }
+
+        /// <summary>Stores the requested startup speed while the MOS boots at normal speed.</summary>
+        /// <param name="speedScale">The speed scale to apply after the OS is ready for input.</param>
+        public void ConfigureStartupSpeedScale(double speedScale)
+        {
+            requestedStartupSpeedScale = Math.Clamp(speedScale, 0.01, 4.0);
+            startupSpeedScaleApplied = requestedStartupSpeedScale == 1.0;
+            Cpu.SpeedScale = 1.0;
+            Sound.ThrottleToPlayback = true;
         }
 
         /// <summary>Initializes memory, display, ROMs, and CPU reset state.</summary>
@@ -385,6 +396,7 @@ namespace BBC
                 nextFrame += frameTicks;
 
                 long now = Stopwatch.GetTimestamp();
+                ApplyStartupSpeedScaleIfReady(now);
                 if (nextFrame < now - frameTicks * 4)
                     nextFrame = now + frameTicks;
             }
@@ -406,7 +418,9 @@ namespace BBC
 
             while (Stopwatch.GetTimestamp() < deadline)
             {
-                if (Stopwatch.GetTimestamp() >= keyboardInputEnabledAtTicks)
+                long now = Stopwatch.GetTimestamp();
+                ApplyStartupSpeedScaleIfReady(now);
+                if (now >= keyboardInputEnabledAtTicks)
                 {
                     QueuePendingBootScriptLine();
                     DrainQueuedKeyboardInput();
@@ -535,6 +549,18 @@ namespace BBC
                 cpuThread.Join(TimeSpan.FromSeconds(2));
 
             cpuThread = null;
+        }
+
+        /// <summary>Applies the requested startup speed once the OS is ready for keyboard input.</summary>
+        /// <param name="now">The current stopwatch tick count.</param>
+        private void ApplyStartupSpeedScaleIfReady(long now)
+        {
+            if (startupSpeedScaleApplied || now < keyboardInputEnabledAtTicks)
+                return;
+
+            Cpu.SpeedScale = requestedStartupSpeedScale;
+            Sound.ThrottleToPlayback = requestedStartupSpeedScale <= 1.0;
+            startupSpeedScaleApplied = true;
         }
 
         /// <summary>Resets video, sound, VIA, disc, ADC, and host input state for a BBC reset.</summary>

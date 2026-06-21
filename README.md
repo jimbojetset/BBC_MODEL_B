@@ -85,6 +85,7 @@ dotnet run --project BBC_MODEL_B.csproj -- --speed 0.5 Software/Elite.ssd
 
 --headless-ms N    Run without a window for N milliseconds.
 --speed VALUE      CPU speed scale, for example 0.5 or 50%.
+                   The OS starts at normal speed, then the scale applies once input is enabled.
 --print-autoload   Print the inferred boot command for a DFS disc image.
 ```
 
