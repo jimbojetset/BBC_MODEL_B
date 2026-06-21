@@ -7,8 +7,8 @@
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root
 // Copyright:   (c) 2024-2026 James Booth
-// Notice:      Commodore 64 and related ROMs are property of their respective
-//              rights holders. This emulator is for educational purposes only.
+// Notice:      BBC Micro ROMs are property of their respective rights holders.
+//              This emulator is for educational purposes only.
 // ============================================================================
 
 using System.Collections.Concurrent;
@@ -22,7 +22,7 @@ namespace BBC.CPU
 
     /// <summary>
     /// Emulates an NMOS 6502-compatible CPU core, including opcode dispatch, interrupt processing, reset handling, cycle accounting, and pacing.
-    /// Memory access is routed through <see cref="ICpuBus"/> so the core can also run with non-C64 6502 memory maps.
+    /// Memory access is routed through <see cref="ICpuBus"/> so the core can run with BBC hardware and other 6502 memory maps.
     /// </summary>
     public class CPU_6502
     {
@@ -46,8 +46,8 @@ namespace BBC.CPU
         public Registers registers = new Registers();
 
         /// <summary>
-        /// Compatibility C64 memory bus used by the existing emulator host.
-        /// Non-C64 hosts should provide their own ICpuBus via the Bus property or constructor.
+        /// Legacy flat memory bus used when no host-specific bus is supplied.
+        /// Emulator hosts should provide their own ICpuBus via the Bus property or constructor.
         /// </summary>
         public FlatMemoryBus memory = new FlatMemoryBus(0x10000);
         private ICpuBus bus = null!;
@@ -59,7 +59,7 @@ namespace BBC.CPU
         private bool jamReported;
         private ulong jamAddress;
 
-        private readonly int clockFreq = 2000000; //1MHz
+        private readonly int clockFreq = 2000000;
 
         private readonly ConcurrentQueue<ulong> IRQ_Buffer = new ConcurrentQueue<ulong>();
         private readonly ConcurrentQueue<ulong> NMI_Buffer = new ConcurrentQueue<ulong>();
@@ -101,7 +101,6 @@ namespace BBC.CPU
         /// </summary>
         public Func<ulong, int>? OnAccessStretch;
 
-        // NMOS 6502 SEI/CLI/PLP delay: I flag change is visible only after the *next* instruction.
         private bool deferredIFlagPending;
         private bool deferredIFlagValue;
         private bool iFlagBeforeInstruction;
@@ -266,8 +265,6 @@ namespace BBC.CPU
                             else
                                 ProcessNMI();
                         }
-                        // NMOS interrupt timing: gate IRQ on the I-flag value seen at the START of
-                        // the previous instruction (one-instruction delay for SEI/CLI/PLP).
                         bool irqGate = !iFlagBeforeInstruction;
                         while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
                         {
@@ -284,7 +281,6 @@ namespace BBC.CPU
 
                         if (!handledByHost)
                         {
-                            // Snapshot I before this instruction so the next boundary uses the delayed value (NMOS SEI/CLI/PLP).
                             iFlagBeforeInstruction = registers.Flags.I;
                             Execute(GetNextByteInstruction());
                             if (deferredIFlagPending)
@@ -295,8 +291,6 @@ namespace BBC.CPU
                         }
                         else
                         {
-                            // Host handled the instruction: no opcode boundary was crossed by the CPU,
-                            // but interrupt visibility still tracks the current I value.
                             iFlagBeforeInstruction = registers.Flags.I;
                         }
 
@@ -386,7 +380,7 @@ namespace BBC.CPU
         }
 
         /// <summary>Decodes and executes one 6502 opcode, including cycle accounting.</summary>
-        /// <param name="opcode">The 6510 opcode byte to execute.</param>
+        /// <param name="opcode">The 6502 opcode byte to execute.</param>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public void Execute(byte opcode)
         {
@@ -1104,9 +1098,9 @@ namespace BBC.CPU
 
                 #region Illegal / undocumented opcodes
 
-                /// C64 game code uses these heavily (LAX, DCP, SLO, ISC, SAX,
-                /// etc.) for tighter inner loops. Without them we silently
-                /// skip the instruction and the game's logic drifts off.
+                /// Some 6502 software uses these heavily (LAX, DCP, SLO, ISC, SAX,
+                /// etc.) for tighter inner loops. Without them the CPU would silently
+                /// skip the instruction and program logic would drift off.
 
                 /// ---- LAX: load A and X from memory together. ----
                 case 0xA3: LAX(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 6; break;
@@ -1270,7 +1264,6 @@ namespace BBC.CPU
             }
 
             int beforeCycles = cyclesThisOperation;
-            // NMOS interrupt timing: gate IRQ on the I-flag value seen at the START of the previous instruction.
             bool irqGate = !iFlagBeforeInstruction;
             while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
             {
@@ -2062,9 +2055,8 @@ namespace BBC.CPU
         private void PLP()
         {
             byte value = PopByteFromStack();
-            // PLP changes I with one-instruction delay, like SEI/CLI. Mask out bit 2 first then schedule it.
             bool newI = (value & 0x04) != 0;
-            registers.Flags.SetFlagsFromByte((byte)(value & ~0x04), 0xCB); // ignore bits 4,5 and I (bit 2)
+            registers.Flags.SetFlagsFromByte((byte)(value & ~0x04), 0xCB);
             ScheduleIFlag(newI);
             cyclesThisOperation += 4;
         }
@@ -3425,9 +3417,8 @@ namespace BBC.CPU
         {
             PushByteToStack((byte)((registers.PC >> 8) & 0xFF));
             PushByteToStack((byte)(registers.PC & 0xFF));
-            /// IRQ push: B bit (4) clear, reserved bit (5) set. The KERNAL
-            /// IRQ handler tests this exact bit on the stack to decide
-            /// whether to dispatch via $0314 (IRQ) or $0316 (BRK).
+            /// IRQ push: B bit (4) clear, reserved bit (5) set. Firmware
+            /// IRQ and BRK handlers can inspect this exact bit pattern on the stack.
             PushByteToStack((byte)((registers.P & 0xEF) | 0x20));
             registers.Flags.I = true;
             registers.PC = (ushort)(ReadByteFromMemory(value) | (ReadByteFromMemory(value + 1) << 8));

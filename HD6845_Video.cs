@@ -64,14 +64,14 @@ namespace BBC
         private const byte UlaClockHigh = 0x10;
         private static readonly uint[] BbcColours =
         [
-            0xFF000000, // black
-            0xFFFF0000, // red
-            0xFF00FF00, // green
-            0xFFFFFF00, // yellow
-            0xFF0000FF, // blue
-            0xFFFF00FF, // magenta
-            0xFF00FFFF, // cyan
-            0xFFFFFFFF  // white
+            0xFF000000,
+            0xFFFF0000,
+            0xFF00FF00,
+            0xFFFFFF00,
+            0xFF0000FF,
+            0xFFFF00FF,
+            0xFF00FFFF,
+            0xFFFFFFFF
         ];
         private static readonly byte[] CrtcRegisterMasks =
         [
@@ -355,8 +355,6 @@ namespace BBC
                     int horizontalSyncWidth = value & 0x0F;
                     int verticalSyncWidth = (value >> 4) & 0x0F;
 
-                    // The HD6845 treats VSW=0 as 16 raster periods. HSW=0 is
-                    // documented as invalid, so use the shortest safe pulse.
                     beamHpulseWidth = Math.Max(1, horizontalSyncWidth);
                     beamVpulseWidth = verticalSyncWidth == 0 ? 16 : verticalSyncWidth;
                     break;
@@ -559,10 +557,6 @@ namespace BBC
         /// <returns>The computed value.</returns>
         private int GetBeamDisplayEnablePosition()
         {
-            // The extra teletext offset is part of the BBC's Video ULA/SAA5050
-            // fetch pipeline, not an HD6845 DISPTMG skew. Keep it separate from
-            // the R8 display-skew decode above so CRTC timing fixes do not
-            // accidentally remove BBC-specific compensation.
             return beamDisplayEnableSkew + (IsBeamTeletextMode ? 2 : 0);
         }
 

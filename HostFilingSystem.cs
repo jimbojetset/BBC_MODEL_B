@@ -225,8 +225,6 @@ namespace BBC
 
             Trace($"OSCLI \"{command}\"");
 
-            // BBC shorthand: '*/FILE' is equivalent to '*RUN FILE'. Rewrite once
-            // so the rest of the dispatcher (TryParseRunCommand etc.) just works.
             if (command.StartsWith('/'))
                 command = "RUN " + command[1..].TrimStart();
 
@@ -513,25 +511,15 @@ namespace BBC
             if (!TryParseFxArguments(arguments, out int a, out int x, out int y))
                 return false;
 
-            // OSBYTE 16 selects how many analogue (ADC) channels the MOS samples in the
-            // background. The µPD7002 ADC is not emulated (ADVAL is serviced directly via
-            // the OSBYTE &80 intercept), so MOS's ADC sampling must never be started.
-            // Letting *FX 16 reach the real MOS drives the absent ADC and breaks games
-            // such as Frogger (it drops out to BASIC). Swallow it as a no-op.
             if ((a & 0xFF) == 0x10)
                 return true;
 
             if ((a & 0xFF) == 0x8A)
             {
-                // Soft-key insertion is emulated at the host level so queued text
-                // reaches the emulated keyboard buffer.
                 InsertSoftKey((byte)y);
                 return true;
             }
 
-            // Parsed *FX commands are direct OSBYTE calls. Transfer to OSBYTE with the
-            // original OSCLI return address still on the stack, so compact forms such
-            // as *FX9,5 get real MOS side effects without relying on MOS OSCLI parsing.
             cpu.registers.A = (byte)a;
             cpu.registers.X = (byte)x;
             cpu.registers.Y = (byte)y;

@@ -185,9 +185,6 @@ namespace BBC
         public const int BasicRomBank = 15;
         public const int DfsRomBank = 14;
         public const int AmxMouseRomBank = 13;
-        // Banks 4..7 are sideways RAM in this configuration. Most enhanced BBC setups
-        // (Watford SRAM, Aries B20, Acorn 1.20) populate the upper four banks (12..15)
-        // with ROMs and leave the lower banks free for RAM. We mirror that arrangement.
         public const int SidewaysRamFirstBank = 4;
         public const int SidewaysRamLastBank = 7;
         public const int CpuClockHz = 2_000_000;
@@ -446,7 +443,6 @@ namespace BBC
         {
             if (IsDiscImagePath(path))
             {
-                // Persist any pending writes from the previously mounted image before swapping.
                 if (discController.HasMountedDisc && discController.ImageDirty)
                 {
                     if (discController.Flush())
@@ -731,8 +727,6 @@ namespace BBC
 
             if (Cpu.registers.A == 0x80)
             {
-                // Negative ADVAL channels report MOS sound-buffer state. Let the OS handle
-                // those; the host shortcut is only for the analogue joystick/fire channels.
                 if ((Cpu.registers.X & 0x80) != 0)
                     return false;
 
@@ -745,12 +739,6 @@ namespace BBC
 
             if (Cpu.registers.A == 0x10)
             {
-                // OSBYTE 16 selects how many analogue (ADC) channels the MOS samples.
-                // The µPD7002 ADC is not emulated; ADVAL is serviced directly via the
-                // OSBYTE &80 intercept above, so MOS's background ADC sampling must not
-                // be started. Letting this reach the real MOS drives the absent ADC and
-                // breaks games such as Frogger. Handle it as a clean no-op (X = previous
-                // channel count, reported as 0).
                 Cpu.registers.X = 0;
                 ReturnFromFirmwareSubroutine();
                 return true;
@@ -764,8 +752,6 @@ namespace BBC
 
             if (Cpu.registers.A == 0x8C)
             {
-                // The disc image remains mounted even when tape-oriented loaders
-                // issue the cassette-speed OSBYTE.
                 ReturnFromFirmwareSubroutine();
                 return true;
             }
@@ -869,68 +855,68 @@ namespace BBC
         {
             internalKey = code switch
             {
-                0xFF => 0x00, // SHIFT
-                0xFE => 0x01, // CTRL
-                0xEF => 0x10, // Q
-                0xDE => 0x21, // W
-                0xDD => 0x22, // E
-                0xDC => 0x23, // T
-                0xDB => 0x24, // 7
-                0xDA => 0x25, // I
-                0xD9 => 0x26, // 9
-                0xD8 => 0x27, // 0
-                0xE7 => 0x28, // #
-                0xCF => 0x30, // 1
-                0xCE => 0x31, // 2
-                0xCD => 0x32, // D
-                0xCC => 0x33, // R
-                0xCB => 0x34, // 6
-                0xCA => 0x35, // U
-                0xC9 => 0x36, // O
-                0xC8 => 0x37, // P
-                0xC7 => 0x38, // [
-                0xBF => 0x40, // CAPS LOCK
-                0xBE => 0x41, // A
-                0xBD => 0x42, // X
-                0xBC => 0x43, // F
-                0xBB => 0x44, // Y
-                0xBA => 0x45, // J
-                0xB9 => 0x46, // K
-                0xB8 => 0x47, // @
-                0xB7 => 0x48, // :
-                0xB6 => 0x49, // RETURN
-                0xAE => 0x51, // S
-                0xAD => 0x52, // C
-                0xAC => 0x53, // G
-                0xAB => 0x54, // H
-                0xAA => 0x55, // N
-                0xA9 => 0x56, // L
-                0xA8 => 0x57, // ;
-                0xA7 => 0x58, // ]
-                0xA6 => 0x59, // DELETE
-                0x9F => 0x60, // TAB
-                0x9E => 0x61, // Z
-                0x9D => 0x62, // SPACE
-                0x9C => 0x63, // V
-                0x9B => 0x64, // B
-                0x9A => 0x65, // M
-                0x99 => 0x66, // ,
-                0x98 => 0x67, // .
-                0x97 => 0x68, // /
-                0x8F => 0x70, // ESCAPE
-                0xDF => 0x20, // f0
-                0x8E => 0x71, // f1
-                0x8D => 0x72, // f2
-                0x8C => 0x73, // f3
-                0xEB => 0x14, // f4
-                0x8B => 0x74, // f5
-                0x8A => 0x75, // f6
-                0xE9 => 0x16, // f7
-                0x89 => 0x76, // f8
-                0x88 => 0x77, // f9
-                0xE8 => 0x17, // -
-                0xE6 => 0x18, // ^
-                0x87 => 0x78, // backslash
+                0xFF => 0x00,
+                0xFE => 0x01,
+                0xEF => 0x10,
+                0xDE => 0x21,
+                0xDD => 0x22,
+                0xDC => 0x23,
+                0xDB => 0x24,
+                0xDA => 0x25,
+                0xD9 => 0x26,
+                0xD8 => 0x27,
+                0xE7 => 0x28,
+                0xCF => 0x30,
+                0xCE => 0x31,
+                0xCD => 0x32,
+                0xCC => 0x33,
+                0xCB => 0x34,
+                0xCA => 0x35,
+                0xC9 => 0x36,
+                0xC8 => 0x37,
+                0xC7 => 0x38,
+                0xBF => 0x40,
+                0xBE => 0x41,
+                0xBD => 0x42,
+                0xBC => 0x43,
+                0xBB => 0x44,
+                0xBA => 0x45,
+                0xB9 => 0x46,
+                0xB8 => 0x47,
+                0xB7 => 0x48,
+                0xB6 => 0x49,
+                0xAE => 0x51,
+                0xAD => 0x52,
+                0xAC => 0x53,
+                0xAB => 0x54,
+                0xAA => 0x55,
+                0xA9 => 0x56,
+                0xA8 => 0x57,
+                0xA7 => 0x58,
+                0xA6 => 0x59,
+                0x9F => 0x60,
+                0x9E => 0x61,
+                0x9D => 0x62,
+                0x9C => 0x63,
+                0x9B => 0x64,
+                0x9A => 0x65,
+                0x99 => 0x66,
+                0x98 => 0x67,
+                0x97 => 0x68,
+                0x8F => 0x70,
+                0xDF => 0x20,
+                0x8E => 0x71,
+                0x8D => 0x72,
+                0x8C => 0x73,
+                0xEB => 0x14,
+                0x8B => 0x74,
+                0x8A => 0x75,
+                0xE9 => 0x16,
+                0x89 => 0x76,
+                0x88 => 0x77,
+                0xE8 => 0x17,
+                0xE6 => 0x18,
+                0x87 => 0x78,
                 _ => 0xFF
             };
 
@@ -1318,8 +1304,6 @@ namespace BBC
         /// <summary>Refreshes ADC channels after related emulator state changes.</summary>
         private void UpdateAdcChannels()
         {
-            // µPD7002 channels follow the BBC hardware convention: analogue axes live on
-            // channels 0-3. The MOS ADVAL(0) fire shortcut remains handled separately.
             GetJoystickAxisValues(out ushort xAxis, out ushort yAxis);
             adc.SetChannel(0, xAxis);
             adc.SetChannel(1, yAxis);
@@ -1375,10 +1359,6 @@ namespace BBC
         /// <summary>Handles host Escape input as either BREAK cancellation or a BBC Escape condition.</summary>
         private void HandleEscapeKeyPress()
         {
-            // OSBYTE 229 (OS variable $0275) selects the ESCAPE key behaviour: when it is
-            // non-zero the key acts as an ordinary key that generates ASCII 27, otherwise it
-            // raises an escape condition. Games such as YieArKungFu issue *FX 229,1 so they
-            // can read ESCAPE in-game instead of breaking back into the BASIC loader.
             if (Memory.Memory[EscapeKeyStatus] != 0)
                 pendingKeyboardInput.Enqueue(27);
             else
@@ -1681,7 +1661,6 @@ namespace BBC
 
                 if (addr >= SidewaysRomStart && addr <= SidewaysRomEnd)
                 {
-                    // Sideways RAM: writes are accepted only when the currently paged-in bank is RAM.
                     if (IsSidewaysRamBank(selectedSidewaysRom))
                     {
                         int bankOffset = selectedSidewaysRom * RomSize;

@@ -7,15 +7,15 @@
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
 // Copyright:   (c) 2024-2026 James Booth
-// Notice:      Commodore 64 and related ROMs are property of their respective
-//              rights holders. This emulator is for educational purposes only.
+// Notice:      BBC Micro ROMs are property of their respective rights holders.
+//              This emulator is for educational purposes only.
 // ============================================================================
 
 namespace BBC.CPU
 {
 
     /// <summary>
-    /// Provides byte-level CPU bus access for 6502/6510-compatible processors.
+    /// Provides byte-level CPU bus access for 6502-compatible processors.
     /// </summary>
     public interface ICpuBus
     {

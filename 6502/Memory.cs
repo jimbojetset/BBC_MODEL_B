@@ -7,8 +7,8 @@
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
 // Copyright:   (c) 2024-2026 James Booth
-// Notice:      Commodore 64 and related ROMs are property of their respective
-//              rights holders. This emulator is for educational purposes only.
+// Notice:      BBC Micro ROMs are property of their respective rights holders.
+//              This emulator is for educational purposes only.
 // ============================================================================
 
 using System.Runtime.CompilerServices;
@@ -17,7 +17,7 @@ namespace BBC.CPU
 {
 
     /// <summary>
-    /// Provides a generic 64 KiB 6502 bus with no 6510 processor port or C64 banking behavior.
+    /// Provides a generic 64 KiB 6502 bus with optional host-defined mapping hooks.
     /// </summary>
     public class FlatMemoryBus : ICpuBus
     {

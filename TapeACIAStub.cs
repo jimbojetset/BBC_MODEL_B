@@ -78,9 +78,6 @@ namespace BBC
 
             serialUlaControl = value;
 
-            // The cassette motor is controlled via the serial ULA. The exact bit
-            // layout also selects serial/tape routing and cassette baud rate; for
-            // now we only preserve the observable stopped/running state.
             MotorRunning = (value & 0x80) != 0;
         }
 

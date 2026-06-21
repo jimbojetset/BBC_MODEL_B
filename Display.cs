@@ -352,7 +352,6 @@ namespace BBC
             return count;
         }
 
-
         /// <summary>Copies ARGB8888 pixels into the display framebuffer.</summary>
         /// <param name="pixels">A complete width * height frame.</param>
         public void CopyFrame(ReadOnlySpan<uint> pixels)

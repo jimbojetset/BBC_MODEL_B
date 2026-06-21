@@ -98,7 +98,6 @@ namespace BBC
             set => writeProtected = value;
         }
 
-
         /// <summary>Infers the BASIC command that should auto-run the mounted DFS image.</summary>
         public bool TransferActive => readData.Count > 0 || pendingWrite is not null;
 
@@ -229,7 +228,6 @@ namespace BBC
                 byte[] combined;
                 if (drives[2].Length > 0)
                 {
-                    // DSD: drive 0 holds side 0, drive 2 holds side 1; concatenate.
                     combined = new byte[drives[0].Length + drives[2].Length];
                     Array.Copy(drives[0], 0, combined, 0, drives[0].Length);
                     Array.Copy(drives[2], 0, combined, drives[0].Length, drives[2].Length);
@@ -518,8 +516,6 @@ namespace BBC
                     break;
 
                 case 0x23:
-                    // Format track. Games/loaders generally only use this to probe
-                    // controller capability; accept the command without modifying SSDs.
                     if (!IsDriveReady(selectedDrive))
                         SetResult(ResultDriveNotReady);
                     else

@@ -27,7 +27,6 @@ namespace BBC
         private const byte InterruptFlagTimer2 = 0x20;
         private const byte InterruptFlagVsync = 0x02;
         private const byte InterruptFlagKeyboard = 0x01;
-        // CB1 input on the system VIA carries µPD7002 EOC (negative edge = conversion complete).
         private const byte InterruptFlagAdcEoc = 0x10;
         private const int VsyncPeripheralCycles = 20_000;
         private const int Timer1ReloadExtraCycles = 1;
@@ -415,10 +414,10 @@ namespace BBC
 
             return code switch
             {
-                0 => new ScreenMemoryWindow(0x4000, 0x4000, code, 8),  // Mode 3: 16K.
-                1 => new ScreenMemoryWindow(0x6000, 0x2000, code, 4),  // Mode 6: 8K.
-                2 => new ScreenMemoryWindow(0x3000, 0x5000, code, 10), // Modes 0, 1, 2: 20K.
-                _ => new ScreenMemoryWindow(0x5800, 0x2800, code, 5)   // Modes 4, 5: 10K.
+                0 => new ScreenMemoryWindow(0x4000, 0x4000, code, 8),
+                1 => new ScreenMemoryWindow(0x6000, 0x2000, code, 4),
+                2 => new ScreenMemoryWindow(0x3000, 0x5000, code, 10),
+                _ => new ScreenMemoryWindow(0x5800, 0x2800, code, 5)
             };
         }
 

@@ -23,27 +23,22 @@ namespace BBC
         private const ushort BaseAddress = 0xFEC0;
         private const ushort EndAddress = 0xFEC3;
 
-        // Status register bits (read at &FEC0).
         private const byte StatusBusyMask = 0x80;
-        private const byte StatusNotEocMask = 0x40; // 0 = conversion complete
+        private const byte StatusNotEocMask = 0x40;
         private const byte StatusChannelMask = 0x03;
-        private const byte StatusFlag2Mask = 0x10;  // tracks bit-2 of last latched data write
-        private const byte StatusFlag3Mask = 0x20;  // tracks bit-3 of last latched data write
-        private const byte StatusPrecisionMask = 0x08; // 0 = 10-bit, 1 = 12-bit (per WD bit 3)
+        private const byte StatusFlag2Mask = 0x10;
+        private const byte StatusFlag3Mask = 0x20;
+        private const byte StatusPrecisionMask = 0x08;
 
-        // Timing: 10ms conversion in 10-bit mode, 4ms in 8-bit mode at 1MHz.
-        // Approximate to CPU cycles (2 MHz host clock).
-        private const int Conversion8BitCycles = 8000;     // ~4ms @ 2MHz
-        private const int Conversion10BitCycles = 20000;   // ~10ms @ 2MHz
+        private const int Conversion8BitCycles = 8000;
+        private const int Conversion10BitCycles = 20000;
 
-        private byte status = StatusNotEocMask; // idle, no conversion in progress
-        private ushort latchedResult; // 12-bit latched value; high byte at &FEC1, low byte at &FEC2
+        private byte status = StatusNotEocMask;
+        private ushort latchedResult;
         private int conversionCountdown;
         private byte selectedChannel;
         private bool tenBitMode;
 
-        // Channel inputs are 16-bit unsigned values (0x0000..0xFFFF) where 0x8000 is centre,
-        // matching the convention used by ADVAL.
         private readonly ushort[] channels = new ushort[4] { 0x8000, 0x8000, 0x8000, 0x8000 };
 
         /// <summary>Raised when an EOC transition occurs (true = conversion complete).</summary>
@@ -97,7 +92,7 @@ namespace BBC
                 case 1:
                     return (byte)((latchedResult >> 8) & 0xFF);
                 case 2:
-                    return (byte)(latchedResult & 0xF0); // low nibble of 12-bit field is zero
+                    return (byte)(latchedResult & 0xF0);
                 default:
                     return 0;
             }
@@ -111,11 +106,9 @@ namespace BBC
             if ((address & 0x03) != 0)
                 return;
 
-            // Data latch (write at &FEC0): bit 0/1 = channel, bit 3 = 10/8 bit, bits 2/3 also tracked in status.
             selectedChannel = (byte)(value & 0x03);
             tenBitMode = (value & 0x08) != 0;
 
-            // Begin a new conversion: BUSY=1, NOT-EOC=1.
             status = (byte)(StatusBusyMask | StatusNotEocMask | selectedChannel);
             if (tenBitMode) status |= StatusPrecisionMask;
             if ((value & 0x04) != 0) status |= StatusFlag2Mask;
@@ -130,16 +123,10 @@ namespace BBC
         {
             ushort sample = channels[selectedChannel & 0x03];
 
-            // µPD7002 produces a result where the MSB is the sign-corrected value.
-            // ADVAL convention has 0x8000 as centre; the chip itself outputs 0x0000..0xFFFF
-            // such that the MSB byte at &FEC1 is the most-significant 8 bits. In 8-bit mode
-            // only the top 8 bits are valid; in 10-bit mode the low two bits of &FEC2 are valid.
             latchedResult = sample;
 
-            // Conversion complete: clear BUSY and NOT-EOC, latch channel into status.
             byte newStatus = (byte)(selectedChannel & StatusChannelMask);
             if (tenBitMode) newStatus |= StatusPrecisionMask;
-            // Carry the previous flag bits (bits 4,5) which reflect the last data-latch write.
             newStatus |= (byte)(status & (StatusFlag2Mask | StatusFlag3Mask));
             status = newStatus;
 
