@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC
-// File:        CassetteInterface.cs
+// File:        TapeACIAStub.cs
 // Description: Minimal BBC cassette and serial ACIA state used by software
 //              probing cassette/RS423 hardware registers.
 // Author:      James Booth
@@ -18,7 +18,7 @@ namespace BBC
     /// Models enough of the BBC Micro cassette/serial hardware for software that
     /// probes whether a tape is still running after being converted to disc.
     /// </summary>
-    public sealed class CassetteInterface
+    public sealed class TapeACIAStub
     {
         private const ushort AciaStart = 0xFE08;
         private const ushort AciaEnd = 0xFE0B;

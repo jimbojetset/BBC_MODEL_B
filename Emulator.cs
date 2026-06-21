@@ -248,7 +248,7 @@ namespace BBC
         private long nextBootScriptLineAtTicks;
         private readonly SystemVia systemVia;
         private readonly UserVia userVia = new UserVia();
-        private readonly CassetteInterface cassetteInterface = new CassetteInterface();
+        private readonly TapeACIAStub tapeAciaStub = new TapeACIAStub();
         private readonly uPD7002_ADC adc = new uPD7002_ADC();
         private readonly HostFilingSystem hostFilingSystem;
         private readonly Intel8271_Disk discController;
@@ -1730,8 +1730,8 @@ namespace BBC
             if (Intel8271_Disk.IsAddress(address))
                 return discController.Read(address);
 
-            if (CassetteInterface.IsAddress(address))
-                return cassetteInterface.Read(address);
+            if (TapeACIAStub.IsAddress(address))
+                return tapeAciaStub.Read(address);
 
             if (uPD7002_ADC.IsAddress(address))
                 return adc.Read(address);
@@ -1774,9 +1774,9 @@ namespace BBC
                 return;
             }
 
-            if (CassetteInterface.IsAddress(address))
+            if (TapeACIAStub.IsAddress(address))
             {
-                cassetteInterface.Write(address, value);
+                tapeAciaStub.Write(address, value);
                 return;
             }
 

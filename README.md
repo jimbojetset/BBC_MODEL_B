@@ -252,7 +252,7 @@ ROMS/                 BBC OS, BASIC, DFS, and optional AMX ROM images
 Software/             DFS disc images used for testing and play
 Screenshots/          Runtime screenshot output
 uPD7002_ADC.cs        BBC uPD7002 analogue-to-digital converter
-CassetteInterface.cs  Cassette interface model
+TapeACIAStub.cs       Cassette/serial ACIA stub
 Intel8271_Disk.cs     Acorn 8271 DFS disc controller model
 Display.cs            SDL window, rendering, keyboard, mouse, joystick input
 HostFilingSystem.cs   Host-backed file/disc helper and OSCLI interception
