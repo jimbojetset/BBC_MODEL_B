@@ -163,7 +163,7 @@ namespace BBC
 
         public byte UlaControl { get; private set; }
 
-        /// <summary>The CRTC VSYNC output feeds the system VIA and drives the BBC's 50 Hz frame interrupt.</summary>
+        /// <summary>Raised when the CRTC VSYNC output changes before it reaches the system VIA.</summary>
         public event Action<bool>? VsyncChanged;
 
         public static bool IsSheilaAddress(ushort address)
@@ -908,7 +908,7 @@ namespace BBC
 
         private bool IsBeamTeletextMode => (beamUlaControl & UlaTeletext) != 0;
 
-        /// <summary>The CRTC and Video ULA share the FE00-FE23 SHEILA video range.</summary>
+        /// <summary>Reads the CRTC register or Video ULA latch exposed in the FE00-FE23 SHEILA range.</summary>
         public byte ReadSheila(ushort address)
         {
             return address switch

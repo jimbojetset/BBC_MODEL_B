@@ -39,7 +39,7 @@ namespace BBC
 
         private readonly ushort[] channels = new ushort[4] { 0x8000, 0x8000, 0x8000, 0x8000 };
 
-        /// <summary>EOC is wired into system VIA CB1, which MOS sees through IFR bit 4.</summary>
+        /// <summary>Raised when the ADC EOC line changes state before it is passed to system VIA CB1.</summary>
         public Action<bool>? EndOfConversionChanged;
 
         public static bool IsAddress(ushort address) => address >= BaseAddress && address <= EndAddress;

@@ -54,19 +54,19 @@ namespace BBC
 
         public bool MouseCommandFallbackEnabled { get; set; } = true;
 
-        /// <summary>Disc-image loads still flash the drive LED so host mounting looks like BBC disc activity.</summary>
+        /// <summary>Notifies the host UI that a disc-image load should look like BBC drive activity.</summary>
         public Action? DiscImageLoadActivity { get; set; }
 
-        /// <summary>AMX mouse commands toggle host mouse capture only when no mouse ROM handles them itself.</summary>
+        /// <summary>Notifies the host when AMX-style commands change mouse capture outside the mouse ROM.</summary>
         public Action<bool>? MouseEnabledChanged { get; set; }
 
-        /// <summary>BBC soft keys expand by feeding text through the keyboard buffer, not by editing RAM directly.</summary>
+        /// <summary>Queues BBC soft-key expansion through the keyboard buffer rather than by editing RAM.</summary>
         public Action<string>? QueueKeyboardText { get; set; }
 
-        /// <summary>EXEC files arrive as paced keyboard input, matching how MOS consumes command scripts.</summary>
+        /// <summary>Queues EXEC text as paced keyboard input, matching how MOS consumes command scripts.</summary>
         public Action<string>? QueueKeyboardScript { get; set; }
 
-        /// <summary>BREAK clears MOS state, so deferred soft-key continuation must be scheduled outside the call.</summary>
+        /// <summary>Reports BREAK commands so soft-key continuation can be scheduled after MOS state is cleared.</summary>
         public Action<string?>? BreakCommandObserved { get; set; }
 
         public string? AutoLoadCommand => files.Length == 0 ? null : $"LOAD \"{files[0].Name}\"";

@@ -62,7 +62,7 @@ namespace BBC
             this.sound = sound ?? throw new ArgumentNullException(nameof(sound));
         }
 
-        /// <summary>IC32 latch bits 4 and 5 select the BBC screen wrap window used by hardware scrolling.</summary>
+        /// <summary>Raised when IC32 bits 4 or 5 select a different screen memory wrap window.</summary>
         public event Action<ScreenMemoryWindow>? ScreenMemoryWindowChanged;
 
         public static bool IsAddress(ushort address)
@@ -117,7 +117,7 @@ namespace BBC
                 UpdateKeyboardColumnInterrupt();
         }
 
-        /// <summary>The uPD7002 EOC line is wired to system VIA CB1 and appears as IFR bit 4.</summary>
+        /// <summary>Updates the VIA CB1 interrupt state from the uPD7002 EOC line.</summary>
         public void SignalAdcEndOfConversion(bool eocActive)
         {
             if (eocActive)

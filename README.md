@@ -1,16 +1,16 @@
 # BBC Model B Emulator
 
-A BBC Micro Model B emulator written in C#/.NET. The project emulates a 6502-based BBC B with OS 1.20, BASIC II, Acorn DFS, BBC video and sound, keyboard matrix input, disc loading, mouse support, and both switched and analogue joystick input through SDL.
+A C#/.NET BBC Micro Model B emulator. I have tried to build it around the details that make BBC software feel right rather than merely start: the 2 MHz NMOS 6502, OS 1.20, BASIC II, Acorn DFS, the 8271 disc controller, the system and user 6522 VIAs, the BBC video hardware, the SN76489 sound chip, and the keyboard matrix.
 
-The emulator is currently focused on practical game compatibility and interactive debugging. The `Software` directory contains a working set of DFS disc images used during development, including Repton, Elite, Arcadians, AMX Art, and other BBC titles.
+This has been a practical, slightly obsessive project. Compatibility is checked the slow way: boot the game, watch the loader, listen for the ugly little timing clues, and then go back through the hardware path until the mistake shows itself. The aim is not architectural purity; it is to make more BBC software behave as if it has landed on familiar iron.
 
 ## Requirements
 
 - .NET 9 SDK
-- SDL2 runtime support through the `ppy.SDL2-CS` package
-- BBC ROM images in `ROMS`
+- SDL2 runtime support through `ppy.SDL2-CS`
+- BBC ROM images in `ROMS/`
 
-The project expects these ROM files:
+Expected ROMs:
 
 ```text
 ROMS/OS12.rom
@@ -19,7 +19,7 @@ ROMS/DFS-0.9.rom
 ROMS/AMXMSE331.rom
 ```
 
-`AMXMSE331.rom` is optional for normal BBC use, but it is required for AMX mouse software and for AMX-aware programs such as Repton 3's editor mouse mode.
+`AMXMSE331.rom` is optional for a normal BBC boot. I keep it listed because AMX software is a useful test of the mouse path, especially modes such as the Repton 3 editor.
 
 ## Build
 
@@ -29,22 +29,22 @@ dotnet build BBC_MODEL_B.csproj
 
 ## Run
 
-Start the emulator at BASIC:
+Start at BASIC:
 
 ```bash
 dotnet run --project BBC_MODEL_B.csproj
 ```
 
-Mount and boot a DFS disc image:
+Boot a DFS disc image:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- Software/Repton3.ssd
+dotnet run --project BBC_MODEL_B.csproj -- Games/Superior/Repton3.ssd
 ```
 
-Mount a disc without running its boot script:
+Mount a disc but stay at BASIC:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot Software/AMXArt.ssd
+dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot Games/Misc/AMXArt.ssd
 ```
 
 Mount a raw host file:
@@ -53,46 +53,47 @@ Mount a raw host file:
 dotnet run --project BBC_MODEL_B.csproj -- path/to/file
 ```
 
-Run headless for smoke testing:
+Run without a window for a quick smoke test:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- --headless-ms 7000 Software/Repton3.ssd
+dotnet run --project BBC_MODEL_B.csproj -- --headless-ms 7000 Games/Superior/Repton3.ssd
 ```
 
-Print the inferred auto-load command for a DFS disc:
+Ask the emulator what it would auto-run from a DFS image:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- --print-autoload Software/Repton3.ssd
+dotnet run --project BBC_MODEL_B.csproj -- --print-autoload Games/Superior/Repton3.ssd
 ```
 
-Slow down or speed up the emulated CPU:
+Change CPU speed:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- --speed 50% Software/Elite.ssd
-dotnet run --project BBC_MODEL_B.csproj -- --speed 0.5 Software/Elite.ssd
+dotnet run --project BBC_MODEL_B.csproj -- --speed 50% Games/Acornsoft/Elite.ssd
+dotnet run --project BBC_MODEL_B.csproj -- --speed 0.5 Games/Acornsoft/Elite.ssd
 ```
+
+The speed scale is held back until MOS has reached its input path. That is intentional: the first few seconds are part of the machine's character, especially the startup sound, so I let that happen at normal speed before applying the requested scale.
 
 ## Command-Line Options
 
 ```text
 --disc PATH
 --disk PATH
---file PATH        Mount a disc image or host file.
+--file PATH        Mount a DFS image or host file.
 
---boot-disc        Auto-run the mounted disc boot script. This is the default.
+--boot-disc        Run the mounted disc's boot path. This is the default.
 --no-boot-disc
---no-autoboot      Mount the disc but stay at BASIC.
+--no-autoboot      Mount the disc and leave the BBC at BASIC.
 
 --headless-ms N    Run without a window for N milliseconds.
 --speed VALUE      CPU speed scale, for example 0.5 or 50%.
-                   The OS starts at normal speed, then the scale applies once input is enabled.
---print-autoload   Print the inferred boot command for a DFS disc image.
+--print-autoload   Print the inferred boot command for a DFS image.
 ```
 
-Plain paths are also accepted:
+Plain paths are accepted too:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- Software/Elite.ssd
+dotnet run --project BBC_MODEL_B.csproj -- Games/Acornsoft/Elite.ssd
 ```
 
 ## Controls
@@ -104,15 +105,15 @@ F12              BBC BREAK
 Shift+F12        BBC Shift-BREAK
 Ctrl+F12         BBC Ctrl-BREAK
 F11              Toggle scanline overlay
-Ctrl+S / Cmd+S   Save screenshot to Screenshots
+Ctrl+S / Cmd+S   Save screenshot to Screenshots/
 Ctrl+T           Toggle 8271 disc trace logging
 Ctrl+L / Cmd+L   Open host file picker and mount selected file
 Ctrl+V / Cmd+V   Paste host clipboard text into the BBC keyboard buffer
 ```
 
-### Keyboard Mapping Notes
+### Keyboard
 
-Most host keys map directly to BBC keyboard matrix positions. A few useful BBC-specific mappings are:
+Most keys go through the BBC keyboard matrix rather than being treated as host characters. That matters, because plenty of BBC software reads the matrix directly. A few mappings are worth knowing:
 
 ```text
 Host arrow keys   BBC cursor keys
@@ -122,13 +123,11 @@ F12               BBC BREAK
 Backspace/Delete  BBC DELETE
 ```
 
-On macOS keyboards, `§` is mapped to the BBC `COPY` key.
+On macOS, `§` is used for the BBC `COPY` key.
 
-### Joystick Input
+### Joysticks
 
-SDL game controllers and raw joysticks are opened automatically.
-
-Keyboard fallback:
+SDL game controllers and raw joysticks are opened automatically. The keyboard fallback is deliberately simple:
 
 ```text
 Left arrow   Joystick left
@@ -146,7 +145,7 @@ D-pad or hat                     Switched joystick directions
 Button A or raw button 0          Fire
 ```
 
-The analogue joystick mapping follows the BBC `ADVAL` convention used by the emulator:
+BBC analogue joystick reads follow the `ADVAL` convention used here:
 
 ```text
 ADVAL(1): left  = 65535, right = 0
@@ -154,7 +153,7 @@ ADVAL(2): up    = 65535, down  = 0
 ADVAL(0): fire  = 1 when pressed
 ```
 
-Switched joystick input is exposed through the user VIA as active-low lines:
+Switched joysticks sit on the user VIA as active-low lines:
 
 ```text
 PB0 = Up
@@ -164,11 +163,11 @@ PB3 = Right
 PB4 = Fire
 ```
 
-## Mouse And AMX Support
+## Mouse And AMX
 
-The emulator supports host mouse/trackpad capture for AMX mouse software.
+AMX mouse support uses host relative mouse capture, so the emulated pointer can keep moving even when the host pointer would otherwise hit the edge of the window. It is one of those corners where a tiny host convenience has to disappear behind the BBC's expectations.
 
-Relevant commands inside the emulated BBC:
+Inside the BBC, the useful commands are:
 
 ```text
 *MOUSE ON
@@ -177,19 +176,15 @@ Relevant commands inside the emulated BBC:
 *POINTER OFF
 ```
 
-When mouse support is enabled, SDL relative mouse mode is used so the emulated pointer can continue moving even when the host pointer would otherwise hit the edge of the emulator window.
+With `ROMS/AMXMSE331.rom` present, the ROM is loaded in sideways bank 13. `*MOUSE` commands still update host capture state, but the AMX ROM remains the thing the BBC software thinks it is talking to.
 
-AMX software needs the AMX ROM loaded. If `ROMS/AMXMSE331.rom` is present, it is loaded into sideways ROM bank 13 and `*MOUSE` commands are passed to the ROM while still updating host mouse capture state.
-
-### AMX Art
-
-`Software/AMXArt.ssd` can be launched directly:
+`Games/Misc/AMXArt.ssd` can be launched directly:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- Software/AMXArt.ssd
+dotnet run --project BBC_MODEL_B.csproj -- Games/Misc/AMXArt.ssd
 ```
 
-If you boot it manually, the useful sequence is:
+For a manual AMX Art start, this is the useful sequence:
 
 ```text
 *KEY 10 CHAIN "!MENU"|M
@@ -199,19 +194,22 @@ If you boot it manually, the useful sequence is:
 CHAIN "!MENU"
 ```
 
-The current emulator handles the boot `*EXEC !BOOT` flow and queues the soft-key continuation after `*BREAK`.
+The emulator handles the boot `*EXEC !BOOT` path and queues the soft-key continuation after `*BREAK`.
 
-## Disc Images And Loading
+## Discs And Loading
 
-DFS `.ssd` and `.dsd` images can be mounted from the command line or by using the host file picker shortcut.
+DFS `.ssd` and `.dsd` images can be mounted from the command line, drag/drop, or the host file picker.
 
-The emulator includes an 8271 disc controller model and a host filing-system helper. The host helper intercepts selected MOS file operations where this improves compatibility or makes raw host-file loading practical.
+The disc path is deliberately split in two, because the neat version of this design would be less honest than the useful one:
 
-Boot behavior:
+- `Intel8271_Disk` models the Acorn 8271-facing hardware that DFS talks to.
+- `HostFilingSystem` handles the few MOS filing-system shortcuts that make host-file loading practical without pretending to be a complete filing-system ROM.
 
-- DFS boot option 3 with `!BOOT` queues `*EXEC !BOOT`.
-- If no boot script is available, the emulator infers a likely load/run command.
-- Use `--no-autoboot` to inspect or manually run a disc.
+Boot behaviour:
+
+- DFS option 3 with `!BOOT` queues `*EXEC !BOOT`.
+- If no boot script is present, the emulator infers a likely load/run command.
+- Use `--no-autoboot` when you want to inspect a disc manually.
 
 ## Diagnostics
 
@@ -219,25 +217,25 @@ Boot behavior:
 
 Press `Ctrl+T` while the emulator is running to toggle disc trace logging. Trace files are written to the project root.
 
-This is useful for long loader paths such as Repton 3, where the trace can be started immediately before a failing load step.
+I usually start this just before a loader step that fails or hangs. A trace from power-on can be comforting, but it is often mostly noise.
 
 ### Environment Traces
 
-Some focused diagnostic traces are controlled by environment variables:
+Focused traces are controlled with environment variables:
 
 ```bash
-env BBC_OSCLI_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Software/Repton3.ssd
-env BBC_MOUSE_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Software/AMXArt.ssd
-env BBC_OSCLI_TRACE=1 BBC_MOUSE_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Software/AMXArt.ssd
+env BBC_OSCLI_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Games/Superior/Repton3.ssd
+env BBC_MOUSE_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Games/Misc/AMXArt.ssd
+env BBC_OSCLI_TRACE=1 BBC_MOUSE_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Games/Misc/AMXArt.ssd
 ```
 
-`BBC_OSCLI_TRACE=1` logs host filing-system OSCLI activity such as `*EXEC`, `*MOUSE`, `*POINTER`, `*FX`, and file matches.
+`BBC_OSCLI_TRACE=1` follows host filing-system OSCLI activity such as `*EXEC`, `*MOUSE`, `*POINTER`, `*FX`, and file matches.
 
-`BBC_MOUSE_TRACE=1` logs host mouse movement and button data while mouse emulation is active.
+`BBC_MOUSE_TRACE=1` follows host mouse movement and button data while mouse emulation is active.
 
 ### Screenshots
 
-Press `Ctrl+S` or `Cmd+S` to write a PNG screenshot to:
+Press `Ctrl+S` or `Cmd+S` to write a PNG to:
 
 ```text
 Screenshots/
@@ -245,34 +243,34 @@ Screenshots/
 
 ## Project Layout
 
-Terminology note: BBC Micro documentation commonly calls the memory-mapped I/O page at `&FE00-&FEFF` "SHEILA". Comments that mention SHEILA are referring to this hardware I/O address range, not to a separate chip.
+BBC documentation traditionally calls the memory-mapped I/O page at `&FE00-&FEFF` `SHEILA`. I use the same name here. It means the I/O page, not a separate chip.
 
 ```text
-6502/                 6502 CPU, registers, flags, and bus interfaces
-ROMS/                 BBC OS, BASIC, DFS, and optional AMX ROM images
-Software/             DFS disc images used for testing and play
+6502/                 NMOS 6502 core, registers, flags, and memory bus
+ROMS/                 OS, BASIC, DFS, and optional AMX ROMs
+Games/                DFS disc images used for testing and play
 Screenshots/          Runtime screenshot output
-uPD7002_ADC.cs        BBC uPD7002 analogue-to-digital converter
-TapeACIAStub.cs       Cassette/serial ACIA stub
-Intel8271_Disk.cs     Acorn 8271 DFS disc controller model
-Display.cs            SDL window, rendering, keyboard, mouse, joystick input
-HostFilingSystem.cs   Host-backed file/disc helper and OSCLI interception
-Emulator.cs           Emulator coordinator, memory map, CLI, firmware hooks
-SAA5050_Font.cs       Mode 7 teletext font data
-SN76489_Sound.cs      Sound generator support
-SystemVia.cs          BBC system VIA
-UserVia.cs            BBC user VIA, AMX mouse, switched joystick input
-HD6845_Video.cs       Video/ULA/CRTC rendering
+uPD7002_ADC.cs        Analogue joystick/paddle converter at &FEC0-&FEC3
+TapeACIAStub.cs       Cassette/RS423 ACIA response for software probes
+Intel8271_Disk.cs     Acorn 8271 DFS disc controller surface
+Display.cs            SDL window plus BBC keyboard, mouse, and joystick input
+HostFilingSystem.cs   Host-backed MOS filing-system bridge
+Emulator.cs           Memory map, ROM loading, CLI, and hardware wiring
+SAA5050_Font.cs       Mode 7 teletext glyphs
+SN76489_Sound.cs      SN76489 PSG and internal speaker output
+SystemVia.cs          System 6522 VIA: keyboard, slow bus, timers, VSYNC
+UserVia.cs            User 6522 VIA: user port, joystick, mouse pulses
+HD6845_Video.cs       CRTC, Video ULA, Mode 7, and framebuffer rendering
 ```
 
 ## Compatibility Notes
 
-The emulator is under active development, and compatibility is verified game by game. Some current observations:
+Compatibility is earned one title at a time. A few current notes from the games I keep coming back to:
 
-- Repton 3 boots and its editor works with keyboard, switched joystick, analogue joystick, and AMX mouse where the software supports it.
-- Arcadians confirms switched joystick and fire support through the SDL joystick path.
-- Elite uses analogue joystick input for flight/navigation, but the BBC version's own instructions list laser fire as keyboard `A`; joystick fire may not be used for lasers by the game itself.
-- AMX mouse support depends on the AMX ROM, not just the host mouse capture path.
+- Repton 3 boots, and its editor works with keyboard, switched joystick, analogue joystick, and AMX mouse where the software supports it.
+- Arcadians confirms switched joystick and fire through the SDL joystick path.
+- Elite uses analogue joystick input for flight/navigation. The BBC version's own instructions list laser fire as keyboard `A`, so joystick fire may not be used for lasers by the game itself.
+- AMX mouse support depends on the AMX ROM as well as host mouse capture.
 
 ## Legal Note
 
