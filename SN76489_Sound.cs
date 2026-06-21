@@ -17,7 +17,7 @@ namespace BBC
 {
 
     /// <summary>
-    /// The BBC drives the SN76489 through the system VIA slow data bus. MOS turns
+    /// The BBC drives the SN76489 through the system 6522 VIA slow data bus. MOS turns
     /// SOUND and ENVELOPE commands into latched PSG bytes; the chip itself only
     /// sees tone, noise, and attenuation register writes.
     /// </summary>

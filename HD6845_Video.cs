@@ -163,7 +163,7 @@ namespace BBC
 
         public byte UlaControl { get; private set; }
 
-        /// <summary>Raised when the CRTC VSYNC output changes before it reaches the system VIA.</summary>
+        /// <summary>Raised when the CRTC VSYNC output changes before it reaches the system 6522 VIA.</summary>
         public event Action<bool>? VsyncChanged;
 
         public static bool IsSheilaAddress(ushort address)

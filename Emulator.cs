@@ -230,8 +230,8 @@ namespace BBC
         private string? pendingBootExecScript;
         private bool breakContinuationQueued;
         private long nextBootScriptLineAtTicks;
-        private readonly SystemVia systemVia;
-        private readonly UserVia userVia = new UserVia();
+        private readonly System6522Via systemVia;
+        private readonly User6522Via userVia = new User6522Via();
         private readonly TapeACIAStub tapeAciaStub = new TapeACIAStub();
         private readonly uPD7002_ADC adc = new uPD7002_ADC();
         private readonly HostFilingSystem hostFilingSystem;
@@ -272,7 +272,7 @@ namespace BBC
         public Emulator()
         {
             Sound = new SN76489_Sound();
-            systemVia = new SystemVia(Sound);
+            systemVia = new System6522Via(Sound);
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
             hostFilingSystem.QueueKeyboardScript = QueueExecScript;
@@ -1530,14 +1530,14 @@ namespace BBC
             if (HD6845_Video.IsSheilaAddress(address))
                 return Video.ReadSheila(address);
 
-            if (SystemVia.IsAddress(address))
+            if (System6522Via.IsAddress(address))
             {
                 byte value = systemVia.Read(address);
                 UpdateCpuIrqLine();
                 return value;
             }
 
-            if (UserVia.IsAddress(address))
+            if (User6522Via.IsAddress(address))
             {
                 byte value = userVia.Read(address);
                 UpdateCpuIrqLine();
@@ -1568,14 +1568,14 @@ namespace BBC
                 return;
             }
 
-            if (SystemVia.IsAddress(address))
+            if (System6522Via.IsAddress(address))
             {
                 systemVia.Write(address, value);
                 UpdateCpuIrqLine();
                 return;
             }
 
-            if (UserVia.IsAddress(address))
+            if (User6522Via.IsAddress(address))
             {
                 userVia.Write(address, value);
                 UpdateCpuIrqLine();

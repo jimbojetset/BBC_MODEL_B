@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC
-// File:        UserVia.cs
+// File:        User6522Via.cs
 // Description: BBC user 6522 VIA: user-port I/O, game-control inputs, AMX-style
 //              mouse pulses, and timer IRQ behaviour.
 // Author:      James Booth
@@ -15,10 +15,10 @@ namespace BBC
 {
 
     /// <summary>
-    /// The user VIA exposes the BBC's user port. Games and add-ons often depend
+    /// The user 6522 VIA exposes the BBC's user port. Games and add-ons often depend
     /// on 6522 timer IRQs and active-low input lines rather than MOS services.
     /// </summary>
-    public sealed class UserVia
+    public sealed class User6522Via
     {
         private const byte InterruptFlagTimer1 = 0x40;
         private const byte InterruptFlagTimer2 = 0x20;
@@ -134,7 +134,7 @@ namespace BBC
             peripheralCycleRemainder = 0;
         }
 
-        /// <summary>The user 6522 timers run from the same 1 MHz peripheral clock as the system VIA.</summary>
+        /// <summary>The user 6522 timers run from the same 1 MHz peripheral clock as the system 6522 VIA.</summary>
         public void Tick(int cycles)
         {
             if (cycles <= 0)

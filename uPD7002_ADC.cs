@@ -2,7 +2,7 @@
 // Project:     BBC_MODEL_B
 // File:        uPD7002_ADC.cs
 // Description: NEC uPD7002 analogue input converter at SHEILA &FEC0-&FEC3,
-//              including conversion delay and the EOC line into system VIA CB1.
+//              including conversion delay and the EOC line into system 6522 VIA CB1.
 // Author:      James Booth
 // Created:     2025
 // License:     MIT License - See LICENSE file in the project root
@@ -14,7 +14,7 @@ namespace BBC
 
     /// <summary>
     /// The Model B's uPD7002 converts four analogue channels for joysticks and
-    /// paddles. Its EOC output is visible through system VIA CB1.
+    /// paddles. Its EOC output is visible through system 6522 VIA CB1.
     /// </summary>
     public sealed class uPD7002_ADC
     {
@@ -39,7 +39,7 @@ namespace BBC
 
         private readonly ushort[] channels = new ushort[4] { 0x8000, 0x8000, 0x8000, 0x8000 };
 
-        /// <summary>Raised when the ADC EOC line changes state before it is passed to system VIA CB1.</summary>
+        /// <summary>Raised when the ADC EOC line changes state before it is passed to system 6522 VIA CB1.</summary>
         public Action<bool>? EndOfConversionChanged;
 
         public static bool IsAddress(ushort address) => address >= BaseAddress && address <= EndAddress;

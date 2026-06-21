@@ -1,6 +1,6 @@
 // ============================================================================
 // Project:     BBC
-// File:        SystemVia.cs
+// File:        System6522Via.cs
 // Description: BBC system 6522 VIA: keyboard matrix, slow data bus, video
 //              address latch, timers, VSYNC IRQ, and ADC EOC signalling.
 // Author:      James Booth
@@ -19,7 +19,7 @@ namespace BBC
     /// data bus used by the SN76489, the video address latch, and several IRQ
     /// sources that MOS expects to behave like real 6522 pins and timers.
     /// </summary>
-    public sealed class SystemVia
+    public sealed class System6522Via
     {
         private const byte SoundWriteEnableLatchBit = 0;
         private const byte KeyboardWriteEnableLatchBit = 3;
@@ -57,7 +57,7 @@ namespace BBC
         private bool vsyncLineActive;
         private bool externalVsyncLineEnabled;
 
-        public SystemVia(SN76489_Sound sound)
+        public System6522Via(SN76489_Sound sound)
         {
             this.sound = sound ?? throw new ArgumentNullException(nameof(sound));
         }

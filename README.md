@@ -153,7 +153,7 @@ ADVAL(2): up    = 65535, down  = 0
 ADVAL(0): fire  = 1 when pressed
 ```
 
-Switched joysticks sit on the user VIA as active-low lines:
+Switched joysticks sit on the user 6522 VIA as active-low lines:
 
 ```text
 PB0 = Up
@@ -258,8 +258,8 @@ HostFilingSystem.cs   Host-backed MOS filing-system bridge
 Emulator.cs           Memory map, ROM loading, CLI, and hardware wiring
 SAA5050_Font.cs       Mode 7 teletext glyphs
 SN76489_Sound.cs      SN76489 PSG and internal speaker output
-SystemVia.cs          System 6522 VIA: keyboard, slow bus, timers, VSYNC
-UserVia.cs            User 6522 VIA: user port, joystick, mouse pulses
+System6522Via.cs      System 6522 VIA: keyboard, slow bus, timers, VSYNC
+User6522Via.cs        User 6522 VIA: user port, joystick, mouse pulses
 HD6845_Video.cs       CRTC, Video ULA, Mode 7, and framebuffer rendering
 ```
 
