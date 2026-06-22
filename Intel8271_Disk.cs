@@ -47,6 +47,9 @@ namespace BBC
         private const int NmiReassertDelayCycles = SectorTransferCycles / SectorSize;
         private readonly byte[][] drives = [[], [], [], []];
         private readonly bool[] driveMounted = new bool[4];
+        private readonly string?[] mountedPaths = new string?[4];
+        private readonly string?[] mountedFileNames = new string?[4];
+        private readonly bool[] imageDirtyByDrive = new bool[4];
         private readonly int[] currentTrack = new int[4];
         private readonly bool[] motorSpinning = new bool[4];
         private readonly long[] motorStartedAtCycle = new long[4];
@@ -76,15 +79,18 @@ namespace BBC
         {
         }
 
-        public event Action? NmiRequested;
-
-        public bool HasMountedDisc => driveMounted[0];
+        public bool HasMountedDisc => driveMounted.Any(mounted => mounted);
 
         public string? MountedPath => mountedPath;
 
         public string? MountedFileName => mountedFileName;
 
         public bool ImageDirty => imageDirty;
+
+        public string MountedDriveSummary => string.Join(", ",
+            Enumerable.Range(0, drives.Length)
+                .Where(drive => driveMounted[drive])
+                .Select(drive => $"{drive}:{mountedFileNames[drive] ?? "disc"}"));
 
         public bool WriteProtected
         {
@@ -99,6 +105,8 @@ namespace BBC
         public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
 
         public bool TraceEnabled => traceWriter is not null;
+
+        public bool NmiLineAsserted => nmiPending && nmiDelayCycles <= 0;
 
         public void StartTrace(string path)
         {
@@ -151,12 +159,23 @@ namespace BBC
         /// <summary>Single-sided SSD maps to drive 0; double-sided DSD exposes side two as DFS drive 2.</summary>
         public void Mount(string path)
         {
+            Mount(path, 0);
+        }
+
+        public void Mount(string path, int drive)
+        {
             string fullPath = Path.GetFullPath(path);
             string fileName = Path.GetFileName(fullPath);
             byte[] image = File.ReadAllBytes(fullPath);
 
+            if (drive < 0 || drive >= drives.Length)
+                throw new ArgumentOutOfRangeException(nameof(drive), "DFS drive must be 0-3.");
+
             if (image.Length < 512 || image.Length % SectorSize != 0)
                 throw new InvalidOperationException($"'{fullPath}' is not a sector-aligned DFS image.");
+
+            if (drive != 0 && image.Length >= SingleSidedImageBytes * 2)
+                throw new InvalidOperationException("Double-sided DFS images must be mounted from drive 0.");
 
             if (image.Length >= SingleSidedImageBytes * 2)
             {
@@ -166,25 +185,28 @@ namespace BBC
                 Array.Copy(image, SingleSidedImageBytes, drives[2], 0, drives[2].Length);
                 driveMounted[0] = true;
                 driveMounted[2] = drives[2].Length > 0;
+                mountedPaths[0] = fullPath;
+                mountedFileNames[0] = fileName;
+                mountedPaths[2] = fullPath;
+                mountedFileNames[2] = fileName;
+                imageDirtyByDrive[0] = false;
+                imageDirtyByDrive[2] = false;
             }
             else
             {
-                drives[0] = image;
-                driveMounted[0] = true;
-                drives[2] = [];
-                driveMounted[2] = false;
+                drives[drive] = image;
+                driveMounted[drive] = true;
+                mountedPaths[drive] = fullPath;
+                mountedFileNames[drive] = fileName;
+                imageDirtyByDrive[drive] = false;
             }
 
-            drives[1] = [];
-            drives[3] = [];
-            driveMounted[1] = false;
-            driveMounted[3] = false;
             Array.Clear(currentTrack);
             Array.Clear(motorSpinning);
             Array.Clear(motorStartedAtCycle);
             motorIdleCycles = 0;
-            mountedPath = fullPath;
-            mountedFileName = fileName;
+            mountedPath = mountedPaths[0] ?? fullPath;
+            mountedFileName = mountedFileNames[0] ?? fileName;
             imageDirty = false;
             Reset();
         }
@@ -192,33 +214,55 @@ namespace BBC
         /// <summary>8271 writes alter the mounted DFS image only when the host file is not write-protected.</summary>
         public bool Flush()
         {
-            if (!imageDirty)
-                return false;
-            if (string.IsNullOrEmpty(mountedPath))
+            bool anyDirty = imageDirty || imageDirtyByDrive.Any(dirty => dirty);
+            if (!anyDirty)
                 return false;
             if (writeProtected)
             {
                 imageDirty = false;
+                Array.Clear(imageDirtyByDrive);
                 return false;
             }
 
             try
             {
-                byte[] combined;
-                if (drives[2].Length > 0)
+                bool flushed = false;
+                if (imageDirtyByDrive[0] || imageDirtyByDrive[2])
                 {
-                    combined = new byte[drives[0].Length + drives[2].Length];
-                    Array.Copy(drives[0], 0, combined, 0, drives[0].Length);
-                    Array.Copy(drives[2], 0, combined, drives[0].Length, drives[2].Length);
-                }
-                else
-                {
-                    combined = drives[0];
+                    string? path = mountedPaths[0] ?? mountedPath;
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        byte[] combined;
+                        if (drives[2].Length > 0 && string.Equals(mountedPaths[0], mountedPaths[2], StringComparison.Ordinal))
+                        {
+                            combined = new byte[drives[0].Length + drives[2].Length];
+                            Array.Copy(drives[0], 0, combined, 0, drives[0].Length);
+                            Array.Copy(drives[2], 0, combined, drives[0].Length, drives[2].Length);
+                        }
+                        else
+                        {
+                            combined = drives[0];
+                        }
+
+                        File.WriteAllBytes(path, combined);
+                        imageDirtyByDrive[0] = false;
+                        imageDirtyByDrive[2] = false;
+                        flushed = true;
+                    }
                 }
 
-                File.WriteAllBytes(mountedPath, combined);
+                for (int drive = 1; drive < drives.Length; drive++)
+                {
+                    if (drive == 2 || !imageDirtyByDrive[drive] || string.IsNullOrEmpty(mountedPaths[drive]))
+                        continue;
+
+                    File.WriteAllBytes(mountedPaths[drive]!, drives[drive]);
+                    imageDirtyByDrive[drive] = false;
+                    flushed = true;
+                }
+
                 imageDirty = false;
-                return true;
+                return flushed;
             }
             catch (IOException ex)
             {
@@ -275,7 +319,6 @@ namespace BBC
                 return;
 
             nmiDelayCycles = 0;
-            NmiRequested?.Invoke();
         }
 
         public byte Read(ushort address)
@@ -321,8 +364,11 @@ namespace BBC
             if (nmiDelayCycles <= 0 && (readData.Count > 0 || pendingWrite is not null))
                 status |= StatusDataRequest;
 
-            if (nmiDelayCycles <= 0 && resultAvailable)
-                status |= StatusInterrupt | StatusResultFull;
+            if (NmiLineAsserted)
+                status |= StatusInterrupt;
+
+            if (NmiLineAsserted && resultAvailable)
+                status |= StatusResultFull;
 
             return status;
         }
@@ -379,7 +425,7 @@ namespace BBC
             nmiPending = false;
             nmiDelayCycles = 0;
             command = value;
-            selectedDrive = 0;
+            selectedDrive = (command & 0x80) != 0 ? 1 : 0;
             parameters.Clear();
             resultAvailable = false;
             busy = true;
@@ -408,6 +454,7 @@ namespace BBC
                 return;
             }
 
+            nmiPending = false;
             writeData.Add(value);
 
             if (writeData.Count >= pendingWrite.Value.Length)
@@ -416,6 +463,7 @@ namespace BBC
                 WriteSectors(pendingWrite.Value, writeData);
                 pendingWrite = null;
                 writeData.Clear();
+                Flush();
                 Trace($"WRITE complete bytes={byteCount}");
                 SetResult(ResultOk);
             }
@@ -439,7 +487,7 @@ namespace BBC
 
                 case 0x0A:
                 case 0x0E:
-                    PrepareWrite(parameters[0], parameters[1], 128, 1);
+                    PrepareWrite(parameters[0], parameters[1], SectorSize, 1);
                     break;
 
                 case 0x0B:
@@ -453,7 +501,7 @@ namespace BBC
 
                 case 0x12:
                 case 0x16:
-                    ReadSectors(parameters[0], parameters[1], 128, 1);
+                    ReadSectors(parameters[0], parameters[1], SectorSize, 1);
                     break;
 
                 case 0x13:
@@ -481,10 +529,7 @@ namespace BBC
                     break;
 
                 case 0x2B:
-                    result = IsDriveReady(selectedDrive) ? (byte)0x00 : ResultDriveNotReady;
-                    resultAvailable = true;
-                    busy = false;
-                    RequestNmi();
+                    SetPolledResult(IsDriveReady(selectedDrive) ? (byte)0x00 : ResultDriveNotReady);
                     break;
 
                 case 0x29:
@@ -494,30 +539,24 @@ namespace BBC
                     break;
 
                 case 0x2C:
-                    result = IsDriveReady(selectedDrive) ? (byte)0x45 : (byte)0x00;
-                    resultAvailable = true;
-                    busy = false;
+                    SetPolledResult(IsDriveReady(selectedDrive) ? (byte)0x45 : (byte)0x00);
                     Trace($"DRIVE STATUS result=${result:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive}");
-                    RequestNmi();
                     break;
 
                 case 0x35:
-                    SetResult(ResultOk);
+                    SetPolledResult(ResultOk);
                     break;
 
                 case 0x3A:
                     specialRegisters[parameters[0] & 0x3F] = parameters[1];
                     Trace($"SPECIAL WRITE reg=${parameters[0] & 0x3F:X2} value=${parameters[1]:X2}");
-                    SetResult(ResultOk);
+                    SetPolledResult(ResultOk);
                     break;
 
                 case 0x3D:
                     int specialRegister = parameters[0] & 0x3F;
-                    result = specialRegisters[specialRegister];
-                    resultAvailable = true;
-                    busy = false;
+                    SetPolledResult(specialRegisters[specialRegister]);
                     Trace($"SPECIAL READ reg=${specialRegister:X2} result=${result:X2}");
-                    RequestNmi();
                     break;
 
                 default:
@@ -634,6 +673,7 @@ namespace BBC
             }
 
             imageDirty = true;
+            imageDirtyByDrive[write.Drive] = true;
         }
 
         private void ReadSectorIds(int track, int count)
@@ -731,19 +771,24 @@ namespace BBC
             RequestNmi(nmiDelayCycles);
         }
 
+        private void SetPolledResult(byte value)
+        {
+            result = value;
+            resultAvailable = true;
+            busy = false;
+            nmiPending = false;
+            nmiDelayCycles = 0;
+        }
+
         private void RequestNmi(int delayCycles = 0)
         {
             if (nmiPending)
                 return;
 
             nmiPending = true;
-            if (delayCycles <= 0)
-            {
-                NmiRequested?.Invoke();
-                return;
-            }
 
-            nmiDelayCycles = delayCycles;
+            if (delayCycles > 0)
+                nmiDelayCycles = delayCycles;
         }
 
         private bool IsDriveReady(int drive)

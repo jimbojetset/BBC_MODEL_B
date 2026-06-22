@@ -47,15 +47,15 @@ namespace BBC
                 Console.WriteLine($"AMX ROM:    bank {Emulator.AmxMouseRomBank}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
 
-            foreach (string path in options.MountPaths)
+            foreach (MountRequest mount in options.Mounts)
             {
                 try
                 {
-                    emulator.MountHostFile(path, options.AutoRunDisc);
+                    emulator.MountHostFile(mount.Path, options.AutoRunDisc, mount.Drive);
                 }
                 catch (Exception ex) when (IsUserMountException(ex))
                 {
-                    string message = emulator.QueueHostMountFailure(path, ex);
+                    string message = emulator.QueueHostMountFailure(mount.Path, ex);
                     Console.WriteLine(message);
                 }
             }
@@ -69,7 +69,7 @@ namespace BBC
         private static StartupOptions ParseStartupOptions(string[] args)
         {
             int headlessMilliseconds = 0;
-            List<string> mountPaths = new List<string>();
+            List<MountRequest> mounts = new List<MountRequest>();
             string? printAutoLoadPath = null;
             double speedScale = 1.0;
             bool autoRunDisc = true;
@@ -123,15 +123,72 @@ namespace BBC
                     if (i + 1 >= args.Length)
                         throw new ArgumentException($"{args[i]} requires a path.");
 
-                    mountPaths.Add(args[++i]);
+                    mounts.Add(new MountRequest(args[++i], null));
+                    continue;
+                }
+
+                if (TryParseDriveOption(args[i], "--disc", out int discDrive)
+                    || TryParseDriveOption(args[i], "--disk", out discDrive)
+                    || TryParseDriveOption(args[i], "--drive", out discDrive))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException($"{args[i]} requires a path.");
+
+                    mounts.Add(new MountRequest(args[++i], discDrive));
+                    continue;
+                }
+
+                if (TryParseDriveOption(args[i], "--blank-disc", out int blankDiscDrive)
+                    || TryParseDriveOption(args[i], "--blank-disk", out blankDiscDrive))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException($"{args[i]} requires a path.");
+
+                    string blankPath = args[++i];
+                    CreateBlankDfsImage(blankPath);
+                    mounts.Add(new MountRequest(blankPath, blankDiscDrive));
                     continue;
                 }
 
                 if (!args[i].StartsWith("--", StringComparison.Ordinal))
-                    mountPaths.Add(args[i]);
+                    mounts.Add(new MountRequest(args[i], null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mountPaths, printAutoLoadPath, speedScale, autoRunDisc);
+            return new StartupOptions(headlessMilliseconds, mounts, printAutoLoadPath, speedScale, autoRunDisc);
+        }
+
+        private static bool TryParseDriveOption(string option, string prefix, out int drive)
+        {
+            drive = 0;
+            if (!option.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            string suffix = option[prefix.Length..];
+            return suffix.Length == 1 && char.IsDigit(suffix[0]) && int.TryParse(suffix, out drive) && drive is >= 0 and <= 3;
+        }
+
+        private static void CreateBlankDfsImage(string path)
+        {
+            string fullPath = Path.GetFullPath(path);
+            if (File.Exists(fullPath))
+                return;
+
+            byte[] image = new byte[80 * 10 * 256];
+            string title = Path.GetFileNameWithoutExtension(fullPath).ToUpperInvariant();
+            if (title.Length > 12)
+                title = title[..12];
+
+            for (int i = 0; i < title.Length && i < 8; i++)
+                image[i] = (byte)title[i];
+            for (int i = 8; i < title.Length; i++)
+                image[0x100 + i - 8] = (byte)title[i];
+
+            image[0x104] = 1;
+            image[0x105] = 0;
+            image[0x106] = 0x03;
+            image[0x107] = 0x20;
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? ".");
+            File.WriteAllBytes(fullPath, image);
         }
 
         private static bool TryParseSpeedScale(string value, out double speedScale)
@@ -159,7 +216,9 @@ namespace BBC
                 or InvalidOperationException;
         }
 
-        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<string> MountPaths, string? PrintAutoLoadPath, double SpeedScale, bool AutoRunDisc);
+        private readonly record struct MountRequest(string Path, int? Drive);
+
+        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<MountRequest> Mounts, string? PrintAutoLoadPath, double SpeedScale, bool AutoRunDisc);
         public const ushort RamStart = 0x0000;
         public const ushort RamEnd = 0x7FFF;
         public const ushort SidewaysRomStart = 0x8000;
@@ -277,7 +336,6 @@ namespace BBC
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
             hostFilingSystem.QueueKeyboardScript = QueueExecScript;
             hostFilingSystem.BreakCommandObserved = QueueBreakContinuation;
-            hostFilingSystem.DiscImageLoadActivity = PulseHostDiscActivityLed;
             hostFilingSystem.MouseEnabledChanged = SetMouseEnabled;
             discController = new Intel8271_Disk();
             Video = new HD6845_Video(Memory.Memory);
@@ -285,7 +343,7 @@ namespace BBC
             Video.VsyncChanged += systemVia.SetVsyncLine;
             systemVia.ScreenMemoryWindowChanged += Video.SetScreenMemoryWindow;
             Cpu = new CPU_6502(Memory, CpuClockHz);
-            discController.NmiRequested += () => Cpu.InitiateNMI(0xFFFA);
+            Cpu.NmiLineAsserted = () => discController.NmiLineAsserted;
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
@@ -409,7 +467,7 @@ namespace BBC
             Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
         }
 
-        public void MountHostFile(string path, bool autoRunDisc = true)
+        public void MountHostFile(string path, bool autoRunDisc = true, int? requestedDrive = null)
         {
             if (IsDiscImagePath(path))
             {
@@ -419,11 +477,11 @@ namespace BBC
                         Console.WriteLine($"Saved disc:   {discController.MountedFileName}");
                 }
 
-                discController.Mount(path);
-                hostFilingSystem.Mount(path);
+                discController.Mount(path, requestedDrive.GetValueOrDefault(0));
+                hostFilingSystem.Unmount();
 
-                Console.WriteLine($"Mounted DFS: {discController.MountedFileName}");
-                if (autoRunDisc)
+                Console.WriteLine($"Mounted DFS: {discController.MountedDriveSummary}");
+                if (autoRunDisc && requestedDrive.GetValueOrDefault(0) == 0)
                     QueueMountedDiscAutoRun();
                 return;
             }
@@ -608,7 +666,6 @@ namespace BBC
         private bool HandleHostFirmwareHooks()
         {
             return TryHandleSidewaysRomLanguageCommand()
-                || hostFilingSystem.TryHandleOsword(Cpu)
                 || hostFilingSystem.TryHandleOsfile(Cpu)
                 || hostFilingSystem.TryHandleOscli(Cpu)
                 || hostFilingSystem.TryHandleFscv(Cpu)

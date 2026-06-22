@@ -54,6 +54,7 @@ namespace BBC.CPU
         private readonly ConcurrentQueue<ulong> IRQ_Buffer = new ConcurrentQueue<ulong>();
         private readonly ConcurrentQueue<ulong> NMI_Buffer = new ConcurrentQueue<ulong>();
         private int irqLineAsserted;
+        private bool nmiLineWasAsserted;
 
         public void InitiateIRQ(ulong value)
         {
@@ -75,6 +76,7 @@ namespace BBC.CPU
         public long TotalCycles => Interlocked.Read(ref totalCycles);
         public Action<int>? OnCyclesExecuted;
         public Func<bool>? OnBeforeInstruction;
+        public Func<bool>? NmiLineAsserted;
         private int externalStallCycles;
         public double SpeedScale { get; set; } = 1.0;
 
@@ -153,6 +155,7 @@ namespace BBC.CPU
             jammed = false;
             jamReported = false;
             jamAddress = 0;
+            nmiLineWasAsserted = false;
 
             while (IRQ_Buffer.TryDequeue(out _)) { }
             while (NMI_Buffer.TryDequeue(out _)) { }
@@ -220,6 +223,11 @@ namespace BBC.CPU
                             Interlocked.Add(ref totalCycles, stall);
                             continue;
                         }
+
+                        bool nmiLineAsserted = NmiLineAsserted?.Invoke() == true;
+                        if (nmiLineAsserted && !nmiLineWasAsserted)
+                            ProcessNMI();
+                        nmiLineWasAsserted = nmiLineAsserted;
 
                         while (NMI_Buffer.TryDequeue(out ulong nmiValue))
                         {
