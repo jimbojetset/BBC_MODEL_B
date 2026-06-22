@@ -87,6 +87,7 @@ The speed scale is held back until MOS has reached its input path. That is inten
 --drive3 PATH      Mount an SSD image in a DFS logical drive slot.
 --blank-ssd PATH   Create a blank SSD image if the file does not exist.
 --blank-dsd PATH   Create a blank DSD image if the file does not exist.
+                  If no --driveN option names that image, it is mounted in drive 0.
 
 --boot-disc        Run the mounted disc's boot path. This is the default.
 --no-boot-disc
@@ -215,7 +216,13 @@ Two double-sided images are mounted by using the two physical drives:
 dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot --drive0 first.dsd --drive1 second.dsd
 ```
 
-Blank images are created separately from mounting, so the command says both what to make and where to put it:
+Blank images default to drive 0 if you do not say otherwise:
+
+```bash
+dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot --blank-ssd save.ssd
+```
+
+When you do care about the drive, the command says both what to make and where to put it:
 
 ```bash
 dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot --blank-ssd save.ssd --drive1 save.ssd
