@@ -25,6 +25,7 @@ namespace BBC
         private const int SectorSize = 256;
         private const int SectorsPerTrack = 10;
         private const int SingleSidedTracks = 80;
+        private const int TrackBytes = SectorsPerTrack * SectorSize;
         private const int SingleSidedImageBytes = SingleSidedTracks * SectorsPerTrack * SectorSize;
         private const byte StatusBusy = 0x80;
         private const byte StatusDataRequest = 0x04;
@@ -108,6 +109,8 @@ namespace BBC
 
         public bool NmiLineAsserted => nmiPending && nmiDelayCycles <= 0;
 
+        private int ActiveDrive => selectedDrive + ((specialRegisters[0x23] & 0x20) != 0 ? 2 : 0);
+
         public void StartTrace(string path)
         {
             StopTrace();
@@ -180,9 +183,8 @@ namespace BBC
             if (image.Length >= SingleSidedImageBytes * 2)
             {
                 drives[0] = new byte[SingleSidedImageBytes];
-                drives[2] = new byte[image.Length - SingleSidedImageBytes];
-                Array.Copy(image, 0, drives[0], 0, drives[0].Length);
-                Array.Copy(image, SingleSidedImageBytes, drives[2], 0, drives[2].Length);
+                drives[2] = new byte[SingleSidedImageBytes];
+                DeinterleaveDsdImage(image, drives[0], drives[2]);
                 driveMounted[0] = true;
                 driveMounted[2] = drives[2].Length > 0;
                 mountedPaths[0] = fullPath;
@@ -236,8 +238,7 @@ namespace BBC
                         if (drives[2].Length > 0 && string.Equals(mountedPaths[0], mountedPaths[2], StringComparison.Ordinal))
                         {
                             combined = new byte[drives[0].Length + drives[2].Length];
-                            Array.Copy(drives[0], 0, combined, 0, drives[0].Length);
-                            Array.Copy(drives[2], 0, combined, drives[0].Length, drives[2].Length);
+                            InterleaveDsdImage(drives[0], drives[2], combined);
                         }
                         else
                         {
@@ -522,14 +523,14 @@ namespace BBC
                     break;
 
                 case 0x23:
-                    if (!IsDriveReady(selectedDrive))
+                    if (!IsDriveReady(ActiveDrive))
                         SetResult(ResultDriveNotReady);
                     else
                         SetResult(ResultOk, BeginMediaAccess(parameters[0], 0));
                     break;
 
                 case 0x2B:
-                    SetPolledResult(IsDriveReady(selectedDrive) ? (byte)0x00 : ResultDriveNotReady);
+                    SetPolledResult(IsDriveReady(ActiveDrive) ? (byte)0x00 : ResultDriveNotReady);
                     break;
 
                 case 0x29:
@@ -539,8 +540,8 @@ namespace BBC
                     break;
 
                 case 0x2C:
-                    SetPolledResult(IsDriveReady(selectedDrive) ? (byte)0x45 : (byte)0x00);
-                    Trace($"DRIVE STATUS result=${result:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive}");
+                    SetPolledResult(IsDriveReady(ActiveDrive) ? (byte)0x45 : (byte)0x00);
+                    Trace($"DRIVE STATUS result=${result:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive} activeDrive={ActiveDrive}");
                     break;
 
                 case 0x35:
@@ -567,20 +568,21 @@ namespace BBC
 
         private void ReadSectors(int track, int sector, int sectorSize, int count)
         {
-            if (!IsDriveReady(selectedDrive))
+            int drive = ActiveDrive;
+            if (!IsDriveReady(drive))
             {
                 SetResult(ResultDriveNotReady);
                 return;
             }
 
-            byte[] image = drives[selectedDrive];
+            byte[] image = drives[drive];
             List<int> offsets = new List<int>();
             int currentTrack = track;
             int currentSector = sector;
 
             for (int sectorIndex = 0; sectorIndex < count; sectorIndex++)
             {
-                if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > image.Length)
+                if (!TryGetOffset(drive, currentTrack, currentSector, out int offset) || offset + sectorSize > image.Length)
                 {
                     SetResult(ResultSectorNotFound);
                     return;
@@ -597,14 +599,15 @@ namespace BBC
             }
 
             readLedActive = readData.Count > 0;
-            Trace($"READ queued drive={selectedDrive} track={track} sector={sector} size={sectorSize} count={count} bytes={readData.Count}");
+            Trace($"READ queued drive={drive} track={track} sector={sector} size={sectorSize} count={count} bytes={readData.Count}");
             RequestNmi(BeginMediaAccess(track, sector));
         }
 
         private void ScanSectors(int track, int sector, int sectorSize, int count)
         {
 
-            if (!IsDriveReady(selectedDrive))
+            int drive = ActiveDrive;
+            if (!IsDriveReady(drive))
             {
                 SetResult(ResultDriveNotReady);
                 return;
@@ -614,7 +617,7 @@ namespace BBC
             int currentSector = sector;
             for (int sectorIndex = 0; sectorIndex < count; sectorIndex++)
             {
-                if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > drives[selectedDrive].Length)
+                if (!TryGetOffset(drive, currentTrack, currentSector, out int offset) || offset + sectorSize > drives[drive].Length)
                 {
                     SetResult(ResultSectorNotFound);
                     return;
@@ -629,20 +632,21 @@ namespace BBC
         private void PrepareWrite(int track, int sector, int sectorSize, int count)
         {
 
-            if (!IsDriveReady(selectedDrive))
+            int drive = ActiveDrive;
+            if (!IsDriveReady(drive))
             {
                 SetResult(ResultDriveNotReady);
                 return;
             }
 
-            byte[] image = drives[selectedDrive];
+            byte[] image = drives[drive];
             List<int> offsets = new List<int>();
             int currentTrack = track;
             int currentSector = sector;
 
             for (int sectorIndex = 0; sectorIndex < count; sectorIndex++)
             {
-                if (!TryGetOffset(selectedDrive, currentTrack, currentSector, out int offset) || offset + sectorSize > image.Length)
+                if (!TryGetOffset(drive, currentTrack, currentSector, out int offset) || offset + sectorSize > image.Length)
                 {
                     SetResult(ResultSectorNotFound);
                     return;
@@ -652,9 +656,9 @@ namespace BBC
                 AdvanceSector(ref currentTrack, ref currentSector);
             }
 
-            pendingWrite = new PendingWrite(selectedDrive, offsets.ToArray(), sectorSize, sectorSize * count);
+            pendingWrite = new PendingWrite(drive, offsets.ToArray(), sectorSize, sectorSize * count);
             writeData.Clear();
-            Trace($"WRITE prepared drive={selectedDrive} track={track} sector={sector} size={sectorSize} count={count}");
+            Trace($"WRITE prepared drive={drive} track={track} sector={sector} size={sectorSize} count={count}");
             RequestNmi(BeginMediaAccess(track, sector));
         }
 
@@ -679,7 +683,8 @@ namespace BBC
         private void ReadSectorIds(int track, int count)
         {
 
-            if (!IsDriveReady(selectedDrive))
+            int drive = ActiveDrive;
+            if (!IsDriveReady(drive))
             {
                 SetResult(ResultDriveNotReady);
                 return;
@@ -696,18 +701,19 @@ namespace BBC
             }
 
             readLedActive = readData.Count > 0;
-            Trace($"READID queued drive={selectedDrive} track={track} count={sectorCount} bytes={readData.Count}");
+            Trace($"READID queued drive={drive} track={track} count={sectorCount} bytes={readData.Count}");
             RequestNmi(BeginMediaAccess(track, 0));
         }
 
         private bool HasSector(int track, int sector)
         {
-            return TryGetOffset(selectedDrive, track, sector, out int offset) && offset + SectorSize <= drives[selectedDrive].Length;
+            int drive = ActiveDrive;
+            return TryGetOffset(drive, track, sector, out int offset) && offset + SectorSize <= drives[drive].Length;
         }
 
         private void VerifySector(int track, int sector)
         {
-            if (!IsDriveReady(selectedDrive))
+            if (!IsDriveReady(ActiveDrive))
             {
                 SetResult(ResultDriveNotReady);
                 return;
@@ -718,24 +724,25 @@ namespace BBC
 
         private int BeginMediaAccess(int track, int sector)
         {
+            int drive = ActiveDrive;
             int delayCycles = 0;
 
-            if (!motorSpinning[selectedDrive])
+            if (!motorSpinning[drive])
             {
-                motorSpinning[selectedDrive] = true;
-                motorStartedAtCycle[selectedDrive] = elapsedCycles;
+                motorSpinning[drive] = true;
+                motorStartedAtCycle[drive] = elapsedCycles;
                 delayCycles += MotorSpinUpCycles;
             }
 
-            int seekTracks = Math.Abs(track - currentTrack[selectedDrive]);
+            int seekTracks = Math.Abs(track - currentTrack[drive]);
             if (seekTracks > 0)
             {
                 delayCycles += (seekTracks * TrackToTrackSeekCycles) + HeadSettleCycles;
-                currentTrack[selectedDrive] = track;
+                currentTrack[drive] = track;
             }
 
             motorIdleCycles = MotorSpinDownCycles;
-            return delayCycles + GetRotationalLatencyCycles(selectedDrive, sector, elapsedCycles + delayCycles);
+            return delayCycles + GetRotationalLatencyCycles(drive, sector, elapsedCycles + delayCycles);
         }
 
         private int GetRotationalLatencyCycles(int drive, int sector, long readyAtCycle)
@@ -809,6 +816,30 @@ namespace BBC
 
             sector = 0;
             track++;
+        }
+
+        private static void DeinterleaveDsdImage(byte[] image, byte[] side0, byte[] side1)
+        {
+            int tracks = Math.Min(side0.Length, side1.Length) / TrackBytes;
+            for (int track = 0; track < tracks; track++)
+            {
+                int source = track * TrackBytes * 2;
+                int target = track * TrackBytes;
+                Array.Copy(image, source, side0, target, TrackBytes);
+                Array.Copy(image, source + TrackBytes, side1, target, TrackBytes);
+            }
+        }
+
+        private static void InterleaveDsdImage(byte[] side0, byte[] side1, byte[] image)
+        {
+            int tracks = Math.Min(side0.Length, side1.Length) / TrackBytes;
+            for (int track = 0; track < tracks; track++)
+            {
+                int source = track * TrackBytes;
+                int target = track * TrackBytes * 2;
+                Array.Copy(side0, source, image, target, TrackBytes);
+                Array.Copy(side1, source, image, target + TrackBytes, TrackBytes);
+            }
         }
 
         private bool TryGetAutoLoadCommand(out string? command)
