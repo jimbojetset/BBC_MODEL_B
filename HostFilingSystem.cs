@@ -32,6 +32,7 @@ namespace BBC
         private HostFile[] files = [];
         private string currentDirectory = "$";
         private string? mountedFileName;
+        private bool tapeCommandSeen;
 
         public HostFilingSystem(FlatMemoryBus memory)
         {
@@ -61,6 +62,7 @@ namespace BBC
             files = [];
             mountedFileName = null;
             currentDirectory = "$";
+            tapeCommandSeen = false;
         }
 
         public void Mount(string path)
@@ -79,6 +81,7 @@ namespace BBC
 
             mountedFileName = Path.GetFileName(fullPath);
             currentDirectory = "$";
+            tapeCommandSeen = false;
         }
 
         /// <summary>OSFILE is the MOS path behind BASIC LOAD for the mounted host file.</summary>
@@ -146,6 +149,7 @@ namespace BBC
 
             if (IsTapeCommand(command))
             {
+                tapeCommandSeen = true;
                 ReturnFromSubroutine(cpu);
                 return true;
             }
@@ -162,7 +166,7 @@ namespace BBC
                 return true;
             }
 
-            if (TryHandleFxCommand(command, cpu, out bool returnFromOscli))
+            if (TryHandleFxCommand(command, cpu, earlyDiscFallbackOnly: true, out bool returnFromOscli))
             {
                 if (returnFromOscli)
                     ReturnFromSubroutine(cpu);
@@ -191,6 +195,14 @@ namespace BBC
             if (TryHandleExecCommand(command))
             {
                 ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (TryHandleFxCommand(command, cpu, earlyDiscFallbackOnly: false, out returnFromOscli))
+            {
+                if (returnFromOscli)
+                    ReturnFromSubroutine(cpu);
+
                 return true;
             }
 
@@ -377,7 +389,7 @@ namespace BBC
             return trimmed.StartsWith("T.", StringComparison.OrdinalIgnoreCase);
         }
 
-        private bool TryHandleFxCommand(string command, CPU_6502 cpu, out bool returnFromOscli)
+        private bool TryHandleFxCommand(string command, CPU_6502 cpu, bool earlyDiscFallbackOnly, out bool returnFromOscli)
         {
             returnFromOscli = true;
             string trimmed = command.TrimStart();
@@ -388,10 +400,14 @@ namespace BBC
             if (!TryParseFxArguments(arguments, out int a, out int x, out int y))
                 return false;
 
-            if ((a & 0xFF) == 0x10)
+            byte osbyte = (byte)a;
+            if (earlyDiscFallbackOnly && osbyte == 0xC8 && !tapeCommandSeen)
+                return false;
+
+            if (osbyte == 0x10)
                 return true;
 
-            if ((a & 0xFF) == 0x8A)
+            if (osbyte == 0x8A)
             {
                 InsertSoftKey((byte)y);
                 return true;
