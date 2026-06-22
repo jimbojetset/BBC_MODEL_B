@@ -83,9 +83,10 @@ The speed scale is held back until MOS has reached its input path. That is inten
 
 --drive0 PATH
 --drive1 PATH      Mount an SSD/DSD image in a physical drive.
---blank-drive0 PATH
---blank-drive1 PATH
-                  Create and mount a blank SSD if the file does not exist.
+--drive2 PATH
+--drive3 PATH      Mount an SSD image in a DFS logical drive slot.
+--blank-ssd PATH   Create a blank SSD image if the file does not exist.
+--blank-dsd PATH   Create a blank DSD image if the file does not exist.
 
 --boot-disc        Run the mounted disc's boot path. This is the default.
 --no-boot-disc
@@ -182,7 +183,7 @@ Inside the BBC, the useful commands are:
 *POINTER OFF
 ```
 
-With `ROMS/AMXMSE331.rom` present, the ROM is loaded in sideways bank 13. `*MOUSE` commands update host capture state, while `*POINTER` is left to the AMX software/ROM side of the world.
+With `ROMS/AMXMSE331.rom` present, the ROM is loaded in sideways bank 13. `*MOUSE` and `*POINTER ON/OFF` update the host capture state, because AMX titles do not all enable the pointer in the same order.
 
 `Games/Misc/AMXArt.ssd` can be launched directly:
 
@@ -207,6 +208,21 @@ The emulator handles the boot `*EXEC !BOOT` path and queues the soft-key continu
 DFS `.ssd` and `.dsd` images can be mounted from the command line, drag/drop, or the host file picker.
 
 `--drive0` and `--drive1` name the physical BBC drives. An SSD uses the drive you mount it in. A DSD uses both sides of that physical drive: drive 0 maps to DFS drives 0 and 2, while drive 1 maps to DFS drives 1 and 3.
+
+Two double-sided images are mounted by using the two physical drives:
+
+```bash
+dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot --drive0 first.dsd --drive1 second.dsd
+```
+
+Blank images are created separately from mounting, so the command says both what to make and where to put it:
+
+```bash
+dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot --blank-ssd save.ssd --drive1 save.ssd
+dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot --blank-dsd work.dsd --drive0 work.dsd
+```
+
+`--drive2` and `--drive3` are there for explicit SSD logical-drive mounts. DSD images must be mounted through physical drive 0 or 1 so the emulator can keep the two sides paired.
 
 The loading path is deliberately split in two, because the neat version of this design would be less honest than the useful one:
 
@@ -237,7 +253,7 @@ env BBC_MOUSE_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Games/Misc/AMXA
 env BBC_OSCLI_TRACE=1 BBC_MOUSE_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Games/Misc/AMXArt.ssd
 ```
 
-`BBC_OSCLI_TRACE=1` follows host filing-system OSCLI activity such as `*EXEC`, `*MOUSE`, `*POINTER`, `*FX`, and file matches.
+`BBC_OSCLI_TRACE=1` follows the host-side OSCLI hooks such as `*EXEC`, `*MOUSE`, `*POINTER`, `*FX`, and file matches.
 
 `BBC_MOUSE_TRACE=1` follows host mouse movement and button data while mouse emulation is active.
 

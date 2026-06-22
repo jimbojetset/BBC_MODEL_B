@@ -136,16 +136,18 @@ namespace BBC
                     continue;
                 }
 
-                if (TryParseDriveOption(args[i], "--blank-disc", out int blankDiscDrive)
-                    || TryParseDriveOption(args[i], "--blank-disk", out blankDiscDrive)
-                    || TryParseDriveOption(args[i], "--blank-drive", out blankDiscDrive))
+                if (string.Equals(args[i], "--blank-ssd", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(args[i], "--blank-dsd", StringComparison.OrdinalIgnoreCase))
                 {
                     if (i + 1 >= args.Length)
                         throw new ArgumentException($"{args[i]} requires a path.");
 
                     string blankPath = args[++i];
-                    CreateBlankDfsImage(blankPath);
-                    mounts.Add(new MountRequest(blankPath, blankDiscDrive));
+                    if (args[i - 1].EndsWith("dsd", StringComparison.OrdinalIgnoreCase))
+                        CreateBlankDsdImage(blankPath);
+                    else
+                        CreateBlankSsdImage(blankPath);
+
                     continue;
                 }
 
@@ -166,14 +168,46 @@ namespace BBC
             return suffix.Length == 1 && char.IsDigit(suffix[0]) && int.TryParse(suffix, out drive) && drive is >= 0 and <= 3;
         }
 
-        private static void CreateBlankDfsImage(string path)
+        private static void CreateBlankSsdImage(string path)
         {
             string fullPath = Path.GetFullPath(path);
             if (File.Exists(fullPath))
                 return;
 
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? ".");
+            File.WriteAllBytes(fullPath, CreateBlankDfsSide(path));
+        }
+
+        private static void CreateBlankDsdImage(string path)
+        {
+            string fullPath = Path.GetFullPath(path);
+            if (File.Exists(fullPath))
+                return;
+
+            const int sectorsPerTrack = 10;
+            const int sectorSize = 256;
+            const int trackBytes = sectorsPerTrack * sectorSize;
+            const int tracks = 80;
+
+            byte[] side0 = CreateBlankDfsSide(path);
+            byte[] side1 = CreateBlankDfsSide(path);
+            byte[] image = new byte[side0.Length + side1.Length];
+            for (int track = 0; track < tracks; track++)
+            {
+                int sideOffset = track * trackBytes;
+                int imageOffset = track * trackBytes * 2;
+                Array.Copy(side0, sideOffset, image, imageOffset, trackBytes);
+                Array.Copy(side1, sideOffset, image, imageOffset + trackBytes, trackBytes);
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? ".");
+            File.WriteAllBytes(fullPath, image);
+        }
+
+        private static byte[] CreateBlankDfsSide(string path)
+        {
             byte[] image = new byte[80 * 10 * 256];
-            string title = Path.GetFileNameWithoutExtension(fullPath).ToUpperInvariant();
+            string title = Path.GetFileNameWithoutExtension(path).ToUpperInvariant();
             if (title.Length > 12)
                 title = title[..12];
 
@@ -186,8 +220,7 @@ namespace BBC
             image[0x105] = 0;
             image[0x106] = 0x03;
             image[0x107] = 0x20;
-            Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? ".");
-            File.WriteAllBytes(fullPath, image);
+            return image;
         }
 
         private static bool TryParseSpeedScale(string value, out double speedScale)
