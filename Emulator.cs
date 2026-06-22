@@ -70,6 +70,7 @@ namespace BBC
         {
             int headlessMilliseconds = 0;
             List<MountRequest> mounts = new List<MountRequest>();
+            List<string> createdBlankImages = new List<string>();
             string? printAutoLoadPath = null;
             double speedScale = 1.0;
             bool autoRunDisc = true;
@@ -148,6 +149,7 @@ namespace BBC
                     else
                         CreateBlankSsdImage(blankPath);
 
+                    createdBlankImages.Add(blankPath);
                     continue;
                 }
 
@@ -155,7 +157,19 @@ namespace BBC
                     mounts.Add(new MountRequest(args[i], null));
             }
 
+            foreach (string blankImage in createdBlankImages)
+            {
+                if (!MountsContainPath(mounts, blankImage))
+                    mounts.Add(new MountRequest(blankImage, null));
+            }
+
             return new StartupOptions(headlessMilliseconds, mounts, printAutoLoadPath, speedScale, autoRunDisc);
+        }
+
+        private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
+        {
+            string fullPath = Path.GetFullPath(path);
+            return mounts.Any(mount => string.Equals(Path.GetFullPath(mount.Path), fullPath, StringComparison.OrdinalIgnoreCase));
         }
 
         private static bool TryParseDriveOption(string option, string prefix, out int drive)
