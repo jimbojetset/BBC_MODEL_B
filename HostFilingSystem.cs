@@ -1,8 +1,7 @@
 // ============================================================================
 // Project:     BBC
 // File:        HostFilingSystem.cs
-// Description: Host-backed bridge for MOS filing-system calls, used when files
-//              or DFS images are mounted directly from the host.
+// Description: Host-file bridge for MOS LOAD/RUN/EXEC shortcuts outside DFS.
 // Author:      James Booth
 // Created:     2026
 // License:     MIT License - See LICENSE file in the project root
@@ -18,8 +17,8 @@ namespace BBC
 {
 
     /// <summary>
-    /// Lets the emulator answer selected MOS filing-system vectors without
-    /// pretending to be a complete BBC filing system ROM.
+    /// Lets a dropped host file behave enough like a BBC file for MOS LOAD,
+    /// RUN, and EXEC paths, while real DFS discs stay on the 8271 controller.
     /// </summary>
     public sealed class HostFilingSystem
     {
@@ -28,60 +27,40 @@ namespace BBC
         private const ushort OsbyteEntry = 0xFFF4;
         private const ushort FscvVector = 0x021E;
         private const ushort DefaultBasicLoadAddress = 0x1900;
-        private const ushort OswordEntry = 0xFFF1;
-        private const int SectorSize = 256;
-        private const int SectorsPerTrack = 10;
         private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
         private readonly FlatMemoryBus memory;
         private HostFile[] files = [];
-        private byte[] mountedImage = [];
-        private string? mountedPath;
         private string currentDirectory = "$";
-
         private string? mountedFileName;
-        private bool mountedDiscImage;
 
         public HostFilingSystem(FlatMemoryBus memory)
         {
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
         }
 
-        public string? MountedPath => mountedPath;
-
         public string? MountedFileName => mountedFileName;
-
-        public bool HasMountedFile => files.Length > 0;
 
         public bool MouseCommandFallbackEnabled { get; set; } = true;
 
-        /// <summary>Notifies the host UI that a disc-image load should look like BBC drive activity.</summary>
-        public Action? DiscImageLoadActivity { get; set; }
-
-        /// <summary>Notifies the host when AMX-style commands change mouse capture outside the mouse ROM.</summary>
+        /// <summary>Some AMX software uses *MOUSE/*POINTER before the mouse ROM has claimed those commands.</summary>
         public Action<bool>? MouseEnabledChanged { get; set; }
 
-        /// <summary>Queues BBC soft-key expansion through the keyboard buffer rather than by editing RAM.</summary>
+        /// <summary>Soft keys expand through the MOS keyboard buffer, just as firmware would type them.</summary>
         public Action<string>? QueueKeyboardText { get; set; }
 
-        /// <summary>Queues EXEC text as paced keyboard input, matching how MOS consumes command scripts.</summary>
+        /// <summary>*EXEC feeds lines through the keyboard stream rather than loading program memory.</summary>
         public Action<string>? QueueKeyboardScript { get; set; }
 
-        /// <summary>Reports BREAK commands so soft-key continuation can be scheduled after MOS state is cleared.</summary>
+        /// <summary>BREAK clears MOS state before the soft-key continuation can be replayed.</summary>
         public Action<string?>? BreakCommandObserved { get; set; }
-
-        public string? AutoLoadCommand => files.Length == 0 ? null : $"LOAD \"{files[0].Name}\"";
 
         private readonly string[] softKeyStrings = new string[16];
 
         public void Unmount()
         {
             files = [];
-            mountedImage = [];
-            mountedPath = null;
             mountedFileName = null;
-            mountedDiscImage = false;
             currentDirectory = "$";
-            MouseCommandFallbackEnabled = true;
         }
 
         public void Mount(string path)
@@ -93,22 +72,16 @@ namespace BBC
             if (!File.Exists(fullPath))
                 throw new FileNotFoundException($"Disc/file not found: {fullPath}", fullPath);
 
-            byte[] data = File.ReadAllBytes(fullPath);
-            mountedDiscImage = IsSsdImage(fullPath, data);
-            mountedImage = mountedDiscImage ? data : [];
-            files = mountedDiscImage
-                ? ReadSsdFiles(data)
-                : [ReadRawHostFile(fullPath, data)];
+            files = [ReadRawHostFile(fullPath, File.ReadAllBytes(fullPath))];
 
             if (files.Length == 0)
                 throw new InvalidOperationException($"No loadable files found in '{fullPath}'.");
 
-            mountedPath = fullPath;
             mountedFileName = Path.GetFileName(fullPath);
             currentDirectory = "$";
         }
 
-        /// <summary>OSFILE interception covers host-backed LOAD paths before the MOS falls through to DFS.</summary>
+        /// <summary>OSFILE is the MOS path behind BASIC LOAD for the mounted host file.</summary>
         public bool TryHandleOsfile(CPU_6502 cpu)
         {
             if ((cpu.registers.PC & 0xFFFF) != OsfileEntry)
@@ -146,55 +119,13 @@ namespace BBC
             WriteCatalogueInfo(controlBlock, file);
             cpu.registers.A = 1;
             ReturnFromSubroutine(cpu);
-            if (action == 0xFF)
-                NotifyDiscImageLoadActivity();
             return true;
         }
 
-        public bool TryHandleOsword(CPU_6502 cpu)
-        {
-            if ((cpu.registers.PC & 0xFFFF) != OswordEntry || cpu.registers.A != 0x7F || !mountedDiscImage || mountedImage.Length == 0)
-                return false;
-
-            ushort controlBlock = (ushort)(cpu.registers.X | (cpu.registers.Y << 8));
-            byte parameterCount = memory.Memory[(controlBlock + 5) & 0xFFFF];
-            if (parameterCount < 3)
-                return false;
-
-            byte command = memory.Memory[(controlBlock + 6) & 0xFFFF];
-            byte opcode = (byte)(command & 0x3F);
-            if (opcode is not (0x07 or 0x13 or 0x17))
-                return false;
-
-            uint dataAddress = ReadDword(controlBlock + 1);
-            int track = memory.Memory[(controlBlock + 7) & 0xFFFF];
-            int sector = memory.Memory[(controlBlock + 8) & 0xFFFF];
-            byte sectorSizeAndCount = memory.Memory[(controlBlock + 9) & 0xFFFF];
-            int sectorSize = GetSectorSize(sectorSizeAndCount);
-            int count = GetSectorCount(sectorSizeAndCount);
-            ushort targetAddress = (ushort)dataAddress;
-
-            for (int sectorIndex = 0; sectorIndex < count; sectorIndex++)
-            {
-                if (!TryGetSectorOffset(track, sector, out int offset) || offset + sectorSize > mountedImage.Length)
-                    return false;
-
-                for (int i = 0; i < sectorSize; i++)
-                    memory.Memory[(targetAddress + (sectorIndex * sectorSize) + i) & 0xFFFF] = mountedImage[offset + i];
-
-                AdvanceSector(ref track, ref sector);
-            }
-
-            cpu.registers.A = 0;
-            ReturnFromSubroutine(cpu);
-            NotifyDiscImageLoadActivity();
-            return true;
-        }
-
-        /// <summary>OSCLI interception catches host-side commands such as MOUSE before a ROM claims them.</summary>
+        /// <summary>OSCLI carries star commands; this bridge only claims host-file shortcuts and host-side MOS fallbacks.</summary>
         public bool TryHandleOscli(CPU_6502 cpu)
         {
-            if ((cpu.registers.PC & 0xFFFF) != OscliEntry || files.Length == 0)
+            if ((cpu.registers.PC & 0xFFFF) != OscliEntry)
                 return false;
 
             ushort commandAddress = (ushort)(cpu.registers.X | (cpu.registers.Y << 8));
@@ -207,7 +138,27 @@ namespace BBC
             if (command.StartsWith('/'))
                 command = "RUN " + command[1..].TrimStart();
 
-            ObservePointerCommand(command);
+            if (IsTvCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (TryHandleMouseCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (TryHandlePointerCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
+            if (files.Length == 0)
+                return false;
+
             if (IsBreakCommand(command))
                 BreakCommandObserved?.Invoke(GetSoftKeyText(10));
 
@@ -243,12 +194,6 @@ namespace BBC
                 return true;
             }
 
-            if (IsTvCommand(command))
-            {
-                ReturnFromSubroutine(cpu);
-                return true;
-            }
-
             if (IsOptCommand(command))
             {
                 ReturnFromSubroutine(cpu);
@@ -262,12 +207,6 @@ namespace BBC
             }
 
             if (TryHandleDirCommand(command))
-            {
-                ReturnFromSubroutine(cpu);
-                return true;
-            }
-
-            if (TryHandleMouseCommand(command))
             {
                 ReturnFromSubroutine(cpu);
                 return true;
@@ -288,7 +227,6 @@ namespace BBC
                     memory.Memory[(targetAddress + i) & 0xFFFF] = loadFile.Data[i];
 
                 ReturnFromSubroutine(cpu);
-                NotifyDiscImageLoadActivity();
                 return true;
             }
 
@@ -310,11 +248,10 @@ namespace BBC
                 memory.Memory[(runLoadAddress + i) & 0xFFFF] = file.Data[i];
 
             cpu.registers.PC = ToCpuAddress(file.ExecutionAddress, DefaultBasicLoadAddress);
-            NotifyDiscImageLoadActivity();
             return true;
         }
 
-        /// <summary>FSCV interception lets bare host files behave like a simple BBC filing-system load.</summary>
+        /// <summary>FSCV is used by MOS filing-system entry points that bypass OSFILE.</summary>
         public bool TryHandleFscv(CPU_6502 cpu)
         {
             if (files.Length == 0 || (cpu.registers.PC & 0xFFFF) != ReadWord(FscvVector))
@@ -337,7 +274,6 @@ namespace BBC
                 memory.Memory[(fscvLoadAddress + i) & 0xFFFF] = file.Data[i];
 
             cpu.registers.PC = ToCpuAddress(file.ExecutionAddress, DefaultBasicLoadAddress);
-            NotifyDiscImageLoadActivity();
             return true;
         }
 
@@ -371,7 +307,6 @@ namespace BBC
             else
                 QueueKeyboardText?.Invoke(text);
 
-            NotifyDiscImageLoadActivity();
             return true;
         }
 
@@ -416,20 +351,21 @@ namespace BBC
             return MouseCommandFallbackEnabled;
         }
 
-        private void ObservePointerCommand(string command)
+        private bool TryHandlePointerCommand(string command)
         {
             string trimmed = command.TrimStart();
             if (trimmed.Length < 7
                 || !string.Equals(trimmed[..7], "POINTER", StringComparison.OrdinalIgnoreCase)
                 || (trimmed.Length > 7 && !char.IsWhiteSpace(trimmed[7])))
             {
-                return;
+                return false;
             }
 
             string option = trimmed.Length == 7 ? "ON" : trimmed[7..].TrimStart();
             bool enabled = !option.StartsWith("OFF", StringComparison.OrdinalIgnoreCase);
             MouseEnabledChanged?.Invoke(enabled);
             Trace($"POINTER mouse enabled={enabled}");
+            return MouseCommandFallbackEnabled;
         }
 
         private static bool IsTvCommand(string command)
@@ -654,12 +590,6 @@ namespace BBC
             return trimmed;
         }
 
-        private void NotifyDiscImageLoadActivity()
-        {
-            if (mountedDiscImage)
-                DiscImageLoadActivity?.Invoke();
-        }
-
         private static void Trace(string message)
         {
             if (TraceEnabled)
@@ -846,101 +776,11 @@ namespace BBC
             memory.Memory[(address + 3) & 0xFFFF] = (byte)(value >> 24);
         }
 
-        private static bool IsSsdImage(string path, byte[] data)
-        {
-            string extension = Path.GetExtension(path);
-            return data.Length >= 512
-                && data.Length % 256 == 0
-                && (string.Equals(extension, ".ssd", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase));
-        }
-
-        private bool TryGetSectorOffset(int track, int sector, out int offset)
-        {
-            if (track < 0 || sector < 0 || sector >= SectorsPerTrack)
-            {
-                offset = 0;
-                return false;
-            }
-
-            int logicalSector = (track * SectorsPerTrack) + sector;
-            offset = logicalSector * SectorSize;
-            return offset >= 0 && offset < mountedImage.Length;
-        }
-
-        private static void AdvanceSector(ref int track, ref int sector)
-        {
-            sector++;
-            if (sector < SectorsPerTrack)
-                return;
-
-            sector = 0;
-            track++;
-        }
-
-        private static int GetSectorSize(byte sectorSizeAndCount)
-        {
-            int sizeCode = sectorSizeAndCount >> 5;
-            return sizeCode switch
-            {
-                0 => 128,
-                1 => 256,
-                2 => 512,
-                _ => 1024
-            };
-        }
-
-        private static int GetSectorCount(byte sectorSizeAndCount)
-        {
-            int count = sectorSizeAndCount & 0x1F;
-            return count == 0 ? SectorsPerTrack : count;
-        }
-
         private static HostFile ReadRawHostFile(string path, byte[] data)
         {
             string name = Path.GetFileNameWithoutExtension(path);
             HostFileMetadata metadata = ReadInfMetadata(path);
             return new HostFile(NormalizeDiscName(name), metadata.LoadAddress, metadata.ExecutionAddress, data);
-        }
-
-        private static HostFile[] ReadSsdFiles(byte[] image)
-        {
-            int fileCount = image[0x105] / 8;
-            List<HostFile> result = new List<HostFile>();
-
-            for (int i = 0; i < fileCount && i < 31; i++)
-            {
-                int nameOffset = 8 + (i * 8);
-                int infoOffset = 0x108 + (i * 8);
-                string name = ReadDfsName(image, nameOffset);
-                if (string.IsNullOrWhiteSpace(name))
-                    continue;
-
-                int packed = image[infoOffset + 6];
-                uint load = (uint)(image[infoOffset] | (image[infoOffset + 1] << 8) | ((packed & 0x0C) << 14));
-                uint exec = (uint)(image[infoOffset + 2] | (image[infoOffset + 3] << 8) | ((packed & 0xC0) << 10));
-                int length = image[infoOffset + 4] | (image[infoOffset + 5] << 8) | ((packed & 0x30) << 12);
-                int startSector = image[infoOffset + 7] | ((packed & 0x03) << 8);
-                int start = startSector * 256;
-
-                if (length < 0 || start < 0 || start + length > image.Length)
-                    continue;
-
-                byte[] data = new byte[length];
-                Array.Copy(image, start, data, 0, length);
-                result.Add(new HostFile(name, load, exec, data));
-            }
-
-            return result.ToArray();
-        }
-
-        private static string ReadDfsName(byte[] image, int offset)
-        {
-            string leaf = Encoding.ASCII.GetString(image, offset, 7).Trim();
-            char directory = (char)(image[offset + 7] & 0x7F);
-            return directory is >= '!' and <= '~' && directory != '$'
-                ? $"{directory}.{leaf}"
-                : leaf;
         }
 
         private static ushort ToCpuAddress(uint address, ushort fallback)

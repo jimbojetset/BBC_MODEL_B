@@ -176,7 +176,7 @@ Inside the BBC, the useful commands are:
 *POINTER OFF
 ```
 
-With `ROMS/AMXMSE331.rom` present, the ROM is loaded in sideways bank 13. `*MOUSE` commands still update host capture state, but the AMX ROM remains the thing the BBC software thinks it is talking to.
+With `ROMS/AMXMSE331.rom` present, the ROM is loaded in sideways bank 13. `*MOUSE` commands update host capture state, while `*POINTER` is left to the AMX software/ROM side of the world.
 
 `Games/Misc/AMXArt.ssd` can be launched directly:
 
@@ -200,10 +200,10 @@ The emulator handles the boot `*EXEC !BOOT` path and queues the soft-key continu
 
 DFS `.ssd` and `.dsd` images can be mounted from the command line, drag/drop, or the host file picker.
 
-The disc path is deliberately split in two, because the neat version of this design would be less honest than the useful one:
+The loading path is deliberately split in two, because the neat version of this design would be less honest than the useful one:
 
 - `Intel8271_Disk` models the Acorn 8271-facing hardware that DFS talks to.
-- `HostFilingSystem` handles the few MOS filing-system shortcuts that make host-file loading practical without pretending to be a complete filing-system ROM.
+- `HostFilingSystem` sits outside DFS and only handles the small MOS shortcuts that make a raw host file practical to load.
 
 Boot behaviour:
 
@@ -254,7 +254,7 @@ uPD7002_ADC.cs        Analogue joystick/paddle converter at &FEC0-&FEC3
 TapeACIAStub.cs       Cassette/RS423 ACIA response for software probes
 Intel8271_Disk.cs     Acorn 8271 DFS disc controller surface
 Display.cs            SDL window plus BBC keyboard, mouse, and joystick input
-HostFilingSystem.cs   Host-backed MOS filing-system bridge
+HostFilingSystem.cs   MOS shortcuts for loading a raw host file
 Emulator.cs           Memory map, ROM loading, CLI, and hardware wiring
 SAA5050_Font.cs       Mode 7 teletext glyphs
 SN76489_Sound.cs      SN76489 PSG and internal speaker output
