@@ -981,7 +981,7 @@ namespace BBC
             float logicalX = hostX;
             float logicalY = hostY;
             if (renderer != IntPtr.Zero)
-                SDL_RenderWindowToLogical(renderer, hostX, hostY, out logicalX, out logicalY);
+                RenderWindowToLogical(hostX, hostY, out logicalX, out logicalY);
 
             int bbcX = relativeMouseMode
                 ? mouseState.X + relativeX
@@ -996,6 +996,30 @@ namespace BBC
                 buttons,
                 mouseState.DeltaX + relativeX,
                 mouseState.DeltaY + relativeY);
+        }
+
+        private void RenderWindowToLogical(int windowX, int windowY, out float logicalX, out float logicalY)
+        {
+            float rendererX = windowX;
+            float rendererY = windowY;
+            if (window != IntPtr.Zero)
+            {
+                SDL_GetWindowSize(window, out int windowWidth, out int windowHeight);
+
+                if (SDL_GetRendererOutputSize(renderer, out int outputWidth, out int outputHeight) == 0
+                    && windowWidth > 0
+                    && windowHeight > 0)
+                {
+                    rendererX = windowX * (outputWidth / (float)windowWidth);
+                    rendererY = windowY * (outputHeight / (float)windowHeight);
+                }
+            }
+
+            SDL_RenderGetViewport(renderer, out SdlRect viewport);
+            SDL_RenderGetScale(renderer, out float scaleX, out float scaleY);
+
+            logicalX = scaleX == 0.0f ? rendererX : (rendererX - viewport.X) / scaleX;
+            logicalY = scaleY == 0.0f ? rendererY : (rendererY - viewport.Y) / scaleY;
         }
 
         private void UpdateMouseButtonState(byte button, bool pressed, int hostX, int hostY)
@@ -1663,6 +1687,9 @@ namespace BBC
         private static extern void SDL_DestroyWindow(IntPtr window);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SDL_GetWindowSize(IntPtr window, out int w, out int h);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_CreateRenderer(IntPtr window, int index, uint flags);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
@@ -1678,10 +1705,16 @@ namespace BBC
         private static extern int SDL_RenderSetIntegerScale(IntPtr renderer, int enable);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int SDL_SetRelativeMouseMode(int enabled);
+        private static extern int SDL_GetRendererOutputSize(IntPtr renderer, out int w, out int h);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void SDL_RenderWindowToLogical(IntPtr renderer, int windowX, int windowY, out float logicalX, out float logicalY);
+        private static extern void SDL_RenderGetViewport(IntPtr renderer, out SdlRect rect);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void SDL_RenderGetScale(IntPtr renderer, out float scaleX, out float scaleY);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_SetRelativeMouseMode(int enabled);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_CreateTexture(IntPtr renderer, uint format, int access, int w, int h);
