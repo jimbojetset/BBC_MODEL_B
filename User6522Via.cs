@@ -23,8 +23,7 @@ namespace BBC
         private const byte InterruptFlagTimer1 = 0x40;
         private const byte InterruptFlagTimer2 = 0x20;
         private const byte InterruptSummary = 0x80;
-        private const int FloatingInputPollWindowCycles = 512;
-        private const int FloatingInputChangeCycles = 40_000;
+        private const int FloatingInputPeriodCycles = 50_000;
         private const int Timer1ReloadExtraCycles = 1;
         private const int Timer1LoadExtraCycles = 128;
         private readonly byte[] registers = new byte[16];
@@ -36,14 +35,13 @@ namespace BBC
         private byte dataDirectionB;
         private byte externalPortBMask;
         private byte externalPortBValue;
+        private byte floatingPortAInput = 0x5A;
+        private byte floatingPortBInput = 0xA5;
         private byte mouseButtonBits = 0xE0;
         private int pendingMouseX;
         private int pendingMouseY;
         private bool mouseInputActive;
-        private int peripheralCycleCounter;
-        private int lastPortBReadCycle = int.MinValue / 2;
-        private int portBPollStartCycle;
-        private int portBPollReadCount;
+        private int floatingInputCycleCounter;
         private ushort timer1Counter;
         private ushort timer1Latch;
         private ushort timer2Counter;
@@ -72,27 +70,28 @@ namespace BBC
             externalPortBValue = (byte)(value & mask);
         }
 
-        /// <summary>Switched joysticks pull user-port lines low when a direction or fire button is pressed.</summary>
+        /// <summary>Switched joysticks pull user-port lines low only while a direction or fire button is pressed.</summary>
         public void SetSwitchedJoystickInput(bool left, bool right, bool up, bool down, bool fire)
         {
-            byte value = 0x1F;
+            byte mask = 0;
+            byte value = 0;
 
             if (up)
-                value &= 0xFE;
+                mask |= 0x01;
 
             if (down)
-                value &= 0xFD;
+                mask |= 0x02;
 
             if (left)
-                value &= 0xFB;
+                mask |= 0x04;
 
             if (right)
-                value &= 0xF7;
+                mask |= 0x08;
 
             if (fire)
-                value &= 0xEF;
+                mask |= 0x10;
 
-            SetPortBInputBits(0x1F, value);
+            SetPortBInputBits(mask, value);
         }
 
         /// <summary>AMX-style mice report movement as user-port pulses, with buttons held active-low.</summary>
@@ -116,14 +115,13 @@ namespace BBC
             dataDirectionB = 0;
             externalPortBMask = 0;
             externalPortBValue = 0;
+            floatingPortAInput = 0x5A;
+            floatingPortBInput = 0xA5;
             mouseButtonBits = 0xE0;
             pendingMouseX = 0;
             pendingMouseY = 0;
             mouseInputActive = false;
-            peripheralCycleCounter = 0;
-            lastPortBReadCycle = int.MinValue / 2;
-            portBPollStartCycle = 0;
-            portBPollReadCount = 0;
+            floatingInputCycleCounter = 0;
             timer1Counter = 0;
             timer1Latch = 0;
             timer2Counter = 0;
@@ -146,7 +144,7 @@ namespace BBC
             if (peripheralCycles == 0)
                 return;
 
-            peripheralCycleCounter += peripheralCycles;
+            TickFloatingInputs(peripheralCycles);
             TickTimer1(peripheralCycles);
 
             if (timer2Running)
@@ -160,7 +158,7 @@ namespace BBC
             return register switch
             {
                 0x0 => ReadPortB(),
-                0x1 or 0xF => ReadPort(portA, dataDirectionA),
+                0x1 or 0xF => ReadPort(portA, dataDirectionA, floatingPortAInput),
                 0x2 => dataDirectionB,
                 0x3 => dataDirectionA,
                 0x4 => ReadTimerLow(timer1Counter, InterruptFlagTimer1),
@@ -386,39 +384,32 @@ namespace BBC
 
         private byte ReadPortB()
         {
-            byte value = ReadPort(portB, dataDirectionB);
-
-            if (dataDirectionB == 0x00)
-            {
-                int cyclesSinceLastRead = peripheralCycleCounter - lastPortBReadCycle;
-                if (cyclesSinceLastRead > FloatingInputPollWindowCycles)
-                {
-                    portBPollStartCycle = peripheralCycleCounter;
-                    portBPollReadCount = 1;
-                }
-                else
-                {
-                    portBPollReadCount++;
-                }
-
-                if (portBPollReadCount > 1 && peripheralCycleCounter - portBPollStartCycle >= FloatingInputChangeCycles)
-                {
-                    value = 0xFE;
-                    portBPollStartCycle = peripheralCycleCounter;
-                    portBPollReadCount = 0;
-                }
-            }
-
-            lastPortBReadCycle = peripheralCycleCounter;
+            byte value = ReadPort(portB, dataDirectionB, floatingPortBInput);
             value = (byte)((value & ~externalPortBMask) | externalPortBValue);
             if ((externalPortBMask & 0x18) != 0)
                 ClearInterrupt(0x18);
             return value;
         }
 
-        private static byte ReadPort(byte output, byte direction)
+        private void TickFloatingInputs(int cycles)
         {
-            return (byte)((output & direction) | (0xFF & ~direction));
+            floatingInputCycleCounter += cycles;
+            while (floatingInputCycleCounter >= FloatingInputPeriodCycles)
+            {
+                floatingInputCycleCounter -= FloatingInputPeriodCycles;
+                floatingPortAInput = NextFloatingInput(floatingPortAInput);
+                floatingPortBInput = NextFloatingInput(floatingPortBInput);
+            }
+        }
+
+        private static byte ReadPort(byte output, byte direction, byte floatingInput)
+        {
+            return (byte)((output & direction) | (floatingInput & ~direction));
+        }
+
+        private static byte NextFloatingInput(byte value)
+        {
+            return (byte)((value * 73) + 0x41);
         }
     }
 }
