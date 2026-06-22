@@ -144,6 +144,12 @@ namespace BBC
                 return true;
             }
 
+            if (IsTapeCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
             if (TryHandleMouseCommand(command))
             {
                 ReturnFromSubroutine(cpu);
@@ -195,12 +201,6 @@ namespace BBC
             }
 
             if (IsOptCommand(command))
-            {
-                ReturnFromSubroutine(cpu);
-                return true;
-            }
-
-            if (IsTapeCommand(command))
             {
                 ReturnFromSubroutine(cpu);
                 return true;
