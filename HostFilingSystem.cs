@@ -162,6 +162,14 @@ namespace BBC
                 return true;
             }
 
+            if (TryHandleFxCommand(command, cpu, out bool returnFromOscli))
+            {
+                if (returnFromOscli)
+                    ReturnFromSubroutine(cpu);
+
+                return true;
+            }
+
             if (files.Length == 0)
                 return false;
 
@@ -183,14 +191,6 @@ namespace BBC
             if (TryHandleExecCommand(command))
             {
                 ReturnFromSubroutine(cpu);
-                return true;
-            }
-
-            if (TryHandleFxCommand(command, cpu, out bool returnFromOscli))
-            {
-                if (returnFromOscli)
-                    ReturnFromSubroutine(cpu);
-
                 return true;
             }
 
