@@ -159,7 +159,7 @@ namespace BBC
             return address is >= 0xFE80 and <= 0xFE9F;
         }
 
-        /// <summary>Single-sided SSD maps to drive 0; double-sided DSD exposes side two as DFS drive 2.</summary>
+        /// <summary>DFS treats the second side of physical drives 0 and 1 as logical drives 2 and 3.</summary>
         public void Mount(string path)
         {
             Mount(path, 0);
@@ -177,22 +177,23 @@ namespace BBC
             if (image.Length < 512 || image.Length % SectorSize != 0)
                 throw new InvalidOperationException($"'{fullPath}' is not a sector-aligned DFS image.");
 
-            if (drive != 0 && image.Length >= SingleSidedImageBytes * 2)
-                throw new InvalidOperationException("Double-sided DFS images must be mounted from drive 0.");
-
             if (image.Length >= SingleSidedImageBytes * 2)
             {
-                drives[0] = new byte[SingleSidedImageBytes];
-                drives[2] = new byte[SingleSidedImageBytes];
-                DeinterleaveDsdImage(image, drives[0], drives[2]);
-                driveMounted[0] = true;
-                driveMounted[2] = drives[2].Length > 0;
-                mountedPaths[0] = fullPath;
-                mountedFileNames[0] = fileName;
-                mountedPaths[2] = fullPath;
-                mountedFileNames[2] = fileName;
-                imageDirtyByDrive[0] = false;
-                imageDirtyByDrive[2] = false;
+                if (drive >= 2)
+                    throw new InvalidOperationException("Double-sided DFS images must be mounted as physical drive 0 or 1.");
+
+                int reverseSideDrive = drive + 2;
+                drives[drive] = new byte[SingleSidedImageBytes];
+                drives[reverseSideDrive] = new byte[SingleSidedImageBytes];
+                DeinterleaveDsdImage(image, drives[drive], drives[reverseSideDrive]);
+                driveMounted[drive] = true;
+                driveMounted[reverseSideDrive] = true;
+                mountedPaths[drive] = fullPath;
+                mountedFileNames[drive] = fileName;
+                mountedPaths[reverseSideDrive] = fullPath;
+                mountedFileNames[reverseSideDrive] = fileName;
+                imageDirtyByDrive[drive] = false;
+                imageDirtyByDrive[reverseSideDrive] = false;
             }
             else
             {
@@ -228,33 +229,10 @@ namespace BBC
 
             try
             {
-                bool flushed = false;
-                if (imageDirtyByDrive[0] || imageDirtyByDrive[2])
+                bool flushed = FlushPhysicalDrive(0) | FlushPhysicalDrive(1);
+                for (int drive = 2; drive < drives.Length; drive++)
                 {
-                    string? path = mountedPaths[0] ?? mountedPath;
-                    if (!string.IsNullOrEmpty(path))
-                    {
-                        byte[] combined;
-                        if (drives[2].Length > 0 && string.Equals(mountedPaths[0], mountedPaths[2], StringComparison.Ordinal))
-                        {
-                            combined = new byte[drives[0].Length + drives[2].Length];
-                            InterleaveDsdImage(drives[0], drives[2], combined);
-                        }
-                        else
-                        {
-                            combined = drives[0];
-                        }
-
-                        File.WriteAllBytes(path, combined);
-                        imageDirtyByDrive[0] = false;
-                        imageDirtyByDrive[2] = false;
-                        flushed = true;
-                    }
-                }
-
-                for (int drive = 1; drive < drives.Length; drive++)
-                {
-                    if (drive == 2 || !imageDirtyByDrive[drive] || string.IsNullOrEmpty(mountedPaths[drive]))
+                    if (!imageDirtyByDrive[drive] || string.IsNullOrEmpty(mountedPaths[drive]))
                         continue;
 
                     File.WriteAllBytes(mountedPaths[drive]!, drives[drive]);
@@ -524,7 +502,7 @@ namespace BBC
 
                 case 0x23:
                     if (!IsDriveReady(ActiveDrive))
-                        SetResult(ResultDriveNotReady);
+                        SetResult(ResultSectorNotFound);
                     else
                         SetResult(ResultOk, BeginMediaAccess(parameters[0], 0));
                     break;
@@ -540,7 +518,7 @@ namespace BBC
                     break;
 
                 case 0x2C:
-                    SetPolledResult(IsDriveReady(ActiveDrive) ? (byte)0x45 : (byte)0x00);
+                    SetPolledResult(IsDriveReady(selectedDrive) ? (byte)0x45 : (byte)0x00);
                     Trace($"DRIVE STATUS result=${result:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive} activeDrive={ActiveDrive}");
                     break;
 
@@ -571,7 +549,7 @@ namespace BBC
             int drive = ActiveDrive;
             if (!IsDriveReady(drive))
             {
-                SetResult(ResultDriveNotReady);
+                SetResult(ResultSectorNotFound);
                 return;
             }
 
@@ -609,7 +587,7 @@ namespace BBC
             int drive = ActiveDrive;
             if (!IsDriveReady(drive))
             {
-                SetResult(ResultDriveNotReady);
+                SetResult(ResultSectorNotFound);
                 return;
             }
 
@@ -635,7 +613,7 @@ namespace BBC
             int drive = ActiveDrive;
             if (!IsDriveReady(drive))
             {
-                SetResult(ResultDriveNotReady);
+                SetResult(ResultSectorNotFound);
                 return;
             }
 
@@ -686,7 +664,7 @@ namespace BBC
             int drive = ActiveDrive;
             if (!IsDriveReady(drive))
             {
-                SetResult(ResultDriveNotReady);
+                SetResult(ResultSectorNotFound);
                 return;
             }
 
@@ -715,7 +693,7 @@ namespace BBC
         {
             if (!IsDriveReady(ActiveDrive))
             {
-                SetResult(ResultDriveNotReady);
+                SetResult(ResultSectorNotFound);
                 return;
             }
 
@@ -840,6 +818,33 @@ namespace BBC
                 Array.Copy(side0, source, image, target, TrackBytes);
                 Array.Copy(side1, source, image, target + TrackBytes, TrackBytes);
             }
+        }
+
+        private bool FlushPhysicalDrive(int drive)
+        {
+            int reverseSideDrive = drive + 2;
+            if (!imageDirtyByDrive[drive] && !imageDirtyByDrive[reverseSideDrive])
+                return false;
+
+            string? path = mountedPaths[drive];
+            if (string.IsNullOrEmpty(path))
+                return false;
+
+            if (driveMounted[reverseSideDrive]
+                && drives[reverseSideDrive].Length > 0
+                && string.Equals(mountedPaths[drive], mountedPaths[reverseSideDrive], StringComparison.Ordinal))
+            {
+                byte[] combined = new byte[drives[drive].Length + drives[reverseSideDrive].Length];
+                InterleaveDsdImage(drives[drive], drives[reverseSideDrive], combined);
+                File.WriteAllBytes(path, combined);
+                imageDirtyByDrive[drive] = false;
+                imageDirtyByDrive[reverseSideDrive] = false;
+                return true;
+            }
+
+            File.WriteAllBytes(path, drives[drive]);
+            imageDirtyByDrive[drive] = false;
+            return true;
         }
 
         private bool TryGetAutoLoadCommand(out string? command)

@@ -81,6 +81,12 @@ The speed scale is held back until MOS has reached its input path. That is inten
 --disk PATH
 --file PATH        Mount a DFS image or host file.
 
+--drive0 PATH
+--drive1 PATH      Mount an SSD/DSD image in a physical drive.
+--blank-drive0 PATH
+--blank-drive1 PATH
+                  Create and mount a blank SSD if the file does not exist.
+
 --boot-disc        Run the mounted disc's boot path. This is the default.
 --no-boot-disc
 --no-autoboot      Mount the disc and leave the BBC at BASIC.
@@ -199,6 +205,8 @@ The emulator handles the boot `*EXEC !BOOT` path and queues the soft-key continu
 ## Discs And Loading
 
 DFS `.ssd` and `.dsd` images can be mounted from the command line, drag/drop, or the host file picker.
+
+`--drive0` and `--drive1` name the physical BBC drives. An SSD uses the drive you mount it in. A DSD uses both sides of that physical drive: drive 0 maps to DFS drives 0 and 2, while drive 1 maps to DFS drives 1 and 3.
 
 The loading path is deliberately split in two, because the neat version of this design would be less honest than the useful one:
 

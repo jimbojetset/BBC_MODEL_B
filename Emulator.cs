@@ -127,9 +127,7 @@ namespace BBC
                     continue;
                 }
 
-                if (TryParseDriveOption(args[i], "--disc", out int discDrive)
-                    || TryParseDriveOption(args[i], "--disk", out discDrive)
-                    || TryParseDriveOption(args[i], "--drive", out discDrive))
+                if (TryParseDriveOption(args[i], "--drive", out int discDrive))
                 {
                     if (i + 1 >= args.Length)
                         throw new ArgumentException($"{args[i]} requires a path.");
@@ -139,7 +137,8 @@ namespace BBC
                 }
 
                 if (TryParseDriveOption(args[i], "--blank-disc", out int blankDiscDrive)
-                    || TryParseDriveOption(args[i], "--blank-disk", out blankDiscDrive))
+                    || TryParseDriveOption(args[i], "--blank-disk", out blankDiscDrive)
+                    || TryParseDriveOption(args[i], "--blank-drive", out blankDiscDrive))
                 {
                     if (i + 1 >= args.Length)
                         throw new ArgumentException($"{args[i]} requires a path.");
