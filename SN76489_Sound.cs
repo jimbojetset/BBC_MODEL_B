@@ -71,8 +71,23 @@ namespace BBC
         private Thread? audioThread;
         private bool running;
         private bool disposed;
+        private DiscDriveSound? discDriveSound;
 
         public bool ThrottleToPlayback { get; set; } = true;
+
+        public DiscDriveSound? DiscDriveSound
+        {
+            get
+            {
+                lock (syncRoot)
+                    return discDriveSound;
+            }
+            set
+            {
+                lock (syncRoot)
+                    discDriveSound = value;
+            }
+        }
 
         public SN76489_Sound()
         {
@@ -105,6 +120,7 @@ namespace BBC
                 noiseShiftRegister = 0x4000;
                 latchedChannel = 0;
                 latchedVolume = false;
+                discDriveSound?.Reset();
             }
         }
 
@@ -313,6 +329,7 @@ namespace BBC
                 mixed += GenerateChipSample();
 
             mixed /= chipSamples;
+            mixed += discDriveSound?.GenerateSample() ?? 0;
             return (short)Math.Clamp(mixed * short.MaxValue, short.MinValue, short.MaxValue);
         }
 

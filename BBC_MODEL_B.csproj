@@ -17,6 +17,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="Assets\DriveNoise\525\*.wav">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="ROMS\BASIC2.rom">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

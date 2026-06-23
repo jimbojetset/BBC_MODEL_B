@@ -257,6 +257,10 @@ Press `Ctrl+T` while the emulator is running to toggle runtime and disc trace lo
 
 For a gameplay freeze, start the trace just before or just after the freeze, leave it running for a couple of seconds, then press `Ctrl+T` again before quitting. The runtime trace is designed to show whether the 6502 has settled into a tight wait loop without writing every instruction forever.
 
+### Disc Drive Sound
+
+5.25 inch drive noise is mixed into the main audio path from WAV samples in `Assets/DriveNoise/525`. The 8271 emulation raises passive motor and seek events, so drive sound follows DFS activity without changing disc timing.
+
 ### Environment Traces
 
 Focused traces are controlled with environment variables:

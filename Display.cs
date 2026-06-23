@@ -32,6 +32,10 @@ namespace BBC
         private const int DriveGlyphWidth = 34;
         private const int DriveGlyphHeight = 12;
         private const int DriveGlyphMargin = 8;
+        private const int DriveGlyphGap = 6;
+        private const int DriveNumberWidth = 3;
+        private const int DriveNumberHeight = 5;
+        private const int DriveNumberGap = 1;
         private const int NotificationDurationMilliseconds = 15000;
         private const int NotificationMargin = 28;
         private const int NotificationPadding = 18;
@@ -99,9 +103,13 @@ namespace BBC
 
         public bool HostCapsLockEnabled => hostCapsLockEnabled;
 
-        public bool DiscActivityLedActive { get; set; }
+        public bool Drive0ActivityLedActive { get; set; }
 
-        public bool DiscMounted { get; set; }
+        public bool Drive1ActivityLedActive { get; set; }
+
+        public bool Drive0Mounted { get; set; }
+
+        public bool Drive1Mounted { get; set; }
 
         public void ShowNotification(string title, string body)
         {
@@ -334,23 +342,59 @@ namespace BBC
             if (scanlinesEnabled && scanlineTexture != IntPtr.Zero)
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
-            DrawDriveGlyph();
+            DrawDriveGlyphs();
 
             SDL_RenderPresent(renderer);
         }
 
-        private void DrawDriveGlyph()
+        private void DrawDriveGlyphs()
         {
-            int glyphX = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
+            int drive1X = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
+            int drive0X = drive1X - DriveGlyphGap - DriveGlyphWidth;
             int glyphY = DriveGlyphMargin;
+
+            DrawDriveGlyph(drive0X, glyphY, Drive0Mounted, Drive0ActivityLedActive);
+            DrawDriveGlyph(drive1X, glyphY, Drive1Mounted, Drive1ActivityLedActive);
+            DrawDriveNumber(drive0X, glyphY, 0);
+            DrawDriveNumber(drive1X, glyphY, 1);
+        }
+
+        private void DrawDriveGlyph(int glyphX, int glyphY, bool mounted, bool activityLedActive)
+        {
             SdlRect glyphRect = new SdlRect(glyphX, glyphY, DriveGlyphWidth, DriveGlyphHeight);
 
-            IntPtr glyphTexture = DiscMounted ? mountedDriveGlyphTexture : emptyDriveGlyphTexture;
+            IntPtr glyphTexture = mounted ? mountedDriveGlyphTexture : emptyDriveGlyphTexture;
             if (glyphTexture != IntPtr.Zero)
                 _ = SDL_RenderCopy(renderer, glyphTexture, IntPtr.Zero, ref glyphRect);
 
-            if (DiscActivityLedActive)
+            if (activityLedActive)
                 DrawDriveLed(glyphX, glyphY);
+
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        }
+
+        private void DrawDriveNumber(int glyphX, int glyphY, int drive)
+        {
+            byte[] rows = drive == 0
+                ? [0b111, 0b101, 0b101, 0b101, 0b111]
+                : [0b010, 0b110, 0b010, 0b010, 0b111];
+
+            int x = glyphX + ((DriveGlyphWidth - DriveNumberWidth) / 2);
+            int y = glyphY + DriveGlyphHeight + DriveNumberGap;
+
+            _ = SDL_SetRenderDrawColor(renderer, 64, 64, 64, 255);
+            for (int row = 0; row < DriveNumberHeight; row++)
+            {
+                byte mask = rows[row];
+                for (int column = 0; column < DriveNumberWidth; column++)
+                {
+                    if ((mask & (1 << (DriveNumberWidth - 1 - column))) == 0)
+                        continue;
+
+                    SdlRect pixel = new SdlRect(x + column, y + row, 1, 1);
+                    _ = SDL_RenderFillRect(renderer, ref pixel);
+                }
+            }
 
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         }

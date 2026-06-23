@@ -357,6 +357,7 @@ namespace BBC
         private readonly uPD7002_ADC adc = new uPD7002_ADC();
         private readonly HostFilingSystem hostFilingSystem;
         private readonly Intel8271_Disk discController;
+        private readonly DiscDriveSound? discDriveSound;
         private JoystickState joystickState;
         private bool mouseEnabled;
         private bool amxMouseRomLoaded;
@@ -400,6 +401,8 @@ namespace BBC
         public Emulator()
         {
             Sound = new SN76489_Sound();
+            discDriveSound = DiscDriveSound.TryLoadDefault();
+            Sound.DiscDriveSound = discDriveSound;
             systemVia = new System6522Via(Sound);
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
@@ -407,6 +410,9 @@ namespace BBC
             hostFilingSystem.BreakCommandObserved = QueueBreakContinuation;
             hostFilingSystem.MouseEnabledChanged = SetMouseEnabled;
             discController = new Intel8271_Disk();
+            discController.DriveMotorStarted += _ => discDriveSound?.MotorStarted();
+            discController.DriveMotorStopped += _ => discDriveSound?.MotorStopped();
+            discController.DriveSeek += (_, trackDelta) => discDriveSound?.Seek(trackDelta);
             Video = new HD6845_Video(Memory.Memory);
             systemVia.ExternalVsyncLineEnabled = true;
             Video.VsyncChanged += systemVia.SetVsyncLine;
@@ -488,8 +494,11 @@ namespace BBC
                 RenderDisplayFrame(Display);
                 DrainHostScreenshotRequests(Display);
                 DrainHostTraceToggleRequests(Display);
-                Display.DiscMounted = discController.HasMountedDisc;
-                Display.DiscActivityLedActive = discController.ReadLedActive || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
+                Display.Drive0Mounted = discController.IsPhysicalDriveMounted(0);
+                Display.Drive1Mounted = discController.IsPhysicalDriveMounted(1);
+                Display.Drive0ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(0)
+                    || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
+                Display.Drive1ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(1);
                 Display.Present();
 
                 WaitUntil(nextFrame);

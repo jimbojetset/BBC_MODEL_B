@@ -48,6 +48,7 @@ namespace BBC
         private const int NmiReassertDelayCycles = SectorTransferCycles / SectorSize;
         private readonly byte[][] drives = [[], [], [], []];
         private readonly bool[] driveMounted = new bool[4];
+        private readonly bool[] driveActivityLedActive = new bool[2];
         private readonly string?[] mountedPaths = new string?[4];
         private readonly string?[] mountedFileNames = new string?[4];
         private readonly bool[] imageDirtyByDrive = new bool[4];
@@ -69,7 +70,6 @@ namespace BBC
         private bool nmiPending;
         private int nmiDelayCycles;
         private int motorIdleCycles;
-        private volatile bool readLedActive;
         private bool busy;
         private bool imageDirty;
         private bool writeProtected;
@@ -101,13 +101,29 @@ namespace BBC
 
         public bool TransferActive => readData.Count > 0 || pendingWrite is not null;
 
-        public bool ReadLedActive => readLedActive;
+        public bool ReadLedActive => driveActivityLedActive.Any(active => active);
+
+        public bool IsPhysicalDriveMounted(int drive)
+        {
+            return drive is >= 0 and <= 1 && (driveMounted[drive] || driveMounted[drive + 2]);
+        }
+
+        public bool IsPhysicalDriveActivityLedActive(int drive)
+        {
+            return drive is >= 0 and <= 1 && driveActivityLedActive[drive];
+        }
 
         public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
 
         public bool TraceEnabled => traceWriter is not null;
 
         public bool NmiLineAsserted => nmiPending && nmiDelayCycles <= 0;
+
+        public event Action<int>? DriveMotorStarted;
+
+        public event Action<int>? DriveMotorStopped;
+
+        public event Action<int, int>? DriveSeek;
 
         private int ActiveDrive => selectedDrive + ((specialRegisters[0x23] & 0x20) != 0 ? 2 : 0);
 
@@ -207,6 +223,7 @@ namespace BBC
             Array.Clear(currentTrack);
             Array.Clear(motorSpinning);
             Array.Clear(motorStartedAtCycle);
+            Array.Clear(driveActivityLedActive);
             motorIdleCycles = 0;
             mountedPath = mountedPaths[0] ?? fullPath;
             mountedFileName = mountedFileNames[0] ?? fileName;
@@ -260,8 +277,8 @@ namespace BBC
             readData.Clear();
             writeData.Clear();
             parameters.Clear();
+            Array.Clear(driveActivityLedActive);
             pendingWrite = null;
-            readLedActive = false;
             command = 0;
             result = 0;
             resultAvailable = true;
@@ -286,6 +303,10 @@ namespace BBC
                 if (motorIdleCycles <= 0)
                 {
                     motorIdleCycles = 0;
+                    bool stopped = motorSpinning.Any(spinning => spinning);
+                    if (stopped)
+                        DriveMotorStopped?.Invoke(selectedDrive);
+
                     Array.Clear(motorSpinning);
                 }
             }
@@ -381,7 +402,7 @@ namespace BBC
 
             if (readData.Count == 0)
             {
-                readLedActive = false;
+                ClearDriveActivityLed();
                 SetResult(ResultOk, NmiReassertDelayCycles);
             }
             else
@@ -398,7 +419,7 @@ namespace BBC
             if (readData.Count > 0)
             {
                readData.Clear();
-               readLedActive = false;
+               ClearDriveActivityLed();
             }
 
             nmiPending = false;
@@ -440,6 +461,7 @@ namespace BBC
             {
                 int byteCount = writeData.Count;
                 WriteSectors(pendingWrite.Value, writeData);
+                SetDriveActivityLed(pendingWrite.Value.Drive, false);
                 pendingWrite = null;
                 writeData.Clear();
                 Flush();
@@ -576,7 +598,7 @@ namespace BBC
                     readData.Enqueue(image[offset + i]);
             }
 
-            readLedActive = readData.Count > 0;
+            SetDriveActivityLed(drive, readData.Count > 0);
             Trace($"READ queued drive={drive} track={track} sector={sector} size={sectorSize} count={count} bytes={readData.Count}");
             RequestNmi(BeginMediaAccess(track, sector));
         }
@@ -636,6 +658,7 @@ namespace BBC
 
             pendingWrite = new PendingWrite(drive, offsets.ToArray(), sectorSize, sectorSize * count);
             writeData.Clear();
+            SetDriveActivityLed(drive, true);
             Trace($"WRITE prepared drive={drive} track={track} sector={sector} size={sectorSize} count={count}");
             RequestNmi(BeginMediaAccess(track, sector));
         }
@@ -678,7 +701,7 @@ namespace BBC
                 readData.Enqueue(1);
             }
 
-            readLedActive = readData.Count > 0;
+            SetDriveActivityLed(drive, readData.Count > 0);
             Trace($"READID queued drive={drive} track={track} count={sectorCount} bytes={readData.Count}");
             RequestNmi(BeginMediaAccess(track, 0));
         }
@@ -709,18 +732,33 @@ namespace BBC
             {
                 motorSpinning[drive] = true;
                 motorStartedAtCycle[drive] = elapsedCycles;
+                DriveMotorStarted?.Invoke(drive);
                 delayCycles += MotorSpinUpCycles;
             }
 
-            int seekTracks = Math.Abs(track - currentTrack[drive]);
+            int trackDelta = track - currentTrack[drive];
+            int seekTracks = Math.Abs(trackDelta);
             if (seekTracks > 0)
             {
+                DriveSeek?.Invoke(drive, trackDelta);
                 delayCycles += (seekTracks * TrackToTrackSeekCycles) + HeadSettleCycles;
                 currentTrack[drive] = track;
             }
 
             motorIdleCycles = MotorSpinDownCycles;
             return delayCycles + GetRotationalLatencyCycles(drive, sector, elapsedCycles + delayCycles);
+        }
+
+        private void SetDriveActivityLed(int drive, bool active)
+        {
+            int physicalDrive = drive & 1;
+            if (physicalDrive < driveActivityLedActive.Length)
+                driveActivityLedActive[physicalDrive] = active;
+        }
+
+        private void ClearDriveActivityLed()
+        {
+            Array.Clear(driveActivityLedActive);
         }
 
         private int GetRotationalLatencyCycles(int drive, int sector, long readyAtCycle)
