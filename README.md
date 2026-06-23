@@ -236,6 +236,10 @@ The loading path is deliberately split in two, because the neat version of this 
 - `Intel8271_Disk` models the Acorn 8271-facing hardware that DFS talks to.
 - `HostFilingSystem` sits outside DFS and only handles the small MOS shortcuts that make a raw host file practical to load.
 
+The 8271 emulation is good enough for ordinary DFS disc work rather than just loading games. DFS can catalogue, load, save, delete, copy between mounted drives, verify sectors, and write changes back to the host image. The 8BS DFS utilities disc has also been used to run `*V 1` and `*FORM+V 80 1` against a scratch SSD in drive 1; the format reported `00 format errors` and `00 verify errors`, and `*CAT 1` then showed a blank catalogue.
+
+`--blank-ssd` and `--blank-dsd` are still the quickest way to create fresh host images, but they are convenience shortcuts. BBC-side formatting through DFS utilities can also reinitialise an existing mounted DFS image.
+
 Boot behaviour:
 
 - DFS option 3 with `!BOOT` queues `*EXEC !BOOT`.
