@@ -174,6 +174,12 @@ namespace BBC
                 return true;
             }
 
+            if (IsTransientOptCommand(command))
+            {
+                ReturnFromSubroutine(cpu);
+                return true;
+            }
+
             if (files.Length == 0)
                 return false;
 
@@ -333,10 +339,33 @@ namespace BBC
 
         private static bool IsOptCommand(string command)
         {
+            return TryReadOptNumber(command, out _);
+        }
+
+        private static bool IsTransientOptCommand(string command)
+        {
+            return TryReadOptNumber(command, out int option) && option == 1;
+        }
+
+        private static bool TryReadOptNumber(string command, out int option)
+        {
+            option = -1;
             string trimmed = command.TrimStart();
-            return trimmed.Length >= 3
-                && string.Equals(trimmed[..3], "OPT", StringComparison.OrdinalIgnoreCase)
-                && (trimmed.Length == 3 || char.IsWhiteSpace(trimmed[3]));
+            if (trimmed.Length < 3 || !string.Equals(trimmed[..3], "OPT", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            int offset = 3;
+            while (offset < trimmed.Length && char.IsWhiteSpace(trimmed[offset]))
+                offset++;
+
+            if (offset >= trimmed.Length)
+                return true;
+
+            if (!char.IsDigit(trimmed[offset]))
+                return false;
+
+            option = trimmed[offset] - '0';
+            return offset + 1 == trimmed.Length || trimmed[offset + 1] == ',' || char.IsWhiteSpace(trimmed[offset + 1]);
         }
 
         private static bool IsTapeCommand(string command)
