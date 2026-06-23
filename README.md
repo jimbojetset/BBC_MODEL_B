@@ -288,21 +288,23 @@ Screenshots/
 BBC documentation traditionally calls the memory-mapped I/O page at `&FE00-&FEFF` `SHEILA`. I use the same name here. It means the I/O page, not a separate chip.
 
 ```text
-6502/                 NMOS 6502 core, registers, flags, and memory bus
+SRC/                  Emulator hardware, host UI, audio, and filing-system wiring
+SRC/6502/             NMOS 6502 core, registers, flags, and memory bus
 ROMS/                 OS, BASIC, DFS, and optional AMX ROMs
 Games/                DFS disc images used for testing and play
 Screenshots/          Runtime screenshot output
-uPD7002_ADC.cs        Analogue joystick/paddle converter at &FEC0-&FEC3
-TapeACIAStub.cs       Cassette/RS423 ACIA response for software probes
-Intel8271_Disk.cs     Acorn 8271 DFS disc controller surface
-Display.cs            SDL window plus BBC keyboard, mouse, and joystick input
-HostFilingSystem.cs   MOS shortcuts for loading a raw host file
-Emulator.cs           Memory map, ROM loading, CLI, and hardware wiring
-SAA5050_Font.cs       Mode 7 teletext glyphs
-SN76489_Sound.cs      SN76489 PSG and internal speaker output
-System6522Via.cs      System 6522 VIA: keyboard, slow bus, timers, VSYNC
-User6522Via.cs        User 6522 VIA: user port, joystick, mouse pulses
-HD6845_Video.cs       CRTC, Video ULA, Mode 7, and framebuffer rendering
+SRC/uPD7002_ADC.cs        Analogue joystick/paddle converter at &FEC0-&FEC3
+SRC/TapeACIAStub.cs       Cassette/RS423 ACIA response for software probes
+SRC/Intel8271_Disk.cs     Acorn 8271 DFS disc controller surface
+SRC/Display.cs            SDL window plus BBC keyboard, mouse, and joystick input
+SRC/HostFilingSystem.cs   MOS shortcuts for loading a raw host file
+SRC/Emulator.cs           Memory map, ROM loading, CLI, and hardware wiring
+SRC/SAA5050_Font.cs       Mode 7 teletext glyphs
+SRC/SN76489_Sound.cs      SN76489 PSG and internal speaker output
+SRC/DiscDriveSound.cs     5.25 inch drive motor and seek sample playback
+SRC/System6522Via.cs      System 6522 VIA: keyboard, slow bus, timers, VSYNC
+SRC/User6522Via.cs        User 6522 VIA: user port, joystick, mouse pulses
+SRC/HD6845_Video.cs       CRTC, Video ULA, Mode 7, and framebuffer rendering
 ```
 
 ## Compatibility Notes
