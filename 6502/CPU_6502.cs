@@ -66,6 +66,8 @@ namespace BBC.CPU
             Volatile.Write(ref irqLineAsserted, asserted ? 1 : 0);
         }
 
+        public bool IrqLineAsserted => Volatile.Read(ref irqLineAsserted) != 0;
+
         public void InitiateNMI(ulong value)
         {
             NMI_Buffer.Enqueue(value);
@@ -75,6 +77,7 @@ namespace BBC.CPU
         private long totalCycles;
         public long TotalCycles => Interlocked.Read(ref totalCycles);
         public Action<int>? OnCyclesExecuted;
+        public Action<ushort, byte, int, bool>? OnInstructionExecuted;
         public Func<bool>? OnBeforeInstruction;
         public Func<bool>? NmiLineAsserted;
         private int externalStallCycles;
@@ -247,6 +250,8 @@ namespace BBC.CPU
                         }
                         if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
                             ProcessIRQ();
+                        ushort pcBefore = (ushort)registers.PC;
+                        byte opcodeBefore = PeekByte(pcBefore);
                         int beforeCycles = cyclesThisOperation;
                         bool handledByHost = OnBeforeInstruction?.Invoke() == true;
 
@@ -277,6 +282,7 @@ namespace BBC.CPU
                             Interlocked.Add(ref totalCycles, deltaCycles);
                             OnCyclesExecuted?.Invoke(deltaCycles);
                         }
+                        OnInstructionExecuted?.Invoke(pcBefore, opcodeBefore, deltaCycles, handledByHost);
                         if (jammed)
                             break;
                     }
@@ -1215,6 +1221,8 @@ namespace BBC.CPU
                 return 0;
             }
 
+            ushort pcBefore = (ushort)registers.PC;
+            byte opcodeBefore = PeekByte(pcBefore);
             int beforeCycles = cyclesThisOperation;
             bool irqGate = !iFlagBeforeInstruction;
             while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
@@ -1241,6 +1249,7 @@ namespace BBC.CPU
                 Interlocked.Add(ref totalCycles, elapsed);
                 OnCyclesExecuted?.Invoke(elapsed);
             }
+            OnInstructionExecuted?.Invoke(pcBefore, opcodeBefore, elapsed, false);
 
             return elapsed;
         }
@@ -3053,6 +3062,12 @@ namespace BBC.CPU
                 if (extra > 0) cyclesThisOperation += extra;
             }
             return value;
+        }
+
+        // Trace peeks must see the same ROM and SHEILA mapping as opcode fetches, without adding 1 MHz bus stretch cycles.
+        public byte PeekByte(ulong addr)
+        {
+            return bus.ReadByte(addr & 0xFFFF);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

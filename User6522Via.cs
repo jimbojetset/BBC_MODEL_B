@@ -291,19 +291,13 @@ namespace BBC
 
         private void TickTimer2(int cycles)
         {
-            if (timer2HasInterrupted)
-                return;
-
-            if (cycles <= timer2Counter)
+            if (!timer2HasInterrupted && cycles > timer2Counter)
             {
-                timer2Counter -= (ushort)cycles;
-                return;
+                timer2HasInterrupted = true;
+                SetInterrupt(InterruptFlagTimer2);
             }
 
-            timer2Counter = 0xFFFF;
-            timer2Running = false;
-            timer2HasInterrupted = true;
-            SetInterrupt(InterruptFlagTimer2);
+            timer2Counter = unchecked((ushort)(timer2Counter - cycles));
         }
 
         private byte ReadTimerLow(ushort value, byte interruptFlag)

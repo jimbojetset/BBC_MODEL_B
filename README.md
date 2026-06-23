@@ -114,7 +114,7 @@ Shift+F12        BBC Shift-BREAK
 Ctrl+F12         BBC Ctrl-BREAK
 F11              Toggle scanline overlay
 Ctrl+S / Cmd+S   Save screenshot to Screenshots/
-Ctrl+T           Toggle 8271 disc trace logging
+Ctrl+T           Toggle runtime and 8271 disc trace logging
 Ctrl+L / Cmd+L   Open host file picker and mount selected file
 Ctrl+V / Cmd+V   Paste host clipboard text into the BBC keyboard buffer
 ```
@@ -248,11 +248,14 @@ Boot behaviour:
 
 ## Diagnostics
 
-### 8271 Disc Trace
+### Runtime And 8271 Trace
 
-Press `Ctrl+T` while the emulator is running to toggle disc trace logging. Trace files are written to the project root.
+Press `Ctrl+T` while the emulator is running to toggle runtime and disc trace logging. Trace files are written to the project root:
 
-I usually start this just before a loader step that fails or hangs. A trace from power-on can be comforting, but it is often mostly noise.
+- `bbc-runtime-trace.log` records compressed 6502 instruction evidence, per-frame hot PCs, IRQ/NMI state, 8271 transfer state, and key MOS vectors.
+- `bbc-8271-trace.log` records the 8271 command/result path.
+
+For a gameplay freeze, start the trace just before or just after the freeze, leave it running for a couple of seconds, then press `Ctrl+T` again before quitting. The runtime trace is designed to show whether the 6502 has settled into a tight wait loop without writing every instruction forever.
 
 ### Environment Traces
 

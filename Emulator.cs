@@ -265,6 +265,19 @@ namespace BBC
         private readonly record struct MountRequest(string Path, int? Drive);
 
         private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<MountRequest> Mounts, string? PrintAutoLoadPath, double SpeedScale, bool AutoRunDisc);
+
+        private sealed class RuntimeTracePcSample
+        {
+            public RuntimeTracePcSample(byte opcode)
+            {
+                Opcode = opcode;
+            }
+
+            public byte Opcode { get; }
+
+            public int Count { get; set; }
+        }
+
         public const ushort RamStart = 0x0000;
         public const ushort RamEnd = 0x7FFF;
         public const ushort SidewaysRomStart = 0x8000;
@@ -313,6 +326,9 @@ namespace BBC
         private const int BootScriptInitialDelayMilliseconds = 1000;
         private const int ExecScriptInitialDelayMilliseconds = 100;
         private const int KeyboardScriptLineDelayMilliseconds = 120;
+        private const int RuntimeTraceFirstInstructions = 4096;
+        private const int RuntimeTraceHotPcInterval = 512;
+        private const int RuntimeTraceTopPcCount = 8;
         private const uint DisplayBlack = 0xFF000000;
 
         private bool initialised;
@@ -355,6 +371,13 @@ namespace BBC
         private bool capsLockTapPressed;
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
+        private readonly object runtimeTraceLock = new object();
+        private readonly Dictionary<ushort, RuntimeTracePcSample> runtimeTraceFramePcSamples = new Dictionary<ushort, RuntimeTracePcSample>();
+        private StreamWriter? runtimeTraceWriter;
+        private string? runtimeTracePath;
+        private long runtimeTraceInstructionCount;
+        private int runtimeTraceFrame;
+        private int runtimeTraceActive;
 
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
 
@@ -392,6 +415,7 @@ namespace BBC
             Cpu.NmiLineAsserted = () => discController.NmiLineAsserted;
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
+            Cpu.OnInstructionExecuted = TraceRuntimeInstruction;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
             Cpu.OnAccessStretch = ComputeBusStretchCycles;
             adc.EndOfConversionChanged += eocActive =>
@@ -573,6 +597,7 @@ namespace BBC
                     Console.WriteLine($"Saved disc:   {discController.MountedFileName}");
             }
             discController.StopTrace();
+            StopRuntimeTrace();
             Sound.Dispose();
             Display?.Dispose();
         }
@@ -663,6 +688,7 @@ namespace BBC
         private void RenderDisplayFrame(Display display)
         {
             Video.Render(display);
+            TraceRuntimeFrame();
         }
 
         private void PulseHostDiscActivityLed()
@@ -1060,18 +1086,135 @@ namespace BBC
             int count = display.DrainTraceToggleRequests();
             for (int i = 0; i < count; i++)
             {
-                if (discController.TraceEnabled)
+                if (discController.TraceEnabled || Volatile.Read(ref runtimeTraceActive) != 0)
                 {
                     string? path = discController.StopTrace();
                     Console.WriteLine($"8271 trace stopped: {path}");
+                    path = StopRuntimeTrace();
+                    Console.WriteLine($"runtime trace stopped: {path}");
                 }
                 else
                 {
-                    string path = Path.Combine(Environment.CurrentDirectory, "bbc-8271-trace.log");
-                    discController.StartTrace(path);
-                    Console.WriteLine($"8271 trace started: {path}");
+                    string discTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-8271-trace.log");
+                    discController.StartTrace(discTracePath);
+                    Console.WriteLine($"8271 trace started: {discTracePath}");
+
+                    string runtimePath = Path.Combine(Environment.CurrentDirectory, "bbc-runtime-trace.log");
+                    StartRuntimeTrace(runtimePath);
+                    Console.WriteLine($"runtime trace started: {runtimePath}");
                 }
             }
+        }
+
+        private void StartRuntimeTrace(string path)
+        {
+            StopRuntimeTrace();
+
+            lock (runtimeTraceLock)
+            {
+                runtimeTracePath = Path.GetFullPath(path);
+                runtimeTraceWriter = new StreamWriter(runtimeTracePath, append: false, Encoding.UTF8);
+                runtimeTraceInstructionCount = 0;
+                runtimeTraceFrame = 0;
+                runtimeTraceFramePcSamples.Clear();
+                runtimeTraceWriter.WriteLine($"TRACE START {DateTimeOffset.Now:O}");
+                runtimeTraceWriter.WriteLine($"MOUNTED {discController.MountedDriveSummary}");
+                runtimeTraceWriter.WriteLine("Instruction lines are compressed after the first few thousand opcodes; HOT counts show repeated PCs within the current frame.");
+                Volatile.Write(ref runtimeTraceActive, 1);
+            }
+        }
+
+        private string? StopRuntimeTrace()
+        {
+            lock (runtimeTraceLock)
+            {
+                Volatile.Write(ref runtimeTraceActive, 0);
+                if (runtimeTraceWriter is null)
+                    return runtimeTracePath;
+
+                WriteRuntimeTraceFrameSummary();
+                runtimeTraceWriter.WriteLine($"TRACE STOP {DateTimeOffset.Now:O}");
+                runtimeTraceWriter.Dispose();
+                runtimeTraceWriter = null;
+                runtimeTraceFramePcSamples.Clear();
+                return runtimeTracePath;
+            }
+        }
+
+        private void TraceRuntimeInstruction(ushort pc, byte opcode, int cycles, bool handledByHost)
+        {
+            if (Volatile.Read(ref runtimeTraceActive) == 0)
+                return;
+
+            lock (runtimeTraceLock)
+            {
+                if (runtimeTraceWriter is null)
+                    return;
+
+                runtimeTraceInstructionCount++;
+                if (!runtimeTraceFramePcSamples.TryGetValue(pc, out RuntimeTracePcSample? sample))
+                {
+                    sample = new RuntimeTracePcSample(opcode);
+                    runtimeTraceFramePcSamples.Add(pc, sample);
+                }
+
+                sample.Count++;
+
+                bool logInstruction = runtimeTraceInstructionCount <= RuntimeTraceFirstInstructions
+                    || sample.Count <= 4
+                    || sample.Count % RuntimeTraceHotPcInterval == 0;
+
+                if (!logInstruction)
+                    return;
+
+                string kind = sample.Count > 4 ? "HOT" : "CPU";
+                runtimeTraceWriter.WriteLine(
+                    $"{kind} i={runtimeTraceInstructionCount} frame={runtimeTraceFrame} pc=${pc:X4} op=${opcode:X2} " +
+                    $"a=${Cpu.registers.A:X2} x=${Cpu.registers.X:X2} y=${Cpu.registers.Y:X2} s=${Cpu.registers.S:X2} p=${Cpu.registers.P:X2} " +
+                    $"cycles={cycles} hit={sample.Count} host={(handledByHost ? 1 : 0)} " +
+                    $"irq={(Cpu.IrqLineAsserted ? 1 : 0)} nmi={(discController.NmiLineAsserted ? 1 : 0)} disc={(discController.TransferActive ? 1 : 0)}");
+            }
+        }
+
+        private void TraceRuntimeFrame()
+        {
+            if (Volatile.Read(ref runtimeTraceActive) == 0)
+                return;
+
+            lock (runtimeTraceLock)
+            {
+                if (runtimeTraceWriter is null)
+                    return;
+
+                WriteRuntimeTraceFrameSummary();
+                runtimeTraceFramePcSamples.Clear();
+                runtimeTraceFrame++;
+                runtimeTraceWriter.Flush();
+            }
+        }
+
+        private void WriteRuntimeTraceFrameSummary()
+        {
+            if (runtimeTraceWriter is null || runtimeTraceFramePcSamples.Count == 0)
+                return;
+
+            string hotPcs = string.Join(" ",
+                runtimeTraceFramePcSamples
+                    .OrderByDescending(pair => pair.Value.Count)
+                    .ThenBy(pair => pair.Key)
+                    .Take(RuntimeTraceTopPcCount)
+                    .Select(pair => $"${pair.Key:X4}/${pair.Value.Opcode:X2}:{pair.Value.Count}"));
+
+            runtimeTraceWriter.WriteLine(
+                $"FRAME {runtimeTraceFrame} totalCycles={Cpu.TotalCycles} pc=${Cpu.registers.PC & 0xFFFF:X4} " +
+                $"a=${Cpu.registers.A:X2} x=${Cpu.registers.X:X2} y=${Cpu.registers.Y:X2} s=${Cpu.registers.S:X2} p=${Cpu.registers.P:X2} " +
+                $"irq={(Cpu.IrqLineAsserted ? 1 : 0)} nmi={(discController.NmiLineAsserted ? 1 : 0)} disc={(discController.TransferActive ? 1 : 0)} " +
+                $"cli=${ReadRamWord(CliVector):X4} v0204=${ReadRamWord(0x0204):X4} v0206=${ReadRamWord(0x0206):X4} hot={hotPcs}");
+        }
+
+        private ushort ReadRamWord(ushort address)
+        {
+            return (ushort)(Memory.Memory[address] | (Memory.Memory[(address + 1) & 0xFFFF] << 8));
         }
 
         private void DrainHostKeyboardInput(Display display)
