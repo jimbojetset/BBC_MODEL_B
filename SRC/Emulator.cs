@@ -586,17 +586,13 @@ namespace BBC
             return message;
         }
 
-        /// <summary>DFS boot option 3 uses EXEC !BOOT; otherwise the host queues the inferred BASIC load command.</summary>
+        /// <summary>DFS boot option 3 uses EXEC !BOOT; discs without that boot path are left at BASIC.</summary>
         public void QueueMountedDiscAutoRun()
         {
             if (discController.TryGetBootExecScript(out string? bootScript) && bootScript is not null)
             {
                 QueueBootScript("*EXEC !BOOT");
-                return;
             }
-
-            if (!string.IsNullOrWhiteSpace(discController.AutoLoadCommand))
-                QueueBootScript(discController.AutoLoadCommand);
         }
 
         public void Dispose()

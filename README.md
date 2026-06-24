@@ -53,18 +53,6 @@ Mount a raw host file:
 dotnet run --project BBC_MODEL_B.csproj -- path/to/file
 ```
 
-Run without a window for a quick smoke test:
-
-```bash
-dotnet run --project BBC_MODEL_B.csproj -- --headless-ms 7000 Games/Superior/Repton3.ssd
-```
-
-Ask the emulator what it would auto-run from a DFS image:
-
-```bash
-dotnet run --project BBC_MODEL_B.csproj -- --print-autoload Games/Superior/Repton3.ssd
-```
-
 Change CPU speed:
 
 ```bash
@@ -95,7 +83,7 @@ The speed scale is held back until MOS has reached its input path. That is inten
 
 --headless-ms N    Run without a window for N milliseconds.
 --speed VALUE      CPU speed scale, for example 0.5 or 50%.
---print-autoload   Print the inferred boot command for a DFS image.
+--print-autoload   Print the DFS !BOOT command for a bootable image.
 ```
 
 Plain paths are accepted too:
@@ -109,16 +97,15 @@ dotnet run --project BBC_MODEL_B.csproj -- Games/Acornsoft/Elite.ssd
 ### Host Shortcuts
 
 ```text
-F12              BBC BREAK
-Shift+F12        BBC Shift-BREAK
-Ctrl+F12         BBC Ctrl-BREAK
-F11              Toggle scanline overlay
-Ctrl+S / Cmd+S   Save screenshot to Screenshots/
-Ctrl+T           Toggle runtime and 8271 disc trace logging
-Ctrl+L / Cmd+L   Open host file picker and mount selected file
-Ctrl+V / Cmd+V   Paste host clipboard text into the BBC keyboard buffer
-Left Ctrl+Left Shift
-                 Toggle BBC SHIFT LOCK
+F12                     BBC BREAK
+Shift+F12               BBC Shift-BREAK
+Ctrl+F12                BBC Ctrl-BREAK
+F11                     Toggle scanline overlay
+Ctrl+S / Cmd+S          Save screenshot to Screenshots/
+Ctrl+T                  Toggle runtime and 8271 disc trace logging
+Ctrl+L / Cmd+L          Open host file picker and mount selected file
+Ctrl+V / Cmd+V          Paste host clipboard text into the BBC keyboard buffer
+Left Ctrl+Left Shift    Toggle BBC SHIFT LOCK
 ```
 
 ### Keyboard
@@ -242,46 +229,21 @@ The loading path is deliberately split in two, because the neat version of this 
 - `Intel8271_Disk` models the Acorn 8271-facing hardware that DFS talks to.
 - `HostFilingSystem` sits outside DFS and only handles the small MOS shortcuts that make a raw host file practical to load.
 
-The 8271 emulation is good enough for ordinary DFS disc work rather than just loading games. DFS can catalogue, load, save, delete, copy between mounted drives, verify sectors, and write changes back to the host image. The 8BS DFS utilities disc has also been used to run `*V 1` and `*FORM+V 80 1` against a scratch SSD in drive 1; the format reported `00 format errors` and `00 verify errors`, and `*CAT 1` then showed a blank catalogue.
+The 8271 emulation is good enough for ordinary DFS disc work rather than just loading games. DFS can catalogue, load, save, delete, copy between mounted drives, verify sectors, and write changes back to the host image. The Welcome disc has also been used to format and verify a scratch SSD in drive 1; the format reported `00 format errors` and `00 verify errors`, and `*CAT 1` then showed a blank catalogue.
 
 `--blank-ssd` and `--blank-dsd` are still the quickest way to create fresh host images, but they are convenience shortcuts. BBC-side formatting through DFS utilities can also reinitialise an existing mounted DFS image.
 
 Boot behaviour:
 
 - DFS option 3 with `!BOOT` queues `*EXEC !BOOT`.
-- If no boot script is present, the emulator infers a likely load/run command.
+- Discs without that boot path are mounted but left at BASIC.
 - Use `--no-autoboot` when you want to inspect a disc manually.
 
-## Diagnostics
-
-### Runtime And 8271 Trace
-
-Press `Ctrl+T` while the emulator is running to toggle runtime and disc trace logging. Trace files are written to the project root:
-
-- `bbc-runtime-trace.log` records compressed 6502 instruction evidence, per-frame hot PCs, IRQ/NMI state, 8271 transfer state, and key MOS vectors.
-- `bbc-8271-trace.log` records the 8271 command/result path.
-
-For a gameplay freeze, start the trace just before or just after the freeze, leave it running for a couple of seconds, then press `Ctrl+T` again before quitting. The runtime trace is designed to show whether the 6502 has settled into a tight wait loop without writing every instruction forever.
-
-### Disc Drive Sound
+## Disc Drive Sound
 
 5.25 inch drive noise is mixed into the main audio path from WAV samples in `Assets/DriveNoise/525`. The 8271 emulation raises passive motor and seek events, so drive sound follows DFS activity without changing disc timing. The drive samples are mixed at a fixed gain chosen to keep the mechanics audible alongside the SN76489 output.
 
-### Environment Traces
-
-Focused traces are controlled with environment variables:
-
-```bash
-env BBC_OSCLI_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Games/Superior/Repton3.ssd
-env BBC_MOUSE_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Games/Misc/AMXArt.ssd
-env BBC_OSCLI_TRACE=1 BBC_MOUSE_TRACE=1 dotnet run --project BBC_MODEL_B.csproj -- Games/Misc/AMXArt.ssd
-```
-
-`BBC_OSCLI_TRACE=1` follows the host-side OSCLI hooks such as `*EXEC`, `*MOUSE`, `*POINTER`, `*FX`, and file matches.
-
-`BBC_MOUSE_TRACE=1` follows host mouse movement and button data while mouse emulation is active.
-
-### Screenshots
+## Screenshots
 
 Press `Ctrl+S` or `Cmd+S` to write a PNG to:
 
@@ -312,15 +274,6 @@ SRC/System6522Via.cs      System 6522 VIA: keyboard, slow bus, timers, VSYNC
 SRC/User6522Via.cs        User 6522 VIA: user port, joystick, mouse pulses
 SRC/HD6845_Video.cs       CRTC, Video ULA, Mode 7, and framebuffer rendering
 ```
-
-## Compatibility Notes
-
-Compatibility is earned one title at a time. A few current notes from the games I keep coming back to:
-
-- Repton 3 boots, and its editor works with keyboard, switched joystick, analogue joystick, and AMX mouse where the software supports it.
-- Arcadians confirms switched joystick and fire through the SDL joystick path.
-- Elite uses analogue joystick input for flight/navigation. The BBC version's own instructions list laser fire as keyboard `A`, so joystick fire may not be used for lasers by the game itself.
-- AMX mouse support depends on the AMX ROM as well as host mouse capture.
 
 ## Legal Note
 

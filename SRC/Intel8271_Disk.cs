@@ -113,7 +113,9 @@ namespace BBC
             return drive is >= 0 and <= 1 && driveActivityLedActive[drive];
         }
 
-        public string? AutoLoadCommand => TryGetAutoLoadCommand(out string? command) ? command : null;
+        public string? AutoLoadCommand => TryGetBootExecScript(out string? script) && script is not null
+            ? "*EXEC !BOOT"
+            : null;
 
         public bool TraceEnabled => traceWriter is not null;
 
@@ -885,43 +887,6 @@ namespace BBC
             return true;
         }
 
-        private bool TryGetAutoLoadCommand(out string? command)
-        {
-            command = null;
-
-            if (!TryReadCatalogue(out List<DfsFile> files))
-                return false;
-
-            DfsFile? loadFile = files.FirstOrDefault(file => string.Equals(file.Name, "LOAD", StringComparison.OrdinalIgnoreCase));
-            if (loadFile is not null)
-            {
-                command = LooksLikeBasicFile(loadFile)
-                    ? $"CH. \"{loadFile.Name}\""
-                    : $"*EXEC {loadFile.Name}";
-                return true;
-            }
-
-            DfsFile? bootFile = files.FirstOrDefault(file => string.Equals(file.Name, "!BOOT", StringComparison.OrdinalIgnoreCase));
-            if (bootFile is not null)
-            {
-                command = $"*EXEC {bootFile.Name}";
-                return true;
-            }
-
-            DfsFile? basicFile = files.FirstOrDefault(file => LooksLikeBasicFile(file));
-            if (basicFile is not null)
-            {
-                command = $"CH. \"{basicFile.Name}\"";
-                return true;
-            }
-
-            DfsFile firstFile = files[0];
-            command = firstFile.LoadAddress == 0 && firstFile.ExecutionAddress == 0
-                ? $"*EXEC {firstFile.Name}"
-                : $"*RUN {firstFile.Name}";
-            return true;
-        }
-
         private bool TryReadCatalogue(out List<DfsFile> files)
         {
             files = new List<DfsFile>();
@@ -955,14 +920,6 @@ namespace BBC
                 return 0;
 
             return (drives[0][0x106] >> 4) & 0x03;
-        }
-
-        private bool LooksLikeBasicFile(DfsFile file)
-        {
-            int offset = file.StartSector * SectorSize;
-            return file.LoadAddress == 0x1900
-                || file.LoadAddress == 0x1D00
-                || (offset + 2 < drives[0].Length && drives[0][offset] == 0x0D && drives[0][offset + 1] == 0x00);
         }
 
         private static int GetParameterCount(byte command)
