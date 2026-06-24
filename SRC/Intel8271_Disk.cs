@@ -177,13 +177,7 @@ namespace BBC
             return address is >= 0xFE80 and <= 0xFE9F;
         }
 
-        /// <summary>DFS treats the second side of physical drives 0 and 1 as logical drives 2 and 3.</summary>
-        public void Mount(string path)
-        {
-            Mount(path, 0);
-        }
-
-        public void Mount(string path, int drive)
+        public void Mount(string path, int drive = 0)
         {
             string fullPath = Path.GetFullPath(path);
             string fileName = Path.GetFileName(fullPath);
