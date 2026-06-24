@@ -118,11 +118,11 @@ Most keys go through the BBC keyboard matrix rather than being treated as host c
 Host arrow keys   BBC cursor keys
 F1-F10            BBC function keys
 F12               BBC BREAK
-§                 BBC COPY
+Insert / §        BBC COPY
 Backspace/Delete  BBC DELETE
 ```
 
-On macOS, `§` is used for the BBC `COPY` key.
+On macOS, `§` is also used for the BBC `COPY` key.
 
 Host Caps Lock follows the BBC `CAPS LOCK` key. `Left Ctrl+Left Shift` toggles a BBC-style `SHIFT LOCK` by holding the BBC Shift matrix key down until the chord is pressed again.
 

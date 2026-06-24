@@ -1341,7 +1341,7 @@ namespace BBC
                 SDLK_COMMA => Key(0x66),
                 SDLK_PERIOD => Key(0x67),
                 SDLK_SLASH => Key(0x68),
-                SDLK_SECTION => Key(0x69),
+                SDLK_INSERT or SDLK_SECTION => Key(0x69),
                 SDLK_ESCAPE => Key(0x70),
                 SDLK_F1 => Key(0x71),
                 SDLK_F2 => Key(0x72),
@@ -1774,6 +1774,7 @@ namespace BBC
         private const int SDLK_F9 = 1073741890;
         private const int SDLK_F10 = 1073741891;
         private const int SDLK_F11 = 1073741892;
+        private const int SDLK_INSERT = 1073741897;
         private const int SDLK_KP_MULTIPLY = 1073741909;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDLK_RETURN2 = 1073741982;
