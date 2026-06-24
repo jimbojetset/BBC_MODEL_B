@@ -117,6 +117,8 @@ Ctrl+S / Cmd+S   Save screenshot to Screenshots/
 Ctrl+T           Toggle runtime and 8271 disc trace logging
 Ctrl+L / Cmd+L   Open host file picker and mount selected file
 Ctrl+V / Cmd+V   Paste host clipboard text into the BBC keyboard buffer
+Left Ctrl+Left Shift
+                 Toggle BBC SHIFT LOCK
 ```
 
 ### Keyboard
@@ -132,6 +134,10 @@ Backspace/Delete  BBC DELETE
 ```
 
 On macOS, `§` is used for the BBC `COPY` key.
+
+Host Caps Lock follows the BBC `CAPS LOCK` key. `Left Ctrl+Left Shift` toggles a BBC-style `SHIFT LOCK` by holding the BBC Shift matrix key down until the chord is pressed again.
+
+The bottom border includes small status LEDs for cassette motor, caps lock, shift lock, and drive activity. The cassette/caps/shift indicators sit at the bottom left; the drive glyphs, drive numbers, and drive LEDs sit at the bottom right.
 
 ### Joysticks
 
@@ -259,7 +265,7 @@ For a gameplay freeze, start the trace just before or just after the freeze, lea
 
 ### Disc Drive Sound
 
-5.25 inch drive noise is mixed into the main audio path from WAV samples in `Assets/DriveNoise/525`. The 8271 emulation raises passive motor and seek events, so drive sound follows DFS activity without changing disc timing.
+5.25 inch drive noise is mixed into the main audio path from WAV samples in `Assets/DriveNoise/525`. The 8271 emulation raises passive motor and seek events, so drive sound follows DFS activity without changing disc timing. The drive samples are mixed at a fixed gain chosen to keep the mechanics audible alongside the SN76489 output.
 
 ### Environment Traces
 

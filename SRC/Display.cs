@@ -36,6 +36,16 @@ namespace BBC
         private const int DriveNumberWidth = 3;
         private const int DriveNumberHeight = 5;
         private const int DriveNumberGap = 1;
+        private const int StatusLedDiameter = 8;
+        private const int StatusLedLeftMargin = 24;
+        private const int StatusLedGap = 42;
+        private const int StatusLabelGlyphWidth = 3;
+        private const int StatusLabelGlyphHeight = 5;
+        private const int StatusLabelGlyphGap = 1;
+        private const int StatusLabelLineGap = 1;
+        private const int StatusLabelLedGap = 2;
+        private const int BottomOverlayPadding = 4;
+        private const byte OverlayTextGrey = 80;
         private const int NotificationDurationMilliseconds = 15000;
         private const int NotificationMargin = 28;
         private const int NotificationPadding = 18;
@@ -81,6 +91,7 @@ namespace BBC
         private bool scanlinesEnabled;
         private bool disposed;
         private bool hostCapsLockEnabled;
+        private bool bbcShiftLockEnabled;
         private int logicalWidth;
         private int logicalHeight;
         private SdlRect viewportRect;
@@ -111,6 +122,12 @@ namespace BBC
 
         public bool Drive1Mounted { get; set; }
 
+        public bool CassetteMotorLedActive { get; set; }
+
+        public bool CapsLockLedActive { get; set; }
+
+        public bool ShiftLockLedActive { get; set; }
+
         public void ShowNotification(string title, string body)
         {
             notificationTitle = title.Trim();
@@ -134,7 +151,7 @@ namespace BBC
             ThrowIfSdlFailed(SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK), "SDL_InitSubSystem");
             int horizontalBorder = (int)Math.Round(width * HorizontalBorderPercent / 100.0);
             logicalWidth = width + (horizontalBorder * 2);
-            logicalHeight = height;
+            logicalHeight = height + GetBottomOverlayHeight();
             viewportRect = new SdlRect(horizontalBorder, 0, width, height);
 
             window = SDL_CreateWindow(
@@ -349,14 +366,55 @@ namespace BBC
 
         private void DrawDriveGlyphs()
         {
+            int bottomOverlayHeight = GetBottomOverlayHeight();
+            int bottomOverlayY = logicalHeight - bottomOverlayHeight;
+            int driveBlockHeight = GetDriveBlockHeight();
             int drive1X = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
             int drive0X = drive1X - DriveGlyphGap - DriveGlyphWidth;
-            int glyphY = DriveGlyphMargin;
+            int glyphY = bottomOverlayY + ((bottomOverlayHeight - driveBlockHeight) / 2);
 
+            DrawStatusLeds(bottomOverlayY);
             DrawDriveGlyph(drive0X, glyphY, Drive0Mounted, Drive0ActivityLedActive);
             DrawDriveGlyph(drive1X, glyphY, Drive1Mounted, Drive1ActivityLedActive);
             DrawDriveNumber(drive0X, glyphY, 0);
             DrawDriveNumber(drive1X, glyphY, 1);
+        }
+
+        private static int GetBottomOverlayHeight()
+        {
+            int statusBlockHeight = (StatusLabelGlyphHeight * 2)
+                + StatusLabelLineGap
+                + StatusLabelLedGap
+                + StatusLedDiameter;
+
+            return Math.Max(GetDriveBlockHeight(), statusBlockHeight) + (BottomOverlayPadding * 2);
+        }
+
+        private static int GetDriveBlockHeight()
+        {
+            return DriveGlyphHeight + DriveNumberGap + DriveNumberHeight;
+        }
+
+        private void DrawStatusLeds(int bottomOverlayY)
+        {
+            int leftmostCenterX = StatusLedLeftMargin + (StatusLedDiameter / 2);
+            int labelY = bottomOverlayY + BottomOverlayPadding;
+            int ledCenterY = labelY
+                + (StatusLabelGlyphHeight * 2)
+                + StatusLabelLineGap
+                + StatusLabelLedGap
+                + (StatusLedDiameter / 2);
+
+            DrawStatusLed(leftmostCenterX, labelY, ledCenterY, "CASSETTE", "MOTOR", CassetteMotorLedActive);
+            DrawStatusLed(leftmostCenterX + StatusLedGap, labelY, ledCenterY, "CAPS", "LOCK", CapsLockLedActive);
+            DrawStatusLed(leftmostCenterX + (StatusLedGap * 2), labelY, ledCenterY, "SHIFT", "LOCK", ShiftLockLedActive);
+        }
+
+        private void DrawStatusLed(int centerX, int labelY, int centerY, string topLabel, string bottomLabel, bool active)
+        {
+            DrawTinyLabel(topLabel, centerX, labelY, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
+            DrawTinyLabel(bottomLabel, centerX, labelY + StatusLabelGlyphHeight + StatusLabelLineGap, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
+            DrawRoundLed(centerX, centerY, StatusLedDiameter / 2, active ? (byte)220 : (byte)38, 0, 0);
         }
 
         private void DrawDriveGlyph(int glyphX, int glyphY, bool mounted, bool activityLedActive)
@@ -375,20 +433,54 @@ namespace BBC
 
         private void DrawDriveNumber(int glyphX, int glyphY, int drive)
         {
-            byte[] rows = drive == 0
-                ? [0b111, 0b101, 0b101, 0b101, 0b111]
-                : [0b010, 0b110, 0b010, 0b010, 0b111];
-
             int x = glyphX + ((DriveGlyphWidth - DriveNumberWidth) / 2);
             int y = glyphY + DriveGlyphHeight + DriveNumberGap;
 
-            _ = SDL_SetRenderDrawColor(renderer, 64, 64, 64, 255);
-            for (int row = 0; row < DriveNumberHeight; row++)
+            DrawTinyGlyph((char)('0' + drive), x, y, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
+        }
+
+        private void DrawDriveLed(int glyphX, int glyphY)
+        {
+            int radius = DriveLedDiameter / 2;
+            int centerX = glyphX + DriveGlyphWidth - DriveLedInset - radius;
+            int centerY = glyphY + DriveLedInset + radius;
+
+            DrawRoundLed(centerX, centerY, radius, 220, 0, 0);
+        }
+
+        private void DrawRoundLed(int centerX, int centerY, int radius, byte red, byte green, byte blue)
+        {
+            _ = SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+            for (int y = -radius; y < radius; y++)
+            {
+                int halfWidth = (int)Math.Sqrt((radius * radius) - (y * y));
+                SdlRect row = new SdlRect(centerX - halfWidth, centerY + y, halfWidth * 2, 1);
+                _ = SDL_RenderFillRect(renderer, ref row);
+            }
+
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        }
+
+        private void DrawTinyLabel(string text, int centerX, int y, byte red, byte green, byte blue)
+        {
+            int width = (text.Length * StatusLabelGlyphWidth) + ((text.Length - 1) * StatusLabelGlyphGap);
+            int x = centerX - (width / 2);
+
+            for (int i = 0; i < text.Length; i++)
+                DrawTinyGlyph(text[i], x + (i * (StatusLabelGlyphWidth + StatusLabelGlyphGap)), y, red, green, blue);
+        }
+
+        private void DrawTinyGlyph(char character, int x, int y, byte red, byte green, byte blue)
+        {
+            byte[] rows = TinyOverlayFont.GetRows(character);
+
+            _ = SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+            for (int row = 0; row < StatusLabelGlyphHeight; row++)
             {
                 byte mask = rows[row];
-                for (int column = 0; column < DriveNumberWidth; column++)
+                for (int column = 0; column < StatusLabelGlyphWidth; column++)
                 {
-                    if ((mask & (1 << (DriveNumberWidth - 1 - column))) == 0)
+                    if ((mask & (1 << (StatusLabelGlyphWidth - 1 - column))) == 0)
                         continue;
 
                     SdlRect pixel = new SdlRect(x + column, y + row, 1, 1);
@@ -399,18 +491,32 @@ namespace BBC
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         }
 
-        private void DrawDriveLed(int glyphX, int glyphY)
+        private static class TinyOverlayFont
         {
-            int radius = DriveLedDiameter / 2;
-            int centerX = glyphX + DriveGlyphWidth - DriveLedInset - radius;
-            int centerY = glyphY + DriveLedInset + radius;
-
-            _ = SDL_SetRenderDrawColor(renderer, 220, 0, 0, 255);
-            for (int y = -radius; y < radius; y++)
+            private static readonly byte[] Blank = [0, 0, 0, 0, 0];
+            private static readonly Dictionary<char, byte[]> Glyphs = new Dictionary<char, byte[]>
             {
-                int halfWidth = (int)Math.Sqrt((radius * radius) - (y * y));
-                SdlRect row = new SdlRect(centerX - halfWidth, centerY + y, halfWidth * 2, 1);
-                _ = SDL_RenderFillRect(renderer, ref row);
+                ['0'] = [0b111, 0b101, 0b101, 0b101, 0b111],
+                ['1'] = [0b010, 0b110, 0b010, 0b010, 0b111],
+                ['A'] = [0b010, 0b101, 0b111, 0b101, 0b101],
+                ['C'] = [0b111, 0b100, 0b100, 0b100, 0b111],
+                ['E'] = [0b111, 0b100, 0b110, 0b100, 0b111],
+                ['F'] = [0b111, 0b100, 0b110, 0b100, 0b100],
+                ['H'] = [0b101, 0b101, 0b111, 0b101, 0b101],
+                ['I'] = [0b111, 0b010, 0b010, 0b010, 0b111],
+                ['K'] = [0b101, 0b101, 0b110, 0b101, 0b101],
+                ['L'] = [0b100, 0b100, 0b100, 0b100, 0b111],
+                ['M'] = [0b101, 0b111, 0b111, 0b101, 0b101],
+                ['O'] = [0b111, 0b101, 0b101, 0b101, 0b111],
+                ['P'] = [0b110, 0b101, 0b110, 0b100, 0b100],
+                ['R'] = [0b110, 0b101, 0b110, 0b101, 0b101],
+                ['S'] = [0b111, 0b100, 0b111, 0b001, 0b111],
+                ['T'] = [0b111, 0b010, 0b010, 0b010, 0b010],
+            };
+
+            public static byte[] GetRows(char character)
+            {
+                return Glyphs.TryGetValue(character, out byte[]? rows) ? rows : Blank;
             }
         }
 
@@ -775,6 +881,9 @@ namespace BBC
         {
             int modifiers = SDL_GetModState();
 
+            if (TryToggleBbcShiftLock(keySym, modifiers))
+                return;
+
             if (keySym == SDLK_CAPSLOCK)
             {
                 SyncHostCapsLockState();
@@ -826,7 +935,7 @@ namespace BBC
             {
                 bool shiftAdjusted = ApplyShiftAdjustment(chord.Value.ShiftAdjustment, (modifiers & KMOD_SHIFT) != 0);
                 activeHostKeys[keySym] = new ActiveHostKey(chord.Value.InternalKey, chord.Value.ShiftAdjustment, shiftAdjusted);
-                pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, true));
+                EnqueueBbcKeyChange(chord.Value.InternalKey, true);
             }
         }
 
@@ -842,14 +951,14 @@ namespace BBC
 
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
             {
-                pendingKeyChanges.Enqueue(new HostKeyChange(activeKey.InternalKey, false));
+                EnqueueBbcKeyChange(activeKey.InternalKey, false);
                 RestoreAdjustedShift(activeKey, (SDL_GetModState() & KMOD_SHIFT) != 0);
                 return;
             }
 
             BbcKeyChord? chord = MapHostKeyToBbcKey(keySym, SDL_GetModState());
             if (chord.HasValue)
-                pendingKeyChanges.Enqueue(new HostKeyChange(chord.Value.InternalKey, false));
+                EnqueueBbcKeyChange(chord.Value.InternalKey, false);
         }
 
         private void EnqueueKeyboardJoystickChange(int keySym, bool pressed)
@@ -1098,17 +1207,40 @@ namespace BBC
             return (SDL_GetModState() & KMOD_CAPS) != 0;
         }
 
+        private bool TryToggleBbcShiftLock(int keySym, int modifiers)
+        {
+            bool chordPressed =
+                keySym == SDLK_LSHIFT && (modifiers & KMOD_LCTRL) != 0
+                || keySym == SDLK_LCTRL && (modifiers & KMOD_LSHIFT) != 0;
+
+            if (!chordPressed)
+                return false;
+
+            bbcShiftLockEnabled = !bbcShiftLockEnabled;
+            ShiftLockLedActive = bbcShiftLockEnabled;
+            EnqueueBbcKeyChange(BbcShiftKey, bbcShiftLockEnabled);
+            return true;
+        }
+
+        private void EnqueueBbcKeyChange(byte internalKey, bool pressed)
+        {
+            if (internalKey == BbcShiftKey && !pressed && bbcShiftLockEnabled)
+                return;
+
+            pendingKeyChanges.Enqueue(new HostKeyChange(internalKey, pressed));
+        }
+
         private bool ApplyShiftAdjustment(ShiftAdjustment adjustment, bool hostShiftDown)
         {
             if (adjustment == ShiftAdjustment.Suppress && hostShiftDown)
             {
-                pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, false));
+                EnqueueBbcKeyChange(BbcShiftKey, false);
                 return true;
             }
 
             if (adjustment == ShiftAdjustment.Force && !hostShiftDown)
             {
-                pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, true));
+                EnqueueBbcKeyChange(BbcShiftKey, true);
                 return true;
             }
 
@@ -1121,10 +1253,10 @@ namespace BBC
                 return;
 
             if (activeKey.ShiftAdjustment == ShiftAdjustment.Suppress && hostShiftDown)
-                pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, true));
+                EnqueueBbcKeyChange(BbcShiftKey, true);
 
             if (activeKey.ShiftAdjustment == ShiftAdjustment.Force && !hostShiftDown)
-                pendingKeyChanges.Enqueue(new HostKeyChange(BbcShiftKey, false));
+                EnqueueBbcKeyChange(BbcShiftKey, false);
         }
 
         private static BbcKeyChord? MapHostKeyToBbcKey(int keySym, int modifiers)
@@ -1652,6 +1784,8 @@ namespace BBC
         private const int SDLK_F12 = 1073741893;
         private const int KMOD_SHIFT = 0x0003;
         private const int KMOD_CTRL = 0x00C0;
+        private const int KMOD_LSHIFT = 0x0001;
+        private const int KMOD_LCTRL = 0x0040;
         private const int KMOD_ALT = 0x0300;
         private const int KMOD_GUI = 0x0C00;
         private const int KMOD_CAPS = 0x2000;

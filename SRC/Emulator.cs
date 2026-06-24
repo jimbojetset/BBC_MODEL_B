@@ -499,6 +499,8 @@ namespace BBC
                 Display.Drive0ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(0)
                     || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
                 Display.Drive1ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(1);
+                Display.CassetteMotorLedActive = tapeAciaStub.MotorRunning;
+                Display.CapsLockLedActive = bbcCapsLockState;
                 Display.Present();
 
                 WaitUntil(nextFrame);

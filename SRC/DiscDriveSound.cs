@@ -15,7 +15,7 @@ namespace BBC
     public sealed class DiscDriveSound
     {
         private const int OutputSampleRate = 48_000;
-        private const double Volume = 0.22;
+        private const double Volume = 0.44;
         private readonly object syncRoot = new object();
         private readonly WavSample motorOn;
         private readonly WavSample motorLoop;
