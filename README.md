@@ -4,6 +4,8 @@ A C#/.NET BBC Micro Model B emulator. I have tried to build it around the detail
 
 This has been a practical, slightly obsessive project. Compatibility is checked the slow way: boot the game, watch the loader, listen for the ugly little timing clues, and then go back through the hardware path until the mistake shows itself. The aim is not architectural purity; it is to make more BBC software behave as if it has landed on familiar iron.
 
+<img src="Screenshot.jpg" alt="BBC Model B emulator screenshot" width="50%">
+
 ## Requirements
 
 - .NET 9 SDK
