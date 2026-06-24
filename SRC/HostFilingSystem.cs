@@ -97,7 +97,9 @@ namespace BBC
             ushort controlBlock = (ushort)(cpu.registers.X | (cpu.registers.Y << 8));
             string requestedName = ReadOsString(ReadWord(controlBlock));
             HostFile? matchedFile = FindFile(requestedName);
-            Trace($"OSFILE action=${action:X2} name=\"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
+
+            if (TraceEnabled)
+                Trace($"OSFILE action=${action:X2} name=\"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
 
             if (!matchedFile.HasValue)
             {
@@ -136,7 +138,8 @@ namespace BBC
             if (command.StartsWith('*'))
                 command = command[1..].TrimStart();
 
-            Trace($"OSCLI \"{command}\"");
+            if (TraceEnabled)
+                Trace($"OSCLI \"{command}\"");
 
             if (command.StartsWith('/'))
                 command = "RUN " + command[1..].TrimStart();
@@ -233,7 +236,10 @@ namespace BBC
             if (TryParseLoadCommand(command, out string loadName, out ushort? loadAddress))
             {
                 HostFile? matchedLoadFile = FindFile(loadName);
-                Trace($"LOAD \"{loadName}\" match=\"{matchedLoadFile?.Name ?? "<none>"}\"");
+
+                if (TraceEnabled)
+                    Trace($"LOAD \"{loadName}\" match=\"{matchedLoadFile?.Name ?? "<none>"}\"");
+
                 if (!matchedLoadFile.HasValue)
                 {
                     return false;
@@ -254,7 +260,10 @@ namespace BBC
             }
 
             HostFile? matchedFile = FindFile(requestedName);
-            Trace($"RUN \"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
+
+            if (TraceEnabled)
+                Trace($"RUN \"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
+
             if (!matchedFile.HasValue)
             {
                 return false;
@@ -280,7 +289,10 @@ namespace BBC
 
             string requestedName = ReadOsString((ushort)(cpu.registers.X | (cpu.registers.Y << 8))).Trim();
             HostFile? matchedFile = FindFile(requestedName);
-            Trace($"FSCV A=${cpu.registers.A:X2} name=\"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
+
+            if (TraceEnabled)
+                Trace($"FSCV A=${cpu.registers.A:X2} name=\"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
+
             if (!matchedFile.HasValue)
             {
                 return false;
@@ -315,7 +327,10 @@ namespace BBC
                 return false;
 
             HostFile? matchedFile = FindFile(requestedName);
-            Trace($"EXEC \"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
+
+            if (TraceEnabled)
+                Trace($"EXEC \"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
+
             if (!matchedFile.HasValue)
                 return false;
 
@@ -388,7 +403,10 @@ namespace BBC
             string option = trimmed.Length == 5 ? "ON" : trimmed[5..].TrimStart();
             bool enabled = !option.StartsWith("OFF", StringComparison.OrdinalIgnoreCase);
             MouseEnabledChanged?.Invoke(enabled);
-            Trace($"MOUSE enabled={enabled}");
+
+            if (TraceEnabled)
+                Trace($"MOUSE enabled={enabled}");
+
             return MouseCommandFallbackEnabled;
         }
 
@@ -405,7 +423,10 @@ namespace BBC
             string option = trimmed.Length == 7 ? "ON" : trimmed[7..].TrimStart();
             bool enabled = !option.StartsWith("OFF", StringComparison.OrdinalIgnoreCase);
             MouseEnabledChanged?.Invoke(enabled);
-            Trace($"POINTER mouse enabled={enabled}");
+
+            if (TraceEnabled)
+                Trace($"POINTER mouse enabled={enabled}");
+
             return MouseCommandFallbackEnabled;
         }
 
@@ -610,7 +631,10 @@ namespace BBC
             currentDirectory = string.IsNullOrEmpty(directory) || directory == "$"
                 ? "$"
                 : char.ToUpperInvariant(directory[0]).ToString();
-            Trace($"DIR current=\"{currentDirectory}\"");
+
+            if (TraceEnabled)
+                Trace($"DIR current=\"{currentDirectory}\"");
+
             return true;
         }
 
