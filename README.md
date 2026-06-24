@@ -166,7 +166,7 @@ PB3 = Right
 PB4 = Fire
 ```
 
-## Mouse And AMX
+### Mouse And AMX
 
 AMX mouse support uses host relative mouse capture, so the emulated pointer can keep moving even when the host pointer would otherwise hit the edge of the window. It is one of those corners where a tiny host convenience has to disappear behind the BBC's expectations.
 
@@ -241,7 +241,7 @@ Boot behaviour:
 - Discs without that boot path are mounted but left at BASIC.
 - Use `--no-autoboot` when you want to inspect a disc manually.
 
-## Disc Drive Sound
+### Disc Drive Sound
 
 5.25 inch drive noise is mixed into the main audio path from WAV samples in `Assets/DriveNoise/525`. The 8271 emulation raises passive motor and seek events, so drive sound follows DFS activity without changing disc timing. The drive samples are mixed at a fixed gain chosen to keep the mechanics audible alongside the SN76489 output.
 
