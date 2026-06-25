@@ -32,11 +32,11 @@ namespace BBC
         private HostFile[] files = [];
         private string currentDirectory = "$";
         private string? mountedFileName;
-        private bool tapeCommandSeen;
 
         public HostFilingSystem(FlatMemoryBus memory)
         {
             this.memory = memory ?? throw new ArgumentNullException(nameof(memory));
+            Array.Fill(softKeyStrings, string.Empty);
         }
 
         public string? MountedFileName => mountedFileName;
@@ -62,7 +62,6 @@ namespace BBC
             files = [];
             mountedFileName = null;
             currentDirectory = "$";
-            tapeCommandSeen = false;
         }
 
         public void Mount(string path)
@@ -81,7 +80,6 @@ namespace BBC
 
             mountedFileName = Path.GetFileName(fullPath);
             currentDirectory = "$";
-            tapeCommandSeen = false;
         }
 
         /// <summary>OSFILE is the MOS path behind BASIC LOAD for the mounted host file.</summary>
@@ -152,7 +150,6 @@ namespace BBC
 
             if (IsTapeCommand(command))
             {
-                tapeCommandSeen = true;
                 ReturnFromSubroutine(cpu);
                 return true;
             }
@@ -348,8 +345,8 @@ namespace BBC
             if (key < 0 || key >= softKeyStrings.Length)
                 return null;
 
-            string text = softKeyStrings[key];
-            return text.Length == 0 ? null : text;
+            string? text = softKeyStrings[key];
+            return string.IsNullOrEmpty(text) ? null : text;
         }
 
         private static bool IsOptCommand(string command)
@@ -451,15 +448,15 @@ namespace BBC
                 return false;
 
             byte osbyte = (byte)a;
-            if (earlyDiscFallbackOnly && osbyte == 0xC8 && !tapeCommandSeen)
-                return false;
+            if (earlyDiscFallbackOnly)
+                return osbyte == 0x10;
 
             if (osbyte == 0x10)
                 return true;
 
             if (osbyte == 0x8A)
             {
-                InsertSoftKey((byte)y);
+                InsertKeyboardBufferValue((byte)y);
                 return true;
             }
 
@@ -508,13 +505,32 @@ namespace BBC
             return true;
         }
 
+        private void InsertKeyboardBufferValue(byte value)
+        {
+            if (value >= 0x80)
+            {
+                InsertSoftKey(value);
+                return;
+            }
+
+            if (QueueKeyboardText is null)
+                return;
+
+            if (value == 13)
+                QueueKeyboardText("\r");
+            else if (value is >= 32 and <= 126)
+                QueueKeyboardText(((char)value).ToString());
+        }
+
         private void InsertSoftKey(byte keyCode)
         {
-            int key = keyCode >= 0x80 ? keyCode - 0x80 : keyCode;
+            int key = keyCode - 0x80;
             if (key < 0 || key >= softKeyStrings.Length || QueueKeyboardText is null)
                 return;
 
-            QueueKeyboardText(softKeyStrings[key]);
+            string? text = softKeyStrings[key];
+            if (!string.IsNullOrEmpty(text))
+                QueueKeyboardText(text);
         }
 
         private static string DecodeSoftKeyString(string value)
