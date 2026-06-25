@@ -1,8 +1,8 @@
 # BBC Model B Emulator
 
-A C#/.NET BBC Micro Model B emulator. I have tried to build it around the details that make BBC software feel right rather than merely start: the 2 MHz NMOS 6502, OS 1.20, BASIC II, Acorn DFS, the 8271 disc controller, the system and user 6522 VIAs, the BBC video hardware, the SN76489 sound chip, and the keyboard matrix.
+A C#/.NET BBC Micro Model B emulator. I have tried to build it authenticity that makes operating the BBC feel right including fully emulating the 2 MHz NMOS 6502, OS 1.20, BASIC II, Acorn DFS, the 8271 disc controller, the system and user 6522 VIAs, the BBC video hardware, the SN76489 sound chip, and the keyboard matrix.
 
-This has been a practical if not slightly obsessive project. Compatibility has been earned the slow way: boot the game, watch the loader, listen for the ugly little timing clues, and then go back through the hardware path until the mistake shows itself.
+This has been a practical if not slightly obsessive project. Compatibility has been earned the slow way by booting the game, watching the loader, listening for the problematic little timing clues, and then going back through the hardware path until my mistake shows itself.
 
 <img src="Screenshot.png" alt="BBC Model B emulator screenshot" width="50%">
 
@@ -21,7 +21,7 @@ ROMS/DFS-0.9.rom
 ROMS/AMXMSE331.rom
 ```
 
-`AMXMSE331.rom` is optional for a normal BBC boot. I keep it listed because AMX software is a useful test of the mouse path, especially modes such as the Repton 3 editor.
+`AMXMSE331.rom` is optional for a normal BBC boot. I keep it listed because AMX software is a useful test of the mouse path, and especially useful with the Repton 3 editor.
 
 ## Build
 
