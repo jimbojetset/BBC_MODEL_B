@@ -4,7 +4,7 @@ A C#/.NET BBC Micro Model B emulator. I have tried to build it around the detail
 
 This has been a practical if not slightly obsessive project. Compatibility has been earned the slow way: boot the game, watch the loader, listen for the ugly little timing clues, and then go back through the hardware path until the mistake shows itself.
 
-<img src="Screenshot.jpg" alt="BBC Model B emulator screenshot" width="50%">
+<img src="Screenshot.png" alt="BBC Model B emulator screenshot" width="50%">
 
 ## Requirements
 
@@ -95,6 +95,20 @@ dotnet run --project BBC_MODEL_B.csproj -- Games/Acornsoft/Elite.ssd
 ```
 
 ## Controls
+
+### SDL Menu
+
+The SDL window has a compact top menu for gameplay/session actions:
+
+```text
+File      Save screenshot, quit
+Disc      Mount/eject drive 0, mount/eject drive 1, create blank SSD
+Machine   BREAK, Shift-BREAK, Ctrl-BREAK
+View      Fullscreen, scanlines
+Input     Paste clipboard, Shift Lock
+```
+
+Disc menu mounts behave like inserting media into a real drive: they do not auto-boot the disc. Use `Shift-BREAK` from the Machine menu or keyboard when you want to boot the mounted disc. `Create blank SSD` uses the first empty physical drive, preferring drive 0; if both drives are occupied, the menu item is unavailable.
 
 ### Host Shortcuts
 

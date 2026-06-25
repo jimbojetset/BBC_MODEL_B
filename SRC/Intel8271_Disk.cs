@@ -231,6 +231,29 @@ namespace BBC
             Reset();
         }
 
+        public void EjectPhysicalDrive(int drive)
+        {
+            if (drive is < 0 or > 1)
+                throw new ArgumentOutOfRangeException(nameof(drive), "Physical DFS drive must be 0 or 1.");
+
+            int reverseSideDrive = drive + 2;
+            if (!driveMounted[drive] && !driveMounted[reverseSideDrive])
+                return;
+
+            FlushPhysicalDrive(drive);
+
+            ClearDrive(drive);
+            ClearDrive(reverseSideDrive);
+
+            if (selectedDrive == drive || selectedDrive == reverseSideDrive)
+                selectedDrive = 0;
+
+            mountedPath = mountedPaths.FirstOrDefault(path => path is not null);
+            mountedFileName = mountedFileNames.FirstOrDefault(fileName => fileName is not null);
+            imageDirty = imageDirtyByDrive.Any(dirty => dirty);
+            Reset();
+        }
+
         /// <summary>8271 writes alter the mounted DFS image only when the host file is not write-protected.</summary>
         public bool Flush()
         {
@@ -916,6 +939,19 @@ namespace BBC
             File.WriteAllBytes(path, drives[drive]);
             imageDirtyByDrive[drive] = false;
             return true;
+        }
+
+        private void ClearDrive(int drive)
+        {
+            drives[drive] = Array.Empty<byte>();
+            driveMounted[drive] = false;
+            mountedPaths[drive] = null;
+            mountedFileNames[drive] = null;
+            imageDirtyByDrive[drive] = false;
+            currentTrack[drive] = 0;
+            motorSpinning[drive] = false;
+            motorStartedAtCycle[drive] = 0;
+            driveActivityLedActive[drive] = false;
         }
 
         private bool TryReadCatalogue(out List<DfsFile> files)

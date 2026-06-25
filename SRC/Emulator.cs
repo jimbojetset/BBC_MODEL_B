@@ -182,10 +182,10 @@ namespace BBC
             return suffix.Length == 1 && char.IsDigit(suffix[0]) && int.TryParse(suffix, out drive) && drive is >= 0 and <= 3;
         }
 
-        private static void CreateBlankSsdImage(string path)
+        private static void CreateBlankSsdImage(string path, bool overwrite = false)
         {
             string fullPath = Path.GetFullPath(path);
-            if (File.Exists(fullPath))
+            if (!overwrite && File.Exists(fullPath))
                 return;
 
             Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? ".");
@@ -339,7 +339,7 @@ namespace BBC
         private readonly HostJoystickChange[] joystickChangeScratch = new HostJoystickChange[16];
         private readonly HostAnalogJoystickChange[] analogJoystickChangeScratch = new HostAnalogJoystickChange[16];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
-        private readonly List<string> discLoadScratch = new List<string>();
+        private readonly List<HostDiscAction> discActionScratch = new List<HostDiscAction>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
         private readonly Queue<string> pendingBootScriptLines = new Queue<string>();
         private readonly long[] matrixKeyPressedAtTicks = new long[128];
@@ -570,6 +570,12 @@ namespace BBC
             hostFilingSystem.Mount(path);
 
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedFileName}");
+        }
+
+        public void EjectDisc(int drive)
+        {
+            discController.EjectPhysicalDrive(drive);
+            Console.WriteLine($"Ejected DFS drive {drive}");
         }
 
         public string QueueHostMountFailure(string path, Exception exception)
@@ -1056,14 +1062,26 @@ namespace BBC
 
         private void DrainHostDiscLoads(Display display)
         {
-            discLoadScratch.Clear();
-            display.DrainDiscLoads(discLoadScratch);
+            discActionScratch.Clear();
+            display.DrainDiscActions(discActionScratch);
 
-            foreach (string path in discLoadScratch)
+            foreach (HostDiscAction action in discActionScratch)
             {
                 try
                 {
-                    MountHostFile(path);
+                    switch (action.Kind)
+                    {
+                        case HostDiscActionKind.Mount:
+                            MountHostFile(action.Path, autoRunDisc: false, requestedDrive: action.Drive);
+                            break;
+                        case HostDiscActionKind.CreateBlankSsd:
+                            CreateBlankSsdImage(action.Path, overwrite: true);
+                            MountHostFile(action.Path, autoRunDisc: false, requestedDrive: action.Drive);
+                            break;
+                        case HostDiscActionKind.Eject:
+                            EjectDisc(action.Drive);
+                            break;
+                    }
                 }
                 catch (Exception ex) when (ex is FileNotFoundException
                     or DirectoryNotFoundException
@@ -1071,7 +1089,9 @@ namespace BBC
                     or IOException
                     or InvalidOperationException)
                 {
-                    string message = QueueHostMountFailure(path, ex);
+                    string message = string.IsNullOrWhiteSpace(action.Path)
+                        ? $"Disc action failed: {ex.Message}"
+                        : QueueHostMountFailure(action.Path, ex);
                     Console.WriteLine(message);
                 }
             }

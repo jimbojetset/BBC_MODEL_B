@@ -23,6 +23,14 @@ namespace BBC
         public const int DefaultWidth = 768;
         public const int DefaultHeight = 576;
         private const int HorizontalBorderPercent = 5;
+        private const int TopMenuHeight = 24;
+        private const int MenuPaddingX = 10;
+        private const int MenuTextCellWidth = 7;
+        private const int MenuTextCellHeight = 11;
+        private const int MenuItemHeight = 20;
+        private const int MenuSeparatorHeight = 9;
+        private const int MenuDropDownPadding = 5;
+        private const int MenuShortcutGap = 18;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
@@ -70,8 +78,9 @@ namespace BBC
         private readonly Queue<HostKeyChange> pendingKeyChanges = new Queue<HostKeyChange>();
         private readonly Queue<HostJoystickChange> pendingJoystickChanges = new Queue<HostJoystickChange>();
         private readonly Queue<HostAnalogJoystickChange> pendingAnalogJoystickChanges = new Queue<HostAnalogJoystickChange>();
-        private readonly Queue<string> pendingDiscLoads = new Queue<string>();
+        private readonly Queue<HostDiscAction> pendingDiscActions = new Queue<HostDiscAction>();
         private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
+        private readonly MenuDefinition[] menus;
         private int pendingScreenshotRequests;
         private int pendingTraceToggleRequests;
         private HostMouseState mouseState;
@@ -92,6 +101,10 @@ namespace BBC
         private bool disposed;
         private bool hostCapsLockEnabled;
         private bool bbcShiftLockEnabled;
+        private bool fullScreenEnabled;
+        private int activeMenuIndex = -1;
+        private int hoveredMenuIndex = -1;
+        private int hoveredMenuItemIndex = -1;
         private int logicalWidth;
         private int logicalHeight;
         private SdlRect viewportRect;
@@ -147,12 +160,13 @@ namespace BBC
             pitchBytes = width * sizeof(uint);
             frameBuffer = new uint[width * height];
             Array.Fill(frameBuffer, Black);
+            menus = CreateMenus();
 
             ThrowIfSdlFailed(SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK), "SDL_InitSubSystem");
             int horizontalBorder = (int)Math.Round(width * HorizontalBorderPercent / 100.0);
             logicalWidth = width + (horizontalBorder * 2);
-            logicalHeight = height + GetBottomOverlayHeight();
-            viewportRect = new SdlRect(horizontalBorder, 0, width, height);
+            logicalHeight = height + TopMenuHeight + GetBottomOverlayHeight();
+            viewportRect = new SdlRect(horizontalBorder, TopMenuHeight, width, height);
 
             window = SDL_CreateWindow(
                 title,
@@ -169,6 +183,7 @@ namespace BBC
             ThrowIfNull(renderer, "SDL_CreateRenderer");
 
             ThrowIfSdlFailed(SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255), "SDL_SetRenderDrawColor");
+            ThrowIfSdlFailed(SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND), "SDL_SetRenderDrawBlendMode");
             ThrowIfSdlFailed(SDL_RenderSetLogicalSize(renderer, logicalWidth, logicalHeight), "SDL_RenderSetLogicalSize");
             _ = SDL_RenderSetIntegerScale(renderer, SDL_FALSE);
 
@@ -210,10 +225,20 @@ namespace BBC
                     EnqueueKeyUp(ev.KeySym);
 
                 if (ev.Type == SDL_MOUSEMOTION)
+                {
+                    if (HandleMenuMouseMotion(ev.MouseX, ev.MouseY))
+                        continue;
+
                     UpdateMouseState(ev.MouseX, ev.MouseY, ev.MouseRelativeX, ev.MouseRelativeY, mouseState.Buttons);
+                }
 
                 if (ev.Type is SDL_MOUSEBUTTONDOWN or SDL_MOUSEBUTTONUP)
+                {
+                    if (HandleMenuMouseButton(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY))
+                        continue;
+
                     UpdateMouseButtonState(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY);
+                }
 
                 if (ev.Type == SDL_CONTROLLERAXISMOTION)
                     UpdateControllerAxis(ev.ControllerAxis, ev.ControllerAxisValue);
@@ -310,10 +335,10 @@ namespace BBC
             mouseState = new HostMouseState(mouseState.X, mouseState.Y, mouseState.Buttons, 0, 0);
         }
 
-        public void DrainDiscLoads(ICollection<string> destination)
+        public void DrainDiscActions(ICollection<HostDiscAction> destination)
         {
-            while (pendingDiscLoads.Count > 0)
-                destination.Add(pendingDiscLoads.Dequeue());
+            while (pendingDiscActions.Count > 0)
+                destination.Add(pendingDiscActions.Dequeue());
         }
 
         public int DrainScreenshotRequests()
@@ -360,8 +385,364 @@ namespace BBC
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
             DrawDriveGlyphs();
+            DrawMenuBar();
 
             SDL_RenderPresent(renderer);
+        }
+
+        private void DrawMenuBar()
+        {
+            SdlRect bar = new SdlRect(0, 0, logicalWidth, TopMenuHeight);
+            _ = SDL_SetRenderDrawColor(renderer, 18, 18, 18, 255);
+            _ = SDL_RenderFillRect(renderer, ref bar);
+
+            SdlRect bottomLine = new SdlRect(0, TopMenuHeight - 1, logicalWidth, 1);
+            _ = SDL_SetRenderDrawColor(renderer, 72, 72, 72, 255);
+            _ = SDL_RenderFillRect(renderer, ref bottomLine);
+
+            int x = MenuPaddingX;
+            for (int i = 0; i < menus.Length; i++)
+            {
+                int width = GetTopMenuWidth(menus[i].Title);
+                bool active = i == activeMenuIndex || i == hoveredMenuIndex;
+                if (active)
+                {
+                    SdlRect hover = new SdlRect(x - 4, 3, width + 8, TopMenuHeight - 6);
+                    _ = SDL_SetRenderDrawColor(renderer, 42, 42, 42, 255);
+                    _ = SDL_RenderFillRect(renderer, ref hover);
+                    _ = SDL_SetRenderDrawColor(renderer, 96, 96, 96, 255);
+                    DrawRectOutline(hover);
+                }
+
+                DrawRendererText(menus[i].Title, x, 8, active ? (byte)245 : (byte)190, active ? (byte)245 : (byte)190, active ? (byte)245 : (byte)190);
+                x += width + MenuPaddingX;
+            }
+
+            if (activeMenuIndex >= 0)
+                DrawOpenMenu(activeMenuIndex);
+
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        }
+
+        private void DrawOpenMenu(int menuIndex)
+        {
+            MenuDefinition menu = menus[menuIndex];
+            int menuX = GetTopMenuX(menuIndex) - 4;
+            int menuY = TopMenuHeight;
+            int menuWidth = GetDropDownWidth(menu);
+            int menuHeight = GetDropDownHeight(menu);
+
+            SdlRect panel = new SdlRect(menuX, menuY, menuWidth, menuHeight);
+            _ = SDL_SetRenderDrawColor(renderer, 24, 24, 24, 235);
+            _ = SDL_RenderFillRect(renderer, ref panel);
+            _ = SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
+            DrawRectOutline(panel);
+
+            int itemY = menuY + MenuDropDownPadding;
+            for (int i = 0; i < menu.Items.Length; i++)
+            {
+                MenuItem item = menu.Items[i];
+                int itemHeight = GetMenuItemHeight(item);
+
+                if (item.Separator)
+                {
+                    SdlRect line = new SdlRect(menuX + 8, itemY + (itemHeight / 2), menuWidth - 16, 1);
+                    _ = SDL_SetRenderDrawColor(renderer, 96, 96, 96, 255);
+                    _ = SDL_RenderFillRect(renderer, ref line);
+                    itemY += itemHeight;
+                    continue;
+                }
+
+                if (i == hoveredMenuItemIndex)
+                {
+                    SdlRect row = new SdlRect(menuX + 3, itemY - 2, menuWidth - 6, MenuItemHeight - 1);
+                    _ = SDL_SetRenderDrawColor(renderer, 56, 56, 56, 255);
+                    _ = SDL_RenderFillRect(renderer, ref row);
+                }
+
+                bool enabled = IsMenuItemEnabled(item);
+                byte textGrey = enabled ? (byte)230 : (byte)96;
+                string label = IsMenuItemChecked(item.Command) ? "* " + item.Text : "  " + item.Text;
+                DrawRendererText(label, menuX + 10, itemY + 4, textGrey, textGrey, textGrey);
+
+                if (item.Shortcut.Length > 0)
+                {
+                    int shortcutX = menuX + menuWidth - 10 - GetRendererTextWidth(item.Shortcut);
+                    DrawRendererText(item.Shortcut, shortcutX, itemY + 4, 160, 160, 160);
+                }
+
+                itemY += itemHeight;
+            }
+        }
+
+        private bool HandleMenuMouseMotion(int hostX, int hostY)
+        {
+            RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+
+            hoveredMenuIndex = GetMenuIndexAt((int)logicalX, (int)logicalY);
+            hoveredMenuItemIndex = activeMenuIndex >= 0
+                ? GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY)
+                : -1;
+
+            if (activeMenuIndex >= 0 && hoveredMenuIndex >= 0)
+            {
+                activeMenuIndex = hoveredMenuIndex;
+                hoveredMenuItemIndex = GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY);
+            }
+
+            return IsMenuArea((int)logicalX, (int)logicalY);
+        }
+
+        private bool HandleMenuMouseButton(byte button, bool pressed, int hostX, int hostY)
+        {
+            if (button != SDL_BUTTON_LEFT)
+                return false;
+
+            RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+            int x = (int)logicalX;
+            int y = (int)logicalY;
+
+            if (!pressed)
+                return IsMenuArea(x, y);
+
+            int menuIndex = GetMenuIndexAt(x, y);
+            if (menuIndex >= 0)
+            {
+                activeMenuIndex = activeMenuIndex == menuIndex ? -1 : menuIndex;
+                hoveredMenuIndex = menuIndex;
+                hoveredMenuItemIndex = -1;
+                return true;
+            }
+
+            if (activeMenuIndex >= 0)
+            {
+                int itemIndex = GetMenuItemIndexAt(activeMenuIndex, x, y);
+                if (itemIndex >= 0)
+                {
+                    MenuItem item = menus[activeMenuIndex].Items[itemIndex];
+                    if (IsMenuItemEnabled(item))
+                        ExecuteMenuCommand(item.Command);
+
+                    activeMenuIndex = -1;
+                    hoveredMenuItemIndex = -1;
+                    return true;
+                }
+
+                activeMenuIndex = -1;
+                hoveredMenuItemIndex = -1;
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool IsMenuArea(int x, int y)
+        {
+            if (y >= 0 && y < TopMenuHeight)
+                return true;
+
+            return activeMenuIndex >= 0 && GetMenuItemIndexAt(activeMenuIndex, x, y) >= 0;
+        }
+
+        private int GetMenuIndexAt(int x, int y)
+        {
+            if (y < 0 || y >= TopMenuHeight)
+                return -1;
+
+            int menuX = MenuPaddingX;
+            for (int i = 0; i < menus.Length; i++)
+            {
+                int width = GetTopMenuWidth(menus[i].Title);
+                if (x >= menuX - 4 && x < menuX + width + 4)
+                    return i;
+
+                menuX += width + MenuPaddingX;
+            }
+
+            return -1;
+        }
+
+        private int GetMenuItemIndexAt(int menuIndex, int x, int y)
+        {
+            if (menuIndex < 0 || menuIndex >= menus.Length)
+                return -1;
+
+            MenuDefinition menu = menus[menuIndex];
+            int menuX = GetTopMenuX(menuIndex) - 4;
+            int menuY = TopMenuHeight;
+            int menuWidth = GetDropDownWidth(menu);
+            int itemY = y - menuY - MenuDropDownPadding;
+
+            if (x < menuX || x >= menuX + menuWidth || itemY < 0)
+                return -1;
+
+            int top = 0;
+            for (int i = 0; i < menu.Items.Length; i++)
+            {
+                int itemHeight = GetMenuItemHeight(menu.Items[i]);
+                if (itemY >= top && itemY < top + itemHeight)
+                    return menu.Items[i].Separator ? -1 : i;
+
+                top += itemHeight;
+            }
+
+            return -1;
+        }
+
+        private int GetTopMenuX(int menuIndex)
+        {
+            int x = MenuPaddingX;
+            for (int i = 0; i < menuIndex; i++)
+                x += GetTopMenuWidth(menus[i].Title) + MenuPaddingX;
+
+            return x;
+        }
+
+        private static int GetTopMenuWidth(string text)
+        {
+            return GetRendererTextWidth(text) + 2;
+        }
+
+        private static int GetDropDownWidth(MenuDefinition menu)
+        {
+            int width = 0;
+            foreach (MenuItem item in menu.Items)
+            {
+                if (item.Separator)
+                    continue;
+
+                int itemWidth = GetRendererTextWidth("  " + item.Text)
+                    + (item.Shortcut.Length == 0 ? 0 : MenuShortcutGap + GetRendererTextWidth(item.Shortcut));
+                width = Math.Max(width, itemWidth);
+            }
+
+            return width + 20;
+        }
+
+        private static int GetDropDownHeight(MenuDefinition menu)
+        {
+            int height = MenuDropDownPadding * 2;
+            foreach (MenuItem item in menu.Items)
+                height += GetMenuItemHeight(item);
+
+            return height;
+        }
+
+        private static int GetMenuItemHeight(MenuItem item)
+        {
+            return item.Separator ? MenuSeparatorHeight : MenuItemHeight;
+        }
+
+        private void ExecuteMenuCommand(MenuCommand command)
+        {
+            switch (command)
+            {
+                case MenuCommand.MountDrive0:
+                    EnqueueSelectedFile(0);
+                    break;
+                case MenuCommand.MountDrive1:
+                    EnqueueSelectedFile(1);
+                    break;
+                case MenuCommand.CreateBlankSsd:
+                    EnqueueBlankSsd();
+                    break;
+                case MenuCommand.EjectDrive0:
+                    pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Eject, string.Empty, 0));
+                    break;
+                case MenuCommand.EjectDrive1:
+                    pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Eject, string.Empty, 1));
+                    break;
+                case MenuCommand.SaveScreenshot:
+                    pendingScreenshotRequests++;
+                    break;
+                case MenuCommand.Quit:
+                    QuitRequested = true;
+                    break;
+                case MenuCommand.Break:
+                    pendingBreaks.Enqueue(new BreakKeyPress(false, false));
+                    break;
+                case MenuCommand.ShiftBreak:
+                    pendingBreaks.Enqueue(new BreakKeyPress(true, false));
+                    break;
+                case MenuCommand.ControlBreak:
+                    pendingBreaks.Enqueue(new BreakKeyPress(false, true));
+                    break;
+                case MenuCommand.ToggleScanlines:
+                    scanlinesEnabled = !scanlinesEnabled;
+                    break;
+                case MenuCommand.ToggleFullScreen:
+                    SetFullScreen(!fullScreenEnabled);
+                    break;
+                case MenuCommand.PasteClipboard:
+                    EnqueueClipboardText();
+                    break;
+                case MenuCommand.ToggleShiftLock:
+                    ToggleBbcShiftLock();
+                    break;
+            }
+        }
+
+        private bool IsMenuItemChecked(MenuCommand command)
+        {
+            return command switch
+            {
+                MenuCommand.ToggleScanlines => scanlinesEnabled,
+                MenuCommand.ToggleFullScreen => fullScreenEnabled,
+                MenuCommand.ToggleShiftLock => bbcShiftLockEnabled,
+                _ => false
+            };
+        }
+
+        private bool IsMenuItemEnabled(MenuItem item)
+        {
+            return item.Enabled && item.Command switch
+            {
+                MenuCommand.MountDrive0 => !Drive0Mounted,
+                MenuCommand.MountDrive1 => !Drive1Mounted,
+                MenuCommand.CreateBlankSsd => !Drive0Mounted || !Drive1Mounted,
+                MenuCommand.EjectDrive0 => Drive0Mounted,
+                MenuCommand.EjectDrive1 => Drive1Mounted,
+                _ => true
+            };
+        }
+
+        private void DrawRectOutline(SdlRect rect)
+        {
+            SdlRect top = new SdlRect(rect.X, rect.Y, rect.W, 1);
+            SdlRect bottom = new SdlRect(rect.X, rect.Y + rect.H - 1, rect.W, 1);
+            SdlRect left = new SdlRect(rect.X, rect.Y, 1, rect.H);
+            SdlRect right = new SdlRect(rect.X + rect.W - 1, rect.Y, 1, rect.H);
+            _ = SDL_RenderFillRect(renderer, ref top);
+            _ = SDL_RenderFillRect(renderer, ref bottom);
+            _ = SDL_RenderFillRect(renderer, ref left);
+            _ = SDL_RenderFillRect(renderer, ref right);
+        }
+
+        private void DrawRendererText(string text, int x, int y, byte red, byte green, byte blue)
+        {
+            _ = SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+            for (int i = 0; i < text.Length; i++)
+            {
+                byte[] glyph = NotificationFont.GetRows(text[i]);
+                int charX = x + (i * MenuTextCellWidth);
+                for (int row = 0; row < glyph.Length; row++)
+                {
+                    byte mask = glyph[row];
+                    for (int column = 0; column < NotificationGlyphWidth; column++)
+                    {
+                        if ((mask & (1 << (NotificationGlyphWidth - 1 - column))) == 0)
+                            continue;
+
+                        SdlRect pixel = new SdlRect(charX + column, y + row, 1, 1);
+                        _ = SDL_RenderFillRect(renderer, ref pixel);
+                    }
+                }
+            }
+        }
+
+        private static int GetRendererTextWidth(string text)
+        {
+            return text.Length * MenuTextCellWidth;
         }
 
         private void DrawDriveGlyphs()
@@ -924,7 +1305,7 @@ namespace BBC
 
             if (keySym == SDLK_L && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
             {
-                EnqueueSelectedFile();
+                EnqueueSelectedFile(0);
                 return;
             }
 
@@ -1153,26 +1534,8 @@ namespace BBC
 
         private void RenderWindowToLogical(int windowX, int windowY, out float logicalX, out float logicalY)
         {
-            float rendererX = windowX;
-            float rendererY = windowY;
-            if (window != IntPtr.Zero)
-            {
-                SDL_GetWindowSize(window, out int windowWidth, out int windowHeight);
-
-                if (SDL_GetRendererOutputSize(renderer, out int outputWidth, out int outputHeight) == 0
-                    && windowWidth > 0
-                    && windowHeight > 0)
-                {
-                    rendererX = windowX * (outputWidth / (float)windowWidth);
-                    rendererY = windowY * (outputHeight / (float)windowHeight);
-                }
-            }
-
-            SDL_RenderGetViewport(renderer, out SdlRect viewport);
-            SDL_RenderGetScale(renderer, out float scaleX, out float scaleY);
-
-            logicalX = scaleX == 0.0f ? rendererX : (rendererX - viewport.X) / scaleX;
-            logicalY = scaleY == 0.0f ? rendererY : (rendererY - viewport.Y) / scaleY;
+            logicalX = windowX;
+            logicalY = windowY;
         }
 
         private void UpdateMouseButtonState(byte button, bool pressed, int hostX, int hostY)
@@ -1216,10 +1579,21 @@ namespace BBC
             if (!chordPressed)
                 return false;
 
+            ToggleBbcShiftLock();
+            return true;
+        }
+
+        private void ToggleBbcShiftLock()
+        {
             bbcShiftLockEnabled = !bbcShiftLockEnabled;
             ShiftLockLedActive = bbcShiftLockEnabled;
             EnqueueBbcKeyChange(BbcShiftKey, bbcShiftLockEnabled);
-            return true;
+        }
+
+        private void SetFullScreen(bool enabled)
+        {
+            ThrowIfSdlFailed(SDL_SetWindowFullscreen(window, enabled ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0), "SDL_SetWindowFullscreen");
+            fullScreenEnabled = enabled;
         }
 
         private void EnqueueBbcKeyChange(byte internalKey, bool pressed)
@@ -1392,11 +1766,76 @@ namespace BBC
 
         private readonly record struct BbcKeyChord(byte InternalKey, ShiftAdjustment ShiftAdjustment);
 
+        private readonly record struct MenuDefinition(string Title, MenuItem[] Items);
+
+        private readonly record struct MenuItem(string Text, string Shortcut, MenuCommand Command, bool Enabled = true, bool Separator = false);
+
+        private enum MenuCommand
+        {
+            MountDrive0,
+            MountDrive1,
+            CreateBlankSsd,
+            EjectDrive0,
+            EjectDrive1,
+            SaveScreenshot,
+            Quit,
+            Break,
+            ShiftBreak,
+            ControlBreak,
+            ToggleScanlines,
+            ToggleFullScreen,
+            PasteClipboard,
+            ToggleShiftLock
+        }
+
         private enum ShiftAdjustment
         {
             Preserve,
             Suppress,
             Force
+        }
+
+        private static MenuDefinition[] CreateMenus()
+        {
+            return
+            [
+                new MenuDefinition("File",
+                [
+                    new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
+                    new MenuItem("Quit", "", MenuCommand.Quit)
+                ]),
+                new MenuDefinition("Disc",
+                [
+                    new MenuItem("Mount drive 0...", "D0", MenuCommand.MountDrive0),
+                    new MenuItem("Eject drive 0", "", MenuCommand.EjectDrive0),
+                    MenuSeparator(),
+                    new MenuItem("Mount drive 1...", "D1", MenuCommand.MountDrive1),
+                    new MenuItem("Eject drive 1", "", MenuCommand.EjectDrive1),
+                    MenuSeparator(),
+                    new MenuItem("Create blank SSD", "", MenuCommand.CreateBlankSsd)
+                ]),
+                new MenuDefinition("Machine",
+                [
+                    new MenuItem("BREAK", "F12", MenuCommand.Break),
+                    new MenuItem("Shift-BREAK", "Shift+F12", MenuCommand.ShiftBreak),
+                    new MenuItem("Ctrl-BREAK", "Ctrl+F12", MenuCommand.ControlBreak)
+                ]),
+                new MenuDefinition("View",
+                [
+                    new MenuItem("Fullscreen", "", MenuCommand.ToggleFullScreen),
+                    new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines)
+                ]),
+                new MenuDefinition("Input",
+                [
+                    new MenuItem("Paste clipboard", "Ctrl/Cmd+V", MenuCommand.PasteClipboard),
+                    new MenuItem("Shift Lock", "L Ctrl+L Shift", MenuCommand.ToggleShiftLock)
+                ])
+            ];
+        }
+
+        private static MenuItem MenuSeparator()
+        {
+            return new MenuItem(string.Empty, string.Empty, default, Enabled: false, Separator: true);
         }
 
         private void EnqueueClipboardText()
@@ -1426,7 +1865,7 @@ namespace BBC
             {
                 string? path = Marshal.PtrToStringUTF8(filePointer);
                 if (!string.IsNullOrWhiteSpace(path))
-                    pendingDiscLoads.Enqueue(path);
+                    pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Mount, path, 0));
             }
             finally
             {
@@ -1434,11 +1873,30 @@ namespace BBC
             }
         }
 
-        private void EnqueueSelectedFile()
+        private void EnqueueSelectedFile(int drive)
         {
             string? path = SelectNativeFile();
             if (!string.IsNullOrWhiteSpace(path))
-                pendingDiscLoads.Enqueue(path);
+                pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Mount, path, drive));
+        }
+
+        private void EnqueueBlankSsd()
+        {
+            int drive = GetFirstEmptyPhysicalDrive();
+            if (drive < 0)
+                return;
+
+            string? path = SelectNativeSaveFile();
+            if (!string.IsNullOrWhiteSpace(path))
+                pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.CreateBlankSsd, path, drive));
+        }
+
+        private int GetFirstEmptyPhysicalDrive()
+        {
+            if (!Drive0Mounted)
+                return 0;
+
+            return Drive1Mounted ? -1 : 1;
         }
 
         private static string? SelectNativeFile()
@@ -1458,6 +1916,32 @@ namespace BBC
 
                 if (OperatingSystem.IsLinux())
                     return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc or file");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string? SelectNativeSaveFile()
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.SaveFileDialog; $dialog.Title = 'Create blank DFS SSD'; $dialog.Filter = 'DFS single-sided disc (*.ssd)|*.ssd'; $dialog.DefaultExt = 'ssd'; $dialog.FileName = 'Blank.ssd'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file name with prompt \"Create blank DFS SSD\" default name \"Blank.ssd\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--save", "--confirm-overwrite", "--title=Create blank DFS SSD", "--filename=Blank.ssd");
             }
             catch
             {
@@ -1652,6 +2136,7 @@ namespace BBC
         private const uint SDL_INIT_JOYSTICK = 0x00000200;
         private const uint SDL_INIT_GAMECONTROLLER = 0x00002000;
         private const uint SDL_WINDOW_SHOWN = 0x00000004;
+        private const uint SDL_WINDOW_FULLSCREEN_DESKTOP = 0x00001001;
         private const uint SDL_WINDOW_RESIZABLE = 0x00000020;
         private const uint SDL_WINDOW_ALLOW_HIGHDPI = 0x00002000;
         private const uint SDL_RENDERER_SOFTWARE = 0x00000001;
@@ -1869,6 +2354,9 @@ namespace BBC
         private static extern void SDL_GetWindowSize(IntPtr window, out int w, out int h);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_SetWindowFullscreen(IntPtr window, uint flags);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr SDL_CreateRenderer(IntPtr window, int index, uint flags);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
@@ -1876,6 +2364,9 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_SetRenderDrawColor(IntPtr renderer, byte r, byte g, byte b, byte a);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_SetRenderDrawBlendMode(IntPtr renderer, int blendMode);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderSetLogicalSize(IntPtr renderer, int w, int h);
@@ -2005,6 +2496,15 @@ namespace BBC
 
     /// <summary>AMX-style mouse code works in BBC screen coordinates plus relative movement pulses.</summary>
     public readonly record struct HostMouseState(int X, int Y, byte Buttons, int DeltaX, int DeltaY);
+
+    public readonly record struct HostDiscAction(HostDiscActionKind Kind, string Path, int Drive);
+
+    public enum HostDiscActionKind
+    {
+        Mount,
+        CreateBlankSsd,
+        Eject
+    }
 
     public enum JoystickControl
     {
