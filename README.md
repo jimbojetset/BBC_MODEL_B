@@ -1,6 +1,6 @@
 # BBC Model B Emulator
 
-A C#/.NET BBC Micro Model B emulator. I have tried to build it authenticity that makes operating the BBC feel right including fully emulating the 2 MHz NMOS 6502, OS 1.20, BASIC II, Acorn DFS, the 8271 disc controller, the system and user 6522 VIAs, the BBC video hardware, the SN76489 sound chip, and the keyboard matrix.
+A C#/.NET BBC Micro Model B emulator. I have tried to build it with a level of authenticity that makes operating the BBC feel right including fully emulating the 2 MHz NMOS 6502, OS 1.20, BASIC II, Acorn DFS, the 8271 disc controller, the system and user 6522 VIAs, the BBC video hardware, the SN76489 sound chip, and the keyboard matrix.
 
 This has been a practical if not slightly obsessive project. Compatibility has been earned the slow way by booting the game, watching the loader, listening for the problematic little timing clues, and then going back through the hardware path until my mistake shows itself.
 
