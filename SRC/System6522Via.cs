@@ -95,6 +95,82 @@ namespace BBC
             externalVsyncLineEnabled = false;
         }
 
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(registers.Length);
+            writer.Write(registers);
+            writer.Write(pressedKeys.Length);
+            foreach (bool pressed in pressedKeys)
+                writer.Write(pressed);
+
+            writer.Write(addressableLatch);
+            writer.Write(interruptFlags);
+            writer.Write(interruptEnable);
+            writer.Write(portA);
+            writer.Write(portB);
+            writer.Write(dataDirectionA);
+            writer.Write(dataDirectionB);
+            writer.Write(timer1Counter);
+            writer.Write(timer1Latch);
+            writer.Write(timer2Counter);
+            writer.Write(timer2Latch);
+            writer.Write(timer1Running);
+            writer.Write(timer2Running);
+            writer.Write(timer2HasInterrupted);
+            writer.Write(peripheralCycleRemainder);
+            writer.Write(vsyncCycleCounter);
+            writer.Write(frameCounter);
+            writer.Write(vsyncLineActive);
+            writer.Write(externalVsyncLineEnabled);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            ReadBytes(reader, registers);
+            int pressedKeyCount = reader.ReadInt32();
+            if (pressedKeyCount != pressedKeys.Length)
+                throw new InvalidDataException("Save state has an incompatible system VIA keyboard matrix.");
+
+            for (int i = 0; i < pressedKeys.Length; i++)
+                pressedKeys[i] = reader.ReadBoolean();
+
+            addressableLatch = reader.ReadByte();
+            interruptFlags = reader.ReadByte();
+            interruptEnable = reader.ReadByte();
+            portA = reader.ReadByte();
+            portB = reader.ReadByte();
+            dataDirectionA = reader.ReadByte();
+            dataDirectionB = reader.ReadByte();
+            timer1Counter = reader.ReadUInt16();
+            timer1Latch = reader.ReadUInt16();
+            timer2Counter = reader.ReadUInt16();
+            timer2Latch = reader.ReadUInt16();
+            timer1Running = reader.ReadBoolean();
+            timer2Running = reader.ReadBoolean();
+            timer2HasInterrupted = reader.ReadBoolean();
+            peripheralCycleRemainder = reader.ReadInt32();
+            vsyncCycleCounter = reader.ReadInt32();
+            frameCounter = reader.ReadInt32();
+            vsyncLineActive = reader.ReadBoolean();
+            externalVsyncLineEnabled = reader.ReadBoolean();
+
+            UpdateSoundSlowDataBus();
+            ScreenMemoryWindowChanged?.Invoke(CurrentScreenMemoryWindow);
+        }
+
+        private static void ReadBytes(BinaryReader reader, byte[] destination)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException("Save state has an incompatible system VIA register block.");
+
+            byte[] bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+                throw new EndOfStreamException();
+
+            bytes.CopyTo(destination, 0);
+        }
+
         public int FrameCounter => Volatile.Read(ref frameCounter);
 
         public int ScreenMemoryStart => CurrentScreenMemoryWindow.Start;

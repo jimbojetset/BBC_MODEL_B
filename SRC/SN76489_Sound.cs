@@ -70,6 +70,7 @@ namespace BBC
         private uint audioDevice;
         private Thread? audioThread;
         private bool running;
+        private bool hostOutputPaused;
         private bool disposed;
         private DiscDriveSound? discDriveSound;
 
@@ -122,6 +123,95 @@ namespace BBC
                 latchedVolume = false;
                 discDriveSound?.Reset();
             }
+        }
+
+        public void SaveState(BinaryWriter writer)
+        {
+            lock (syncRoot)
+            {
+                writer.Write(tonePeriods.Length);
+                foreach (int period in tonePeriods)
+                    writer.Write(period);
+
+                writer.Write(volumes.Length);
+                foreach (int volume in volumes)
+                    writer.Write(volume);
+
+                writer.Write(toneCounters.Length);
+                foreach (double counter in toneCounters)
+                    writer.Write(counter);
+
+                writer.Write(tonePolarity.Length);
+                foreach (int polarity in tonePolarity)
+                    writer.Write(polarity);
+
+                writer.Write(sampleCycleRemainder);
+                writer.Write(chipSampleRemainder);
+                writer.Write(emulatedCycle);
+                writer.Write(slowDataBus);
+                writer.Write(writeEnableActive);
+                writer.Write(writeEnableSampleScheduled);
+                writer.Write(noiseControl);
+                writer.Write(noiseCounter);
+                writer.Write(noisePolarity);
+                writer.Write(noiseShiftRegister);
+                writer.Write(latchedChannel);
+                writer.Write(latchedVolume);
+            }
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            lock (syncRoot)
+            {
+                ReadIntArray(reader, tonePeriods, "PSG tone period");
+                ReadIntArray(reader, volumes, "PSG volume");
+                ReadDoubleArray(reader, toneCounters, "PSG tone counter");
+                ReadIntArray(reader, tonePolarity, "PSG tone polarity");
+
+                sampleCycleRemainder = reader.ReadDouble();
+                chipSampleRemainder = reader.ReadDouble();
+                emulatedCycle = reader.ReadInt64();
+                slowDataBus = reader.ReadByte();
+                writeEnableActive = reader.ReadBoolean();
+                writeEnableSampleScheduled = reader.ReadBoolean();
+                noiseControl = reader.ReadByte();
+                noiseCounter = reader.ReadDouble();
+                noisePolarity = reader.ReadInt32();
+                noiseShiftRegister = reader.ReadUInt16();
+                latchedChannel = reader.ReadInt32();
+                latchedVolume = reader.ReadBoolean();
+
+                scheduledEvents.Clear();
+                generatedReadIndex = 0;
+                generatedWriteIndex = 0;
+                generatedCount = 0;
+                lastGeneratedSample = 0;
+                discDriveSound?.Reset();
+            }
+
+            if (audioDevice != 0)
+                SDL_ClearQueuedAudio(audioDevice);
+        }
+
+        private static void ReadIntArray(BinaryReader reader, int[] destination, string name)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"Save state has an incompatible {name} block.");
+
+            for (int i = 0; i < destination.Length; i++)
+                destination[i] = reader.ReadInt32();
+        }
+
+        private static void ReadDoubleArray(BinaryReader reader, double[] destination, string name)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"Save state has an incompatible {name} block.");
+
+            for (int i = 0; i < destination.Length; i++)
+                destination[i] = reader.ReadDouble();
         }
 
         public void Start()
@@ -179,6 +269,28 @@ namespace BBC
             }
         }
 
+        public void SetHostOutputPaused(bool paused)
+        {
+            Volatile.Write(ref hostOutputPaused, paused);
+            if (paused)
+                SilenceHostOutput();
+        }
+
+        private void SilenceHostOutput()
+        {
+            lock (syncRoot)
+            {
+                generatedReadIndex = 0;
+                generatedWriteIndex = 0;
+                generatedCount = 0;
+                lastGeneratedSample = 0;
+                Monitor.PulseAll(syncRoot);
+            }
+
+            if (audioDevice != 0)
+                SDL_ClearQueuedAudio(audioDevice);
+        }
+
         private static double GetPowerOnBeepEnvelope(int sampleIndex, int sampleCount)
         {
             int attackSamples = SampleRate * PowerOnBeepAttackMilliseconds / 1000;
@@ -232,6 +344,26 @@ namespace BBC
         {
             if (cycles <= 0)
                 return;
+
+            if (Volatile.Read(ref hostOutputPaused))
+            {
+                lock (syncRoot)
+                {
+                    long targetCycle = emulatedCycle + cycles;
+                    while (scheduledEvents.Count > 0 && scheduledEvents.Peek().Cycle <= targetCycle)
+                    {
+                        ScheduledPsgEvent scheduledEvent = scheduledEvents.Dequeue();
+                        emulatedCycle = scheduledEvent.Cycle;
+                        ApplyScheduledEvent(scheduledEvent);
+                    }
+
+                    sampleCycleRemainder = 0;
+                    chipSampleRemainder = 0;
+                    emulatedCycle = targetCycle;
+                }
+
+                return;
+            }
 
             WaitForGeneratedHeadroom();
 

@@ -58,6 +58,36 @@ namespace BBC
             tenBitMode = false;
         }
 
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(status);
+            writer.Write(latchedResult);
+            writer.Write(conversionCountdown);
+            writer.Write(selectedChannel);
+            writer.Write(tenBitMode);
+            writer.Write(channels.Length);
+            foreach (ushort channel in channels)
+                writer.Write(channel);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            status = reader.ReadByte();
+            latchedResult = reader.ReadUInt16();
+            conversionCountdown = reader.ReadInt32();
+            selectedChannel = reader.ReadByte();
+            tenBitMode = reader.ReadBoolean();
+
+            int channelCount = reader.ReadInt32();
+            if (channelCount != channels.Length)
+                throw new InvalidDataException("Save state has an incompatible ADC channel block.");
+
+            for (int i = 0; i < channels.Length; i++)
+                channels[i] = reader.ReadUInt16();
+
+            EndOfConversionChanged?.Invoke((status & StatusNotEocMask) == 0);
+        }
+
         /// <summary>ADC results are not instant; software can observe the EOC delay after starting a conversion.</summary>
         public void Tick(int cycles)
         {

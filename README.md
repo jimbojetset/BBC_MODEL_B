@@ -101,9 +101,9 @@ dotnet run --project BBC_MODEL_B.csproj -- Games/Acornsoft/Elite.ssd
 The SDL window has a compact top menu for gameplay/session actions:
 
 ```text
-File      Save screenshot, quit
+File      Save screenshot, save/load state, quit
 Disc      Mount/eject drive 0, mount/eject drive 1, create blank SSD
-Machine   BREAK, Shift-BREAK, Ctrl-BREAK
+Machine   BREAK, Shift-BREAK, Ctrl-BREAK, pause
 View      Fullscreen, scanlines
 Input     Paste clipboard, Shift Lock
 ```
@@ -116,6 +116,8 @@ Disc menu mounts behave like inserting media into a real drive: they do not auto
 F12                     BBC BREAK
 Shift+F12               BBC Shift-BREAK
 Ctrl+F12                BBC Ctrl-BREAK
+Ctrl+P                  Pause or resume emulation
+Space                   Advance one frame while paused
 F11                     Toggle scanline overlay
 Ctrl+S / Cmd+S          Save screenshot to Screenshots/
 Ctrl+T                  Toggle runtime and 8271 disc trace logging
@@ -268,6 +270,8 @@ Press `Ctrl+S` or `Cmd+S` to write a PNG to:
 ```text
 Screenshots/
 ```
+
+Screenshot and save-state filenames include the mounted disc or host-file title when one is available.
 
 ## Project Layout
 

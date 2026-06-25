@@ -136,6 +136,75 @@ namespace BBC
             peripheralCycleRemainder = 0;
         }
 
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(registers.Length);
+            writer.Write(registers);
+            writer.Write(interruptFlags);
+            writer.Write(interruptEnable);
+            writer.Write(portA);
+            writer.Write(portB);
+            writer.Write(dataDirectionA);
+            writer.Write(dataDirectionB);
+            writer.Write(externalPortBMask);
+            writer.Write(externalPortBValue);
+            writer.Write(floatingPortBInput);
+            writer.Write(mouseButtonBits);
+            writer.Write(pendingMouseX);
+            writer.Write(pendingMouseY);
+            writer.Write(mouseInputActive);
+            writer.Write(floatingInputCycleCounter);
+            writer.Write(peripheralCycleCounter);
+            writer.Write(lastPortBReadCycle);
+            writer.Write(portBPollReadCount);
+            writer.Write(timer1Counter);
+            writer.Write(timer1Latch);
+            writer.Write(timer2Counter);
+            writer.Write(timer2Latch);
+            writer.Write(timer1Running);
+            writer.Write(timer2Running);
+            writer.Write(timer2HasInterrupted);
+            writer.Write(peripheralCycleRemainder);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            int length = reader.ReadInt32();
+            if (length != registers.Length)
+                throw new InvalidDataException("Save state has an incompatible user VIA register block.");
+
+            byte[] bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+                throw new EndOfStreamException();
+
+            bytes.CopyTo(registers, 0);
+            interruptFlags = reader.ReadByte();
+            interruptEnable = reader.ReadByte();
+            portA = reader.ReadByte();
+            portB = reader.ReadByte();
+            dataDirectionA = reader.ReadByte();
+            dataDirectionB = reader.ReadByte();
+            externalPortBMask = reader.ReadByte();
+            externalPortBValue = reader.ReadByte();
+            floatingPortBInput = reader.ReadByte();
+            mouseButtonBits = reader.ReadByte();
+            pendingMouseX = reader.ReadInt32();
+            pendingMouseY = reader.ReadInt32();
+            mouseInputActive = reader.ReadBoolean();
+            floatingInputCycleCounter = reader.ReadInt32();
+            peripheralCycleCounter = reader.ReadInt32();
+            lastPortBReadCycle = reader.ReadInt32();
+            portBPollReadCount = reader.ReadInt32();
+            timer1Counter = reader.ReadUInt16();
+            timer1Latch = reader.ReadUInt16();
+            timer2Counter = reader.ReadUInt16();
+            timer2Latch = reader.ReadUInt16();
+            timer1Running = reader.ReadBoolean();
+            timer2Running = reader.ReadBoolean();
+            timer2HasInterrupted = reader.ReadBoolean();
+            peripheralCycleRemainder = reader.ReadInt32();
+        }
+
         /// <summary>The user 6522 timers run from the same 1 MHz peripheral clock as the system 6522 VIA.</summary>
         public void Tick(int cycles)
         {

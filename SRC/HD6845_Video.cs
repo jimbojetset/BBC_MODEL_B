@@ -190,6 +190,253 @@ namespace BBC
             ResetBeamState();
         }
 
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(crtcRegisters.Length);
+            writer.Write(crtcRegisters);
+            writer.Write(paletteRegisters.Length);
+            writer.Write(paletteRegisters);
+            writer.Write(selectedCrtcRegister);
+            writer.Write(lastPaletteWrite);
+            writer.Write(UlaControl);
+            writer.Write((int)CurrentMode);
+            writer.Write(screenMemoryWindow.Start);
+            writer.Write(screenMemoryWindow.Size);
+            writer.Write(screenMemoryWindow.HardwareScroll);
+            writer.Write(screenMemoryWindow.AddressSubtract);
+            writer.Write(pendingPaletteRegisters.Length);
+            writer.Write(pendingPaletteRegisters);
+            WriteBoolArray(writer, pendingPaletteWrites);
+            writer.Write(beamHasCompletedFrame);
+            writer.Write(beamActiveMinX);
+            writer.Write(beamActiveMinY);
+            writer.Write(beamActiveMaxX);
+            writer.Write(beamActiveMaxY);
+            writer.Write(beamCompletedMinX);
+            writer.Write(beamCompletedMinY);
+            writer.Write(beamCompletedMaxX);
+            writer.Write(beamCompletedMaxY);
+            writer.Write(beamCompletedVisibleRuptureTimingActive);
+            writer.Write(beamMode4To5X);
+            writer.Write(beamMode4To5Y);
+            writer.Write(beamMode4To5HorizontalCounter);
+            writer.Write(beamMode4To5VerticalCounter);
+            writer.Write(beamPendingDisplayStartRuptureAddress);
+            writer.Write(beamPendingDisplayStartRupture);
+            writer.Write(beamDisplayStartRuptureThisRow);
+            writer.Write(beamOddClock);
+            writer.Write(beamHalfClock);
+            writer.Write(beamFirstScanline);
+            writer.Write(beamInHSync);
+            writer.Write(beamInVSync);
+            writer.Write(beamHadVSyncThisRow);
+            writer.Write(beamCheckVertAdjust);
+            writer.Write(beamEndOfMainLatched);
+            writer.Write(beamEndOfVertAdjustLatched);
+            writer.Write(beamEndOfFrameLatched);
+            writer.Write(beamInVertAdjust);
+            writer.Write(beamInDummyRaster);
+            writer.Write((int)beamInterlaceMode);
+            writer.Write(beamInterlacedSyncAndVideo);
+            writer.Write(beamDoEvenFrameLogic);
+            writer.Write(beamIsEvenRender);
+            writer.Write(beamLastRenderWasEven);
+            writer.Write(beamBitmapX);
+            writer.Write(beamBitmapY);
+            writer.Write(beamFrameCount);
+            writer.Write(beamCompletedFrameCount);
+            writer.Write(beamStableVerticalTotal);
+            writer.Write(beamStableVerticalAdjust);
+            writer.Write(beamStableVerticalSync);
+            writer.Write(beamStableVerticalTimingValid);
+            writer.Write(beamHpulseWidth);
+            writer.Write(beamVpulseWidth);
+            writer.Write(beamHpulseCounter);
+            writer.Write(beamVpulseCounter);
+            writer.Write(beamDisplayEnabled);
+            writer.Write(beamHorizontalCounter);
+            writer.Write(beamVerticalCounter);
+            writer.Write(beamScanlineCounter);
+            writer.Write(beamVerticalAdjustCounter);
+            writer.Write(beamAddress);
+            writer.Write(beamLineStartAddress);
+            writer.Write(beamNextLineStartAddress);
+            writer.Write(beamUlaControl);
+            writer.Write(beamPixelUlaControlOverride);
+            writer.Write(beamPixelUlaControlOverrideValid);
+            beamTeletext.SaveState(writer);
+            writer.Write(beamPixelsPerCharacter);
+            writer.Write(beamDisplayEnableSkew);
+            writer.Write(beamCursorDisplaySkew);
+            writer.Write(beamCursorPos);
+            writer.Write(beamCursorDrawIndex);
+            writer.Write(beamCursorDisplayEnabled);
+            writer.Write(beamCursorOnThisFrame);
+            lock (beamFrameLock)
+            {
+                WriteUintArray(writer, beamRenderFrame);
+                WriteUintArray(writer, beamCompletedFrame);
+            }
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            ReadBytes(reader, crtcRegisters, "CRTC register");
+            ReadBytes(reader, paletteRegisters, "Video ULA palette");
+            selectedCrtcRegister = reader.ReadByte();
+            lastPaletteWrite = reader.ReadByte();
+            UlaControl = reader.ReadByte();
+            CurrentMode = (BbcScreenMode)reader.ReadInt32();
+            screenMemoryWindow = new ScreenMemoryWindow(
+                reader.ReadInt32(),
+                reader.ReadInt32(),
+                reader.ReadInt32(),
+                reader.ReadInt32());
+
+            if (reader.BaseStream.Position >= reader.BaseStream.Length)
+            {
+                Array.Copy(paletteRegisters, pendingPaletteRegisters, paletteRegisters.Length);
+                Array.Clear(pendingPaletteWrites);
+                RebuildCompletedFrameFromRegisters();
+                return;
+            }
+
+            ReadBytes(reader, pendingPaletteRegisters, "pending Video ULA palette");
+            ReadBoolArray(reader, pendingPaletteWrites, "pending Video ULA palette write");
+            beamHasCompletedFrame = reader.ReadBoolean();
+            beamActiveMinX = reader.ReadInt32();
+            beamActiveMinY = reader.ReadInt32();
+            beamActiveMaxX = reader.ReadInt32();
+            beamActiveMaxY = reader.ReadInt32();
+            beamCompletedMinX = reader.ReadInt32();
+            beamCompletedMinY = reader.ReadInt32();
+            beamCompletedMaxX = reader.ReadInt32();
+            beamCompletedMaxY = reader.ReadInt32();
+            beamCompletedVisibleRuptureTimingActive = reader.ReadBoolean();
+            beamMode4To5X = reader.ReadInt32();
+            beamMode4To5Y = reader.ReadInt32();
+            beamMode4To5HorizontalCounter = reader.ReadInt32();
+            beamMode4To5VerticalCounter = reader.ReadInt32();
+            beamPendingDisplayStartRuptureAddress = reader.ReadInt32();
+            beamPendingDisplayStartRupture = reader.ReadBoolean();
+            beamDisplayStartRuptureThisRow = reader.ReadBoolean();
+            beamOddClock = reader.ReadBoolean();
+            beamHalfClock = reader.ReadBoolean();
+            beamFirstScanline = reader.ReadBoolean();
+            beamInHSync = reader.ReadBoolean();
+            beamInVSync = reader.ReadBoolean();
+            beamHadVSyncThisRow = reader.ReadBoolean();
+            beamCheckVertAdjust = reader.ReadBoolean();
+            beamEndOfMainLatched = reader.ReadBoolean();
+            beamEndOfVertAdjustLatched = reader.ReadBoolean();
+            beamEndOfFrameLatched = reader.ReadBoolean();
+            beamInVertAdjust = reader.ReadBoolean();
+            beamInDummyRaster = reader.ReadBoolean();
+            beamInterlaceMode = (CrtcInterlaceMode)reader.ReadInt32();
+            beamInterlacedSyncAndVideo = reader.ReadBoolean();
+            beamDoEvenFrameLogic = reader.ReadBoolean();
+            beamIsEvenRender = reader.ReadBoolean();
+            beamLastRenderWasEven = reader.ReadBoolean();
+            beamBitmapX = reader.ReadInt32();
+            beamBitmapY = reader.ReadInt32();
+            beamFrameCount = reader.ReadInt32();
+            beamCompletedFrameCount = reader.ReadInt32();
+            beamStableVerticalTotal = reader.ReadInt32();
+            beamStableVerticalAdjust = reader.ReadInt32();
+            beamStableVerticalSync = reader.ReadInt32();
+            beamStableVerticalTimingValid = reader.ReadBoolean();
+            beamHpulseWidth = reader.ReadInt32();
+            beamVpulseWidth = reader.ReadInt32();
+            beamHpulseCounter = reader.ReadInt32();
+            beamVpulseCounter = reader.ReadInt32();
+            beamDisplayEnabled = reader.ReadInt32();
+            beamHorizontalCounter = reader.ReadInt32();
+            beamVerticalCounter = reader.ReadInt32();
+            beamScanlineCounter = reader.ReadInt32();
+            beamVerticalAdjustCounter = reader.ReadInt32();
+            beamAddress = reader.ReadInt32();
+            beamLineStartAddress = reader.ReadInt32();
+            beamNextLineStartAddress = reader.ReadInt32();
+            beamUlaControl = reader.ReadByte();
+            beamPixelUlaControlOverride = reader.ReadByte();
+            beamPixelUlaControlOverrideValid = reader.ReadBoolean();
+            beamTeletext.LoadState(reader);
+            beamPixelsPerCharacter = reader.ReadInt32();
+            beamDisplayEnableSkew = reader.ReadInt32();
+            beamCursorDisplaySkew = reader.ReadInt32();
+            beamCursorPos = reader.ReadInt32();
+            beamCursorDrawIndex = reader.ReadInt32();
+            beamCursorDisplayEnabled = reader.ReadBoolean();
+            beamCursorOnThisFrame = reader.ReadBoolean();
+            lock (beamFrameLock)
+            {
+                ReadUintArray(reader, beamRenderFrame, "beam render frame");
+                ReadUintArray(reader, beamCompletedFrame, "beam completed frame");
+            }
+
+            VsyncChanged?.Invoke(beamInVSync);
+        }
+
+        private static void ReadBytes(BinaryReader reader, byte[] destination, string name)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"Save state has an incompatible {name} block.");
+
+            byte[] bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+                throw new EndOfStreamException();
+
+            bytes.CopyTo(destination, 0);
+        }
+
+        private static void WriteBoolArray(BinaryWriter writer, bool[] values)
+        {
+            writer.Write(values.Length);
+            foreach (bool value in values)
+                writer.Write(value);
+        }
+
+        private static void ReadBoolArray(BinaryReader reader, bool[] destination, string name)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"Save state has an incompatible {name} block.");
+
+            for (int i = 0; i < destination.Length; i++)
+                destination[i] = reader.ReadBoolean();
+        }
+
+        private static void WriteUintArray(BinaryWriter writer, uint[] values)
+        {
+            writer.Write(values.Length);
+            foreach (uint value in values)
+                writer.Write(value);
+        }
+
+        private static void ReadUintArray(BinaryReader reader, uint[] destination, string name)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"Save state has an incompatible {name} block.");
+
+            for (int i = 0; i < destination.Length; i++)
+                destination[i] = reader.ReadUInt32();
+        }
+
+        private void RebuildCompletedFrameFromRegisters()
+        {
+            ResetBeamState();
+            UpdateBeamUlaControl(UlaControl);
+
+            int cycles = 0;
+            while (!beamHasCompletedFrame && cycles < 200_000)
+            {
+                TickBeamClock();
+                cycles++;
+            }
+        }
+
         public void SetScreenMemoryWindow(ScreenMemoryWindow window)
         {
             if (window.Start < 0 || window.Start >= memory.Length)
@@ -1256,6 +1503,67 @@ namespace BBC
                 nextGlyphSet = GlyphSet.Normal;
                 currentGlyphSet = GlyphSet.Normal;
                 heldGlyphSet = GlyphSet.Normal;
+            }
+
+            public void SaveState(BinaryWriter writer)
+            {
+                writer.Write(dataQueue.Length);
+                writer.Write(dataQueue);
+                writer.Write(previousColour);
+                writer.Write(foregroundColour);
+                writer.Write(backgroundColour);
+                writer.Write(separatedGraphics);
+                writer.Write(doubleHeight);
+                writer.Write(previousDoubleHeight);
+                writer.Write(secondHalfOfDoubleHeight);
+                writer.Write(sawDoubleHeight);
+                writer.Write(graphicsMode);
+                writer.Write(flash);
+                writer.Write(flashOn);
+                writer.Write(flashTime);
+                writer.Write(heldCharacter);
+                writer.Write(holdCharacter);
+                writer.Write(scanlineCounter);
+                writer.Write(dewLevel);
+                writer.Write(displayTimingLevel);
+                writer.Write(rowAddressBit0);
+                writer.Write((int)nextGlyphSet);
+                writer.Write((int)currentGlyphSet);
+                writer.Write((int)heldGlyphSet);
+            }
+
+            public void LoadState(BinaryReader reader)
+            {
+                int queueLength = reader.ReadInt32();
+                if (queueLength != dataQueue.Length)
+                    throw new InvalidDataException("Save state has an incompatible teletext data queue.");
+
+                byte[] queue = reader.ReadBytes(queueLength);
+                if (queue.Length != queueLength)
+                    throw new EndOfStreamException();
+
+                queue.CopyTo(dataQueue, 0);
+                previousColour = reader.ReadInt32();
+                foregroundColour = reader.ReadInt32();
+                backgroundColour = reader.ReadInt32();
+                separatedGraphics = reader.ReadBoolean();
+                doubleHeight = reader.ReadBoolean();
+                previousDoubleHeight = reader.ReadBoolean();
+                secondHalfOfDoubleHeight = reader.ReadBoolean();
+                sawDoubleHeight = reader.ReadBoolean();
+                graphicsMode = reader.ReadBoolean();
+                flash = reader.ReadBoolean();
+                flashOn = reader.ReadBoolean();
+                flashTime = reader.ReadInt32();
+                heldCharacter = reader.ReadByte();
+                holdCharacter = reader.ReadBoolean();
+                scanlineCounter = reader.ReadInt32();
+                dewLevel = reader.ReadBoolean();
+                displayTimingLevel = reader.ReadBoolean();
+                rowAddressBit0 = reader.ReadBoolean();
+                nextGlyphSet = (GlyphSet)reader.ReadInt32();
+                currentGlyphSet = (GlyphSet)reader.ReadInt32();
+                heldGlyphSet = (GlyphSet)reader.ReadInt32();
             }
 
             /// <summary>The SAA5050 sees a delayed character stream, so control codes affect following cells.</summary>

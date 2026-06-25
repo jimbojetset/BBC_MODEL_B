@@ -148,6 +148,49 @@ namespace BBC.CPU
 
         public void SetPaused(bool value) => Volatile.Write(ref paused, value);
 
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(registers.PC);
+            writer.Write(registers.S);
+            writer.Write(registers.P);
+            writer.Write(registers.A);
+            writer.Write(registers.X);
+            writer.Write(registers.Y);
+            writer.Write(Interlocked.Read(ref totalCycles));
+            writer.Write(jammed);
+            writer.Write(jamReported);
+            writer.Write(jamAddress);
+            writer.Write(nmiLineWasAsserted);
+            writer.Write(Volatile.Read(ref irqLineAsserted));
+            writer.Write(externalStallCycles);
+            writer.Write(deferredIFlagPending);
+            writer.Write(deferredIFlagValue);
+            writer.Write(iFlagBeforeInstruction);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            registers.PC = reader.ReadUInt64();
+            registers.S = reader.ReadByte();
+            registers.P = reader.ReadByte();
+            registers.A = reader.ReadByte();
+            registers.X = reader.ReadByte();
+            registers.Y = reader.ReadByte();
+            Interlocked.Exchange(ref totalCycles, reader.ReadInt64());
+            jammed = reader.ReadBoolean();
+            jamReported = reader.ReadBoolean();
+            jamAddress = reader.ReadUInt64();
+            nmiLineWasAsserted = reader.ReadBoolean();
+            Volatile.Write(ref irqLineAsserted, reader.ReadInt32());
+            externalStallCycles = reader.ReadInt32();
+            deferredIFlagPending = reader.ReadBoolean();
+            deferredIFlagValue = reader.ReadBoolean();
+            iFlagBeforeInstruction = reader.ReadBoolean();
+
+            while (IRQ_Buffer.TryDequeue(out _)) { }
+            while (NMI_Buffer.TryDequeue(out _)) { }
+        }
+
         private void DoReset()
         {
             OnReset?.Invoke();

@@ -79,10 +79,13 @@ namespace BBC
         private readonly Queue<HostJoystickChange> pendingJoystickChanges = new Queue<HostJoystickChange>();
         private readonly Queue<HostAnalogJoystickChange> pendingAnalogJoystickChanges = new Queue<HostAnalogJoystickChange>();
         private readonly Queue<HostDiscAction> pendingDiscActions = new Queue<HostDiscAction>();
+        private readonly Queue<HostStateAction> pendingStateActions = new Queue<HostStateAction>();
         private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
         private readonly MenuDefinition[] menus;
         private int pendingScreenshotRequests;
         private int pendingTraceToggleRequests;
+        private int pendingPauseToggleRequests;
+        private int pendingFrameAdvanceRequests;
         private HostMouseState mouseState;
         private bool relativeMouseMode;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
@@ -141,12 +144,16 @@ namespace BBC
 
         public bool ShiftLockLedActive { get; set; }
 
-        public void ShowNotification(string title, string body)
+        public bool EmulationPaused { get; set; }
+
+        public string DefaultSaveStateFileName { get; set; } = "bbc-untitled.sav";
+
+        public void ShowNotification(string title, string body, int durationMilliseconds = NotificationDurationMilliseconds)
         {
             notificationTitle = title.Trim();
             notificationBody = body.Trim();
             notificationVisibleUntilTicks = Stopwatch.GetTimestamp()
-                + (NotificationDurationMilliseconds * Stopwatch.Frequency / 1000);
+                + (Math.Max(1, durationMilliseconds) * Stopwatch.Frequency / 1000);
         }
 
         public Display(string title = "BBC Model B", int width = DefaultWidth, int height = DefaultHeight, bool scanlines = true)
@@ -341,6 +348,12 @@ namespace BBC
                 destination.Add(pendingDiscActions.Dequeue());
         }
 
+        public void DrainStateActions(ICollection<HostStateAction> destination)
+        {
+            while (pendingStateActions.Count > 0)
+                destination.Add(pendingStateActions.Dequeue());
+        }
+
         public int DrainScreenshotRequests()
         {
             int count = pendingScreenshotRequests;
@@ -355,6 +368,20 @@ namespace BBC
             return count;
         }
 
+        public int DrainPauseToggleRequests()
+        {
+            int count = pendingPauseToggleRequests;
+            pendingPauseToggleRequests = 0;
+            return count;
+        }
+
+        public int DrainFrameAdvanceRequests()
+        {
+            int count = pendingFrameAdvanceRequests;
+            pendingFrameAdvanceRequests = 0;
+            return count;
+        }
+
         public void CopyFrame(ReadOnlySpan<uint> pixels)
         {
             if (pixels.Length != frameBuffer.Length)
@@ -366,7 +393,6 @@ namespace BBC
         public void Present()
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            DrawNotificationOverlay();
 
             GCHandle handle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
             try
@@ -384,10 +410,44 @@ namespace BBC
             if (scanlinesEnabled && scanlineTexture != IntPtr.Zero)
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
+            DrawTopBorderStatusMessage();
             DrawDriveGlyphs();
             DrawMenuBar();
 
             SDL_RenderPresent(renderer);
+        }
+
+        private void DrawTopBorderStatusMessage()
+        {
+            if (notificationVisibleUntilTicks <= Stopwatch.GetTimestamp()
+                || (notificationTitle.Length == 0 && notificationBody.Length == 0))
+            {
+                return;
+            }
+
+            if (notificationBody.Length == 0)
+            {
+                DrawCenteredStatusText(TrimStatusText(notificationTitle), TopMenuHeight + 14, 220, 220, 220);
+                return;
+            }
+
+            DrawCenteredStatusText(TrimStatusText(notificationTitle), TopMenuHeight + 8, 245, 245, 245);
+            DrawCenteredStatusText(TrimStatusText(notificationBody), TopMenuHeight + 21, 160, 160, 160);
+        }
+
+        private void DrawCenteredStatusText(string text, int y, byte red, byte green, byte blue)
+        {
+            int x = Math.Max(0, (logicalWidth - GetRendererTextWidth(text)) / 2);
+            DrawRendererText(text, x, y, red, green, blue);
+        }
+
+        private string TrimStatusText(string text)
+        {
+            int maxCharacters = Math.Max(1, (logicalWidth - 20) / MenuTextCellWidth);
+            if (text.Length <= maxCharacters)
+                return text;
+
+            return maxCharacters <= 3 ? text[..maxCharacters] : text[..(maxCharacters - 3)] + "...";
         }
 
         private void DrawMenuBar()
@@ -655,6 +715,12 @@ namespace BBC
                 case MenuCommand.SaveScreenshot:
                     pendingScreenshotRequests++;
                     break;
+                case MenuCommand.SaveState:
+                    EnqueueSaveState();
+                    break;
+                case MenuCommand.LoadState:
+                    EnqueueLoadState();
+                    break;
                 case MenuCommand.Quit:
                     QuitRequested = true;
                     break;
@@ -666,6 +732,9 @@ namespace BBC
                     break;
                 case MenuCommand.ControlBreak:
                     pendingBreaks.Enqueue(new BreakKeyPress(false, true));
+                    break;
+                case MenuCommand.TogglePause:
+                    pendingPauseToggleRequests++;
                     break;
                 case MenuCommand.ToggleScanlines:
                     scanlinesEnabled = !scanlinesEnabled;
@@ -689,6 +758,7 @@ namespace BBC
                 MenuCommand.ToggleScanlines => scanlinesEnabled,
                 MenuCommand.ToggleFullScreen => fullScreenEnabled,
                 MenuCommand.ToggleShiftLock => bbcShiftLockEnabled,
+                MenuCommand.TogglePause => EmulationPaused,
                 _ => false
             };
         }
@@ -1207,7 +1277,6 @@ namespace BBC
         public void SavePng(string path)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            DrawNotificationOverlay();
             WritePng(path, frameBuffer, Width, Height);
         }
 
@@ -1294,6 +1363,18 @@ namespace BBC
             if (keySym == SDLK_T && (modifiers & KMOD_CTRL) != 0)
             {
                 pendingTraceToggleRequests++;
+                return;
+            }
+
+            if (keySym == SDLK_P && (modifiers & KMOD_CTRL) != 0)
+            {
+                pendingPauseToggleRequests++;
+                return;
+            }
+
+            if (EmulationPaused && keySym == SDLK_SPACE)
+            {
+                pendingFrameAdvanceRequests++;
                 return;
             }
 
@@ -1778,10 +1859,13 @@ namespace BBC
             EjectDrive0,
             EjectDrive1,
             SaveScreenshot,
+            SaveState,
+            LoadState,
             Quit,
             Break,
             ShiftBreak,
             ControlBreak,
+            TogglePause,
             ToggleScanlines,
             ToggleFullScreen,
             PasteClipboard,
@@ -1802,6 +1886,9 @@ namespace BBC
                 new MenuDefinition("File",
                 [
                     new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
+                    new MenuItem("Save state...", "", MenuCommand.SaveState),
+                    new MenuItem("Load state...", "", MenuCommand.LoadState),
+                    MenuSeparator(),
                     new MenuItem("Quit", "", MenuCommand.Quit)
                 ]),
                 new MenuDefinition("Disc",
@@ -1818,7 +1905,9 @@ namespace BBC
                 [
                     new MenuItem("BREAK", "F12", MenuCommand.Break),
                     new MenuItem("Shift-BREAK", "Shift+F12", MenuCommand.ShiftBreak),
-                    new MenuItem("Ctrl-BREAK", "Ctrl+F12", MenuCommand.ControlBreak)
+                    new MenuItem("Ctrl-BREAK", "Ctrl+F12", MenuCommand.ControlBreak),
+                    MenuSeparator(),
+                    new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause)
                 ]),
                 new MenuDefinition("View",
                 [
@@ -1891,6 +1980,20 @@ namespace BBC
                 pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.CreateBlankSsd, path, drive));
         }
 
+        private void EnqueueSaveState()
+        {
+            string? path = SelectNativeSaveStateFile(DefaultSaveStateFileName);
+            if (!string.IsNullOrWhiteSpace(path))
+                pendingStateActions.Enqueue(new HostStateAction(HostStateActionKind.Save, EnsureSaveStateExtension(path)));
+        }
+
+        private void EnqueueLoadState()
+        {
+            string? path = SelectNativeLoadStateFile();
+            if (!string.IsNullOrWhiteSpace(path))
+                pendingStateActions.Enqueue(new HostStateAction(HostStateActionKind.Load, path));
+        }
+
         private int GetFirstEmptyPhysicalDrive()
         {
             if (!Drive0Mounted)
@@ -1949,6 +2052,63 @@ namespace BBC
             }
 
             return null;
+        }
+
+        private static string? SelectNativeSaveStateFile(string defaultFileName)
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        $"Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.SaveFileDialog; $dialog.Title = 'Save BBC state'; $dialog.Filter = 'BBC save state (*.sav)|*.sav'; $dialog.DefaultExt = 'sav'; $dialog.FileName = '{defaultFileName}'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ $dialog.FileName }}");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", $"POSIX path of (choose file name with prompt \"Save BBC state\" default name \"{defaultFileName}\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--save", "--confirm-overwrite", "--title=Save BBC state", $"--filename={defaultFileName}");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string? SelectNativeLoadStateFile()
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Load BBC state'; $dialog.Filter = 'BBC save state (*.sav)|*.sav|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"sav\"} with prompt \"Load BBC state\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Load BBC state", "--file-filter=BBC save state (*.sav) | *.sav");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string EnsureSaveStateExtension(string path)
+        {
+            return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".sav");
         }
 
         private static string? RunProcessForSingleLine(string fileName, params string[] arguments)
@@ -2498,6 +2658,14 @@ namespace BBC
     public readonly record struct HostMouseState(int X, int Y, byte Buttons, int DeltaX, int DeltaY);
 
     public readonly record struct HostDiscAction(HostDiscActionKind Kind, string Path, int Drive);
+
+    public readonly record struct HostStateAction(HostStateActionKind Kind, string Path);
+
+    public enum HostStateActionKind
+    {
+        Save,
+        Load
+    }
 
     public enum HostDiscActionKind
     {

@@ -312,6 +312,180 @@ namespace BBC
             busy = false;
         }
 
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(drives.Length);
+            for (int i = 0; i < drives.Length; i++)
+            {
+                writer.Write(drives[i].Length);
+                writer.Write(drives[i]);
+                writer.Write(driveMounted[i]);
+                WriteString(writer, mountedPaths[i]);
+                WriteString(writer, mountedFileNames[i]);
+                writer.Write(imageDirtyByDrive[i]);
+                writer.Write(currentTrack[i]);
+                writer.Write(motorSpinning[i]);
+                writer.Write(motorStartedAtCycle[i]);
+            }
+
+            writer.Write(driveActivityLedActive.Length);
+            foreach (bool active in driveActivityLedActive)
+                writer.Write(active);
+
+            writer.Write(specialRegisters.Length);
+            writer.Write(specialRegisters);
+            WriteByteQueue(writer, readData);
+            WriteByteList(writer, writeData);
+            WriteByteList(writer, parameters);
+            writer.Write(command);
+            writer.Write(result);
+            writer.Write(resultAvailable);
+            WritePendingWrite(writer, pendingWrite);
+            writer.Write(selectedDrive);
+            WriteString(writer, mountedPath);
+            WriteString(writer, mountedFileName);
+            writer.Write(elapsedCycles);
+            writer.Write(nmiPending);
+            writer.Write(nmiDelayCycles);
+            writer.Write(motorIdleCycles);
+            writer.Write(busy);
+            writer.Write(imageDirty);
+            writer.Write(writeProtected);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            int driveCount = reader.ReadInt32();
+            if (driveCount != drives.Length)
+                throw new InvalidDataException("Save state has an incompatible 8271 drive block.");
+
+            for (int i = 0; i < drives.Length; i++)
+            {
+                int imageLength = reader.ReadInt32();
+                drives[i] = reader.ReadBytes(imageLength);
+                if (drives[i].Length != imageLength)
+                    throw new EndOfStreamException();
+
+                driveMounted[i] = reader.ReadBoolean();
+                mountedPaths[i] = ReadString(reader);
+                mountedFileNames[i] = ReadString(reader);
+                imageDirtyByDrive[i] = reader.ReadBoolean();
+                currentTrack[i] = reader.ReadInt32();
+                motorSpinning[i] = reader.ReadBoolean();
+                motorStartedAtCycle[i] = reader.ReadInt64();
+            }
+
+            int ledCount = reader.ReadInt32();
+            if (ledCount != driveActivityLedActive.Length)
+                throw new InvalidDataException("Save state has an incompatible 8271 LED block.");
+
+            for (int i = 0; i < driveActivityLedActive.Length; i++)
+                driveActivityLedActive[i] = reader.ReadBoolean();
+
+            ReadBytes(reader, specialRegisters, "8271 special register");
+            ReadByteQueue(reader, readData);
+            ReadByteList(reader, writeData);
+            ReadByteList(reader, parameters);
+            command = reader.ReadByte();
+            result = reader.ReadByte();
+            resultAvailable = reader.ReadBoolean();
+            pendingWrite = ReadPendingWrite(reader);
+            selectedDrive = reader.ReadInt32();
+            mountedPath = ReadString(reader);
+            mountedFileName = ReadString(reader);
+            elapsedCycles = reader.ReadInt64();
+            nmiPending = reader.ReadBoolean();
+            nmiDelayCycles = reader.ReadInt32();
+            motorIdleCycles = reader.ReadInt32();
+            busy = reader.ReadBoolean();
+            imageDirty = reader.ReadBoolean();
+            writeProtected = reader.ReadBoolean();
+        }
+
+        private static void WriteString(BinaryWriter writer, string? value)
+        {
+            writer.Write(value is not null);
+            if (value is not null)
+                writer.Write(value);
+        }
+
+        private static string? ReadString(BinaryReader reader)
+        {
+            return reader.ReadBoolean() ? reader.ReadString() : null;
+        }
+
+        private static void WriteByteQueue(BinaryWriter writer, Queue<byte> queue)
+        {
+            writer.Write(queue.Count);
+            foreach (byte value in queue)
+                writer.Write(value);
+        }
+
+        private static void ReadByteQueue(BinaryReader reader, Queue<byte> queue)
+        {
+            queue.Clear();
+            int count = reader.ReadInt32();
+            for (int i = 0; i < count; i++)
+                queue.Enqueue(reader.ReadByte());
+        }
+
+        private static void WriteByteList(BinaryWriter writer, List<byte> list)
+        {
+            writer.Write(list.Count);
+            foreach (byte value in list)
+                writer.Write(value);
+        }
+
+        private static void ReadByteList(BinaryReader reader, List<byte> list)
+        {
+            list.Clear();
+            int count = reader.ReadInt32();
+            for (int i = 0; i < count; i++)
+                list.Add(reader.ReadByte());
+        }
+
+        private static void WritePendingWrite(BinaryWriter writer, PendingWrite? write)
+        {
+            writer.Write(write is not null);
+            if (write is null)
+                return;
+
+            writer.Write(write.Value.Drive);
+            writer.Write(write.Value.Offsets.Length);
+            foreach (int offset in write.Value.Offsets)
+                writer.Write(offset);
+
+            writer.Write(write.Value.SectorSize);
+            writer.Write(write.Value.Length);
+        }
+
+        private static PendingWrite? ReadPendingWrite(BinaryReader reader)
+        {
+            if (!reader.ReadBoolean())
+                return null;
+
+            int drive = reader.ReadInt32();
+            int offsetCount = reader.ReadInt32();
+            int[] offsets = new int[offsetCount];
+            for (int i = 0; i < offsets.Length; i++)
+                offsets[i] = reader.ReadInt32();
+
+            return new PendingWrite(drive, offsets, reader.ReadInt32(), reader.ReadInt32());
+        }
+
+        private static void ReadBytes(BinaryReader reader, byte[] destination, string name)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"Save state has an incompatible {name} block.");
+
+            byte[] bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+                throw new EndOfStreamException();
+
+            bytes.CopyTo(destination, 0);
+        }
+
         /// <summary>DFS code polls the 8271 around motor spin-up and command-complete NMI timing.</summary>
         public void Tick(int cycles)
         {

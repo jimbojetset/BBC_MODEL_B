@@ -73,6 +73,20 @@ namespace BBC
             MotorRunning = false;
         }
 
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(serialUlaControl);
+            writer.Write(MotorRunning);
+            writer.Write(TapePlaying);
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            serialUlaControl = reader.ReadByte();
+            MotorRunning = reader.ReadBoolean();
+            TapePlaying = reader.ReadBoolean();
+        }
+
         private byte ReadAciaStatus()
         {
             byte status = AciaStatusTransmitDataEmpty | AciaStatusClearToSend;

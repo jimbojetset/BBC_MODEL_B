@@ -340,6 +340,7 @@ namespace BBC
         private readonly HostAnalogJoystickChange[] analogJoystickChangeScratch = new HostAnalogJoystickChange[16];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly List<HostDiscAction> discActionScratch = new List<HostDiscAction>();
+        private readonly List<HostStateAction> stateActionScratch = new List<HostStateAction>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
         private readonly Queue<string> pendingBootScriptLines = new Queue<string>();
         private readonly long[] matrixKeyPressedAtTicks = new long[128];
@@ -362,6 +363,7 @@ namespace BBC
         private bool mouseEnabled;
         private bool amxMouseRomLoaded;
         private bool mousePositionInitialized;
+        private bool emulationPaused;
         private byte lastMouseX;
         private byte lastMouseY;
         private long keyboardInputEnabledAtTicks;
@@ -378,6 +380,8 @@ namespace BBC
         private string? runtimeTracePath;
         private long runtimeTraceInstructionCount;
         private int runtimeTraceFrame;
+        private const uint SaveStateMagic = 0x31535642; // BVS1
+        private const int SaveStateVersion = 1;
         private int runtimeTraceActive;
 
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -478,19 +482,25 @@ namespace BBC
             long frameTicks = Math.Max(1, Stopwatch.Frequency / TargetFramesPerSecond);
             long nextFrame = Stopwatch.GetTimestamp() + frameTicks;
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            Display.DefaultSaveStateFileName = CreateSaveStateFileName();
             while (Display.PumpEvents())
             {
                 if (cpuException is not null)
                     throw new InvalidOperationException("CPU execution failed.", cpuException);
 
+                DrainHostPauseRequests(Display);
                 DrainHostBreakInput(Display);
                 DrainHostDiscLoads(Display);
+                DrainHostStateActions(Display);
                 DrainHostKeyMatrixInput(Display);
                 DrainHostJoystickInput(Display);
                 DrainHostAnalogJoystickInput(Display);
                 UpdateHostMouseInput(Display);
                 DrainHostKeyboardInput(Display);
-                QueuePendingBootScriptLine();
+                if (!emulationPaused)
+                    QueuePendingBootScriptLine();
+
+                DrainHostFrameAdvanceRequests(Display);
                 RenderDisplayFrame(Display);
                 DrainHostScreenshotRequests(Display);
                 DrainHostTraceToggleRequests(Display);
@@ -501,6 +511,8 @@ namespace BBC
                 Display.Drive1ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(1);
                 Display.CassetteMotorLedActive = tapeAciaStub.MotorRunning;
                 Display.CapsLockLedActive = bbcCapsLockState;
+                Display.EmulationPaused = emulationPaused;
+                Display.DefaultSaveStateFileName = CreateSaveStateFileName();
                 Display.Present();
 
                 WaitUntil(nextFrame);
@@ -633,6 +645,7 @@ namespace BBC
                 return;
 
             cpuException = null;
+            Cpu.SetPaused(emulationPaused);
             cpuThread = new Thread(RunCpu)
             {
                 IsBackground = true,
@@ -675,6 +688,7 @@ namespace BBC
             adc.Reset();
             UpdateAdcChannels();
             Cpu.SetIrqLine(false);
+            SetEmulationPaused(false);
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             selectedSidewaysRom = BasicRomBank;
             if (pendingBreak.Shift)
@@ -721,6 +735,64 @@ namespace BBC
             TickCapsLockTap(cycles);
 
             UpdateCpuIrqLine();
+        }
+
+        private void DrainHostPauseRequests(Display display)
+        {
+            int count = display.DrainPauseToggleRequests();
+            for (int i = 0; i < count; i++)
+                SetEmulationPaused(!emulationPaused);
+        }
+
+        private void DrainHostFrameAdvanceRequests(Display display)
+        {
+            int count = display.DrainFrameAdvanceRequests();
+            if (!emulationPaused)
+                return;
+
+            for (int i = 0; i < count; i++)
+                AdvanceOnePausedFrame();
+        }
+
+        private void SetEmulationPaused(bool paused)
+        {
+            if (emulationPaused == paused)
+                return;
+
+            emulationPaused = paused;
+            Cpu.SetPaused(paused);
+            Sound.SetHostOutputPaused(paused);
+
+            if (Display is not null)
+            {
+                Display.EmulationPaused = paused;
+                Display.ShowNotification(
+                    paused ? "Paused" : "Running",
+                    paused ? "Space advances one frame" : string.Empty,
+                    paused ? 15000 : 1500);
+            }
+        }
+
+        private void AdvanceOnePausedFrame()
+        {
+            int startFrame = systemVia.FrameCounter;
+            long deadline = Stopwatch.GetTimestamp() + (Stopwatch.Frequency / 4);
+
+            Cpu.SetPaused(false);
+            try
+            {
+                while (systemVia.FrameCounter == startFrame && Stopwatch.GetTimestamp() < deadline)
+                {
+                    if (cpuException is not null)
+                        throw new InvalidOperationException("CPU execution failed.", cpuException);
+
+                    Thread.Sleep(1);
+                }
+            }
+            finally
+            {
+                Cpu.SetPaused(true);
+            }
         }
 
         private void StartCapsLockTap()
@@ -1095,6 +1167,209 @@ namespace BBC
                     Console.WriteLine(message);
                 }
             }
+        }
+
+        private void DrainHostStateActions(Display display)
+        {
+            stateActionScratch.Clear();
+            display.DrainStateActions(stateActionScratch);
+
+            foreach (HostStateAction action in stateActionScratch)
+            {
+                try
+                {
+                    switch (action.Kind)
+                    {
+                        case HostStateActionKind.Save:
+                            SaveStateFile(action.Path);
+                            display.ShowNotification("State saved", Path.GetFileName(action.Path), 2000);
+                            Console.WriteLine($"Saved state: {action.Path}");
+                            break;
+                        case HostStateActionKind.Load:
+                            LoadStateFile(action.Path);
+                            display.ShowNotification("State loaded", Path.GetFileName(action.Path), 2000);
+                            Console.WriteLine($"Loaded state: {action.Path}");
+                            break;
+                    }
+                }
+                catch (Exception ex) when (ex is IOException
+                    or UnauthorizedAccessException
+                    or InvalidDataException
+                    or EndOfStreamException)
+                {
+                    display.ShowNotification("State failed", ex.Message, 4000);
+                    Console.WriteLine($"State action failed: {ex.Message}");
+                }
+            }
+        }
+
+        private void SaveStateFile(string path)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
+            WithCpuStoppedForStateFile(() =>
+            {
+                using FileStream stream = File.Create(path);
+                using BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false);
+
+                writer.Write(SaveStateMagic);
+                writer.Write(SaveStateVersion);
+                Cpu.SaveState(writer);
+                WriteByteArray(writer, Memory.Memory);
+                WriteByteArray(writer, sidewaysRoms);
+                writer.Write(selectedSidewaysRom);
+                writer.Write(breakContinuationQueued);
+                WriteString(writer, pendingBootExecScript);
+                WriteString(writer, pendingBootScriptLines.Count == 0 ? null : string.Join("\n", pendingBootScriptLines));
+                writer.Write(nextBootScriptLineAtTicks);
+                writer.Write(hostDiscActivityLedUntilTicks);
+                writer.Write(capsLockTapPulseCycles);
+                writer.Write(capsLockTapPressed);
+                writer.Write(hostCapsLockState);
+                writer.Write(bbcCapsLockState);
+                writer.Write(mouseEnabled);
+                writer.Write(mousePositionInitialized);
+                writer.Write(lastMouseX);
+                writer.Write(lastMouseY);
+                SaveJoystickState(writer);
+                systemVia.SaveState(writer);
+                userVia.SaveState(writer);
+                tapeAciaStub.SaveState(writer);
+                adc.SaveState(writer);
+                discController.SaveState(writer);
+                Sound.SaveState(writer);
+                Video.SaveState(writer);
+            });
+        }
+
+        private void LoadStateFile(string path)
+        {
+            if (discController.HasMountedDisc && discController.ImageDirty)
+                discController.Flush();
+
+            WithCpuStoppedForStateFile(() =>
+            {
+                using FileStream stream = File.OpenRead(path);
+                using BinaryReader reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
+
+                if (reader.ReadUInt32() != SaveStateMagic)
+                    throw new InvalidDataException("Not a BBC Model B save state.");
+
+                int version = reader.ReadInt32();
+                if (version != SaveStateVersion)
+                    throw new InvalidDataException($"Unsupported BBC save state version {version}.");
+
+                Cpu.LoadState(reader);
+                ReadByteArray(reader, Memory.Memory, "main memory");
+                ReadByteArray(reader, sidewaysRoms, "sideways ROM/RAM");
+                selectedSidewaysRom = reader.ReadInt32();
+                breakContinuationQueued = reader.ReadBoolean();
+                pendingBootExecScript = ReadString(reader);
+                pendingBootScriptLines.Clear();
+                string? pendingLines = ReadString(reader);
+                if (!string.IsNullOrEmpty(pendingLines))
+                {
+                    foreach (string line in pendingLines.Split('\n'))
+                        pendingBootScriptLines.Enqueue(line);
+                }
+
+                nextBootScriptLineAtTicks = reader.ReadInt64();
+                hostDiscActivityLedUntilTicks = reader.ReadInt64();
+                capsLockTapPulseCycles = reader.ReadInt32();
+                capsLockTapPressed = reader.ReadBoolean();
+                hostCapsLockState = reader.ReadBoolean();
+                bbcCapsLockState = reader.ReadBoolean();
+                mouseEnabled = reader.ReadBoolean();
+                mousePositionInitialized = reader.ReadBoolean();
+                lastMouseX = reader.ReadByte();
+                lastMouseY = reader.ReadByte();
+                LoadJoystickState(reader);
+                systemVia.LoadState(reader);
+                userVia.LoadState(reader);
+                tapeAciaStub.LoadState(reader);
+                adc.LoadState(reader);
+                discController.LoadState(reader);
+                Sound.LoadState(reader);
+                Video.LoadState(reader);
+                Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
+                UpdateCpuIrqLine();
+                UpdateAdcChannels();
+                UpdateJoystickInputs();
+                Display?.SetRelativeMouseMode(mouseEnabled);
+            });
+        }
+
+        private void WithCpuStoppedForStateFile(Action action)
+        {
+            bool wasPaused = emulationPaused;
+            Cpu.SetPaused(true);
+            Sound.SetHostOutputPaused(true);
+            Thread.Sleep(5);
+            try
+            {
+                action();
+            }
+            finally
+            {
+                Cpu.SetPaused(wasPaused);
+                Sound.SetHostOutputPaused(wasPaused);
+            }
+        }
+
+        private void SaveJoystickState(BinaryWriter writer)
+        {
+            writer.Write(joystickState.Left);
+            writer.Write(joystickState.Right);
+            writer.Write(joystickState.Up);
+            writer.Write(joystickState.Down);
+            writer.Write(joystickState.Fire);
+            writer.Write(joystickState.AnalogX);
+            writer.Write(joystickState.AnalogY);
+            writer.Write(joystickState.HasAnalogX);
+            writer.Write(joystickState.HasAnalogY);
+        }
+
+        private void LoadJoystickState(BinaryReader reader)
+        {
+            joystickState.Left = reader.ReadBoolean();
+            joystickState.Right = reader.ReadBoolean();
+            joystickState.Up = reader.ReadBoolean();
+            joystickState.Down = reader.ReadBoolean();
+            joystickState.Fire = reader.ReadBoolean();
+            joystickState.AnalogX = reader.ReadUInt16();
+            joystickState.AnalogY = reader.ReadUInt16();
+            joystickState.HasAnalogX = reader.ReadBoolean();
+            joystickState.HasAnalogY = reader.ReadBoolean();
+        }
+
+        private static void WriteByteArray(BinaryWriter writer, byte[] bytes)
+        {
+            writer.Write(bytes.Length);
+            writer.Write(bytes);
+        }
+
+        private static void ReadByteArray(BinaryReader reader, byte[] destination, string name)
+        {
+            int length = reader.ReadInt32();
+            if (length != destination.Length)
+                throw new InvalidDataException($"Save state has an incompatible {name} block.");
+
+            byte[] bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+                throw new EndOfStreamException();
+
+            bytes.CopyTo(destination, 0);
+        }
+
+        private static void WriteString(BinaryWriter writer, string? value)
+        {
+            writer.Write(value is not null);
+            if (value is not null)
+                writer.Write(value);
+        }
+
+        private static string? ReadString(BinaryReader reader)
+        {
+            return reader.ReadBoolean() ? reader.ReadString() : null;
         }
 
         private void DrainHostScreenshotRequests(Display display)
@@ -1626,11 +1901,54 @@ namespace BBC
                 : (byte)(offset + 1);
         }
 
-        private static string CreateScreenshotPath()
+        private string CreateScreenshotPath()
         {
             string directory = Path.Combine(Environment.CurrentDirectory, "Screenshots");
-            string fileName = $"bbc-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png";
+            string title = GetScreenshotTitle();
+            string fileName = $"bbc-{title}-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png";
             return Path.Combine(directory, fileName);
+        }
+
+        private string CreateSaveStateFileName()
+        {
+            string title = GetScreenshotTitle();
+            return $"bbc-{title}-{DateTime.Now:yyyyMMdd-HHmmss-fff}.sav";
+        }
+
+        private string GetScreenshotTitle()
+        {
+            string? mountedName = discController.MountedFileName ?? hostFilingSystem.MountedFileName;
+            if (string.IsNullOrWhiteSpace(mountedName))
+                return "untitled";
+
+            string title = Path.GetFileNameWithoutExtension(mountedName);
+            return SanitizeScreenshotTitle(string.IsNullOrWhiteSpace(title) ? mountedName : title);
+        }
+
+        private static string SanitizeScreenshotTitle(string title)
+        {
+            StringBuilder builder = new StringBuilder(title.Length);
+            bool previousSeparator = false;
+
+            foreach (char ch in title.Trim())
+            {
+                bool valid = char.IsLetterOrDigit(ch);
+                if (valid)
+                {
+                    builder.Append(ch);
+                    previousSeparator = false;
+                    continue;
+                }
+
+                if (!previousSeparator)
+                {
+                    builder.Append('-');
+                    previousSeparator = true;
+                }
+            }
+
+            string sanitized = builder.ToString().Trim('-');
+            return sanitized.Length == 0 ? "untitled" : sanitized;
         }
 
         private static string GetMountFailurePath(string path)
