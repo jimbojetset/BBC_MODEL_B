@@ -4,7 +4,7 @@
 // Description: Mullard SAA5050 teletext glyph shapes used by BBC Micro MODE 7.
 // Author:      James Booth
 // Created:     2026
-// License:     MIT License - See LICENSE file in the project root
+// License:     GPL-2.0-only - See COPYING in the project root
 // Copyright:   (c) 2024-2026 James Booth
 // Notice:      BBC Micro ROMs are property of their respective rights holders.
 //              SAA5050 glyph data adapted from Bedstead/Teletext50, CC0.

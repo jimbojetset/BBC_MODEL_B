@@ -4,7 +4,7 @@
 // Description: 6502 register set used by the BBC CPU core.
 // Author:      James Booth
 // Created:     2025
-// License:     MIT License - See LICENSE file in the project root
+// License:     GPL-2.0-only - See COPYING in the project root
 // Copyright:   (c) 2024-2026 James Booth
 // Notice:      BBC Micro ROMs are property of their respective rights holders.
 //              This emulator is for educational purposes only.

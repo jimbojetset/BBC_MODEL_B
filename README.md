@@ -257,7 +257,9 @@ Boot behaviour:
 
 ### Disc Drive Sound
 
-5.25 inch drive noise is mixed into the main audio path from WAV samples in `Assets/DriveNoise/525`. The 8271 emulation raises passive motor and seek events, so drive sound follows DFS activity without changing disc timing. The drive samples are mixed at a fixed gain chosen to keep the mechanics audible alongside the SN76489 output.
+5.25 inch drive noise is mixed into the main audio path from WAV samples in `Assets`. The 8271 emulation raises passive motor and seek events, so drive sound follows DFS activity without changing disc timing. The drive samples are mixed at a fixed gain chosen to keep the mechanics audible alongside the SN76489 output.
+
+The drive WAV samples are from the b-em BBC Micro emulator, which is licensed under the GPL. See `THIRD_PARTY_NOTICES.md` for the source details and acknowledgement.
 
 ## Screenshots
 
@@ -292,5 +294,7 @@ SRC/HD6845_Video.cs       CRTC, Video ULA, Mode 7, and framebuffer rendering
 ```
 
 ## Legal Note
+
+This emulator is distributed under the GNU General Public License version 2. See `COPYING`.
 
 BBC Micro ROMs and commercial software images remain the property of their respective rights holders. This emulator is for educational and preservation-oriented development.
