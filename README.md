@@ -140,11 +140,14 @@ The SDL window has a compact top menu for gameplay/session actions:
 File      Save screenshot, save/load state, quit
 Disc      Mount/eject drive 0, mount/eject drive 1, create blank SSD
 Machine   BREAK, Shift-BREAK, Ctrl-BREAK, 6502 Co-Processor, pause
+ROM Manager
 View      Fullscreen, scanlines
 Input     Paste clipboard, Shift Lock
 ```
 
 Disc menu mounts behave like inserting media into a real drive: they do not auto-boot the disc. Use `Shift-BREAK` from the Machine menu or keyboard when you want to boot the mounted disc. `Create blank SSD` uses the first empty physical drive, preferring drive 0; if both drives are occupied, the menu item is unavailable.
+
+`ROM Manager` shows the BBC's 16 logical sideways ROM banks as two rows of chip sockets. Empty banks can be filled from the native host file picker, occupied banks show ROM title/type and language/service entry information, and non-system ROMs can be removed or moved to an empty bank. Bank 15, the BASIC ROM bank, is protected; bank 14, the filing-system ROM bank, can be replaced so you can swap DFS for alternatives such as a 1770 DFS ROM. The emulator pauses while the manager is open and performs a power-on reset when the ROM pattern has changed.
 
 ### Host Shortcuts
 

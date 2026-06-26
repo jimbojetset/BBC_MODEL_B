@@ -13,6 +13,7 @@
 
 using System.Runtime.InteropServices;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO.Compression;
 
 namespace BBC
@@ -31,6 +32,19 @@ namespace BBC
         private const int MenuSeparatorHeight = 9;
         private const int MenuDropDownPadding = 5;
         private const int MenuShortcutGap = 18;
+        private const int RomSlotColumns = 8;
+        private const int RomSlotRows = 2;
+        private const int RomSlotWidth = 58;
+        private const int RomSlotHeight = 126;
+        private const int RomSlotGapX = 11;
+        private const int RomSlotGapY = 24;
+        private const int RomPanelPadding = 16;
+        private const int RomBankNumberHeight = 10;
+        private const int RomLabelMaxCharacters = 14;
+        private const int DfsRomBank = 14;
+        private const int BasicRomBank = 15;
+        private const int RomActionWidth = 82;
+        private const int RomActionRowHeight = 20;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
@@ -80,8 +94,10 @@ namespace BBC
         private readonly Queue<HostAnalogJoystickChange> pendingAnalogJoystickChanges = new Queue<HostAnalogJoystickChange>();
         private readonly Queue<HostDiscAction> pendingDiscActions = new Queue<HostDiscAction>();
         private readonly Queue<HostStateAction> pendingStateActions = new Queue<HostStateAction>();
+        private readonly Queue<HostRomAction> pendingRomActions = new Queue<HostRomAction>();
         private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
         private readonly MenuDefinition[] menus;
+        private readonly SidewaysRomSlot[] romSlots = new SidewaysRomSlot[16];
         private int pendingScreenshotRequests;
         private int pendingTraceToggleRequests;
         private int pendingPauseToggleRequests;
@@ -98,6 +114,8 @@ namespace BBC
         private IntPtr scanlineTexture;
         private IntPtr emptyDriveGlyphTexture;
         private IntPtr mountedDriveGlyphTexture;
+        private IntPtr emptyRomSocketTexture;
+        private IntPtr occupiedRomSocketTexture;
         private IntPtr gameController;
         private IntPtr joystick;
         private int activeJoystickInstanceId = -1;
@@ -109,6 +127,10 @@ namespace BBC
         private int activeMenuIndex = -1;
         private int hoveredMenuIndex = -1;
         private int hoveredMenuItemIndex = -1;
+        private int hoveredRomSlot = -1;
+        private int activeRomSlot = -1;
+        private int movingRomSlot = -1;
+        private int infoRomSlot = -1;
         private int logicalWidth;
         private int logicalHeight;
         private SdlRect viewportRect;
@@ -150,6 +172,8 @@ namespace BBC
         public bool Tube6502Enabled { get; set; }
 
         public string DefaultSaveStateFileName { get; set; } = "bbc-untitled.sav";
+
+        public bool RomManagerOpen => IsRomManagerMenu(activeMenuIndex);
 
         public void ShowNotification(string title, string body, int durationMilliseconds = NotificationDurationMilliseconds)
         {
@@ -203,6 +227,10 @@ namespace BBC
             scanlineTexture = CreateScanlineTexture(width, height);
             emptyDriveGlyphTexture = CreateDriveGlyphTexture(0xFF404040);
             mountedDriveGlyphTexture = CreateDriveGlyphTexture(0xFF005020);
+            emptyRomSocketTexture = CreateRomSocketTexture(false);
+            occupiedRomSocketTexture = CreateRomSocketTexture(true);
+            for (int bank = 0; bank < romSlots.Length; bank++)
+                romSlots[bank] = SidewaysRomHeader.Inspect(bank, null, null);
 
             SDL_StartTextInput();
             _ = SDL_GameControllerEventState(SDL_ENABLE);
@@ -357,6 +385,19 @@ namespace BBC
                 destination.Add(pendingStateActions.Dequeue());
         }
 
+        public void DrainRomActions(ICollection<HostRomAction> destination)
+        {
+            while (pendingRomActions.Count > 0)
+                destination.Add(pendingRomActions.Dequeue());
+        }
+
+        public void SetRomSlots(IReadOnlyList<SidewaysRomSlot> slots)
+        {
+            int count = Math.Min(slots.Count, romSlots.Length);
+            for (int i = 0; i < count; i++)
+                romSlots[i] = slots[i];
+        }
+
         public int DrainScreenshotRequests()
         {
             int count = pendingScreenshotRequests;
@@ -497,6 +538,12 @@ namespace BBC
         private void DrawOpenMenu(int menuIndex)
         {
             MenuDefinition menu = menus[menuIndex];
+            if (IsRomManagerMenu(menuIndex))
+            {
+                DrawRomManagerPanel(menuIndex);
+                return;
+            }
+
             int menuX = GetTopMenuX(menuIndex) - 4;
             int menuY = TopMenuHeight;
             int menuWidth = GetDropDownWidth(menu);
@@ -553,11 +600,17 @@ namespace BBC
             hoveredMenuItemIndex = activeMenuIndex >= 0
                 ? GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY)
                 : -1;
+            hoveredRomSlot = IsRomManagerMenu(activeMenuIndex)
+                ? GetRomSlotAt((int)logicalX, (int)logicalY)
+                : -1;
 
             if (activeMenuIndex >= 0 && hoveredMenuIndex >= 0)
             {
                 activeMenuIndex = hoveredMenuIndex;
                 hoveredMenuItemIndex = GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY);
+                hoveredRomSlot = IsRomManagerMenu(activeMenuIndex)
+                    ? GetRomSlotAt((int)logicalX, (int)logicalY)
+                    : -1;
             }
 
             return IsMenuArea((int)logicalX, (int)logicalY);
@@ -581,11 +634,28 @@ namespace BBC
                 activeMenuIndex = activeMenuIndex == menuIndex ? -1 : menuIndex;
                 hoveredMenuIndex = menuIndex;
                 hoveredMenuItemIndex = -1;
+                activeRomSlot = -1;
+                movingRomSlot = -1;
+                hoveredRomSlot = -1;
+                infoRomSlot = -1;
                 return true;
             }
 
             if (activeMenuIndex >= 0)
             {
+                if (IsRomManagerMenu(activeMenuIndex))
+                {
+                    if (HandleRomManagerClick(x, y))
+                        return true;
+
+                    activeMenuIndex = -1;
+                    activeRomSlot = -1;
+                    movingRomSlot = -1;
+                    hoveredRomSlot = -1;
+                    infoRomSlot = -1;
+                    return true;
+                }
+
                 int itemIndex = GetMenuItemIndexAt(activeMenuIndex, x, y);
                 if (itemIndex >= 0)
                 {
@@ -609,6 +679,9 @@ namespace BBC
         private bool IsMenuArea(int x, int y)
         {
             if (y >= 0 && y < TopMenuHeight)
+                return true;
+
+            if (IsRomManagerMenu(activeMenuIndex) && IsInRomManagerPanel(x, y))
                 return true;
 
             return activeMenuIndex >= 0 && GetMenuItemIndexAt(activeMenuIndex, x, y) >= 0;
@@ -635,6 +708,8 @@ namespace BBC
         private int GetMenuItemIndexAt(int menuIndex, int x, int y)
         {
             if (menuIndex < 0 || menuIndex >= menus.Length)
+                return -1;
+            if (IsRomManagerMenu(menuIndex))
                 return -1;
 
             MenuDefinition menu = menus[menuIndex];
@@ -675,6 +750,9 @@ namespace BBC
 
         private static int GetDropDownWidth(MenuDefinition menu)
         {
+            if (menu.Items.Length == 0)
+                return GetRomManagerPanelWidth();
+
             int width = 0;
             foreach (MenuItem item in menu.Items)
             {
@@ -691,6 +769,9 @@ namespace BBC
 
         private static int GetDropDownHeight(MenuDefinition menu)
         {
+            if (menu.Items.Length == 0)
+                return GetRomManagerPanelHeight();
+
             int height = MenuDropDownPadding * 2;
             foreach (MenuItem item in menu.Items)
                 height += GetMenuItemHeight(item);
@@ -701,6 +782,331 @@ namespace BBC
         private static int GetMenuItemHeight(MenuItem item)
         {
             return item.Separator ? MenuSeparatorHeight : MenuItemHeight;
+        }
+
+        private void DrawRomManagerPanel(int menuIndex)
+        {
+            SdlRect panel = GetRomManagerPanelRect(menuIndex);
+            _ = SDL_SetRenderDrawColor(renderer, 18, 18, 18, 245);
+            _ = SDL_RenderFillRect(renderer, ref panel);
+            _ = SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
+            DrawRectOutline(panel);
+
+            for (int bank = 0; bank < romSlots.Length; bank++)
+                DrawRomSlot(bank, GetRomSlotRect(panel, bank));
+
+            if (movingRomSlot >= 0)
+                DrawRendererText("Click an empty bank", panel.X + 12, panel.Y + panel.H - 18, 210, 210, 130);
+
+            if (activeRomSlot >= 0 && movingRomSlot < 0)
+                DrawRomActionPopup(GetRomSlotRect(panel, activeRomSlot));
+
+            if (infoRomSlot >= 0)
+                DrawRomInfoPanel(panel, romSlots[infoRomSlot]);
+        }
+
+        private void DrawRomSlot(int bank, SdlRect slotRect)
+        {
+            SidewaysRomSlot slot = romSlots[bank];
+            bool occupied = slot.Occupied;
+            bool hovered = bank == hoveredRomSlot;
+            bool movingSource = bank == movingRomSlot;
+
+            int numberX = slotRect.X + (slotRect.W / 2) - (GetRendererTextWidth(bank.ToString(CultureInfo.InvariantCulture)) / 2);
+            DrawRendererText(bank.ToString(CultureInfo.InvariantCulture), numberX, slotRect.Y - RomBankNumberHeight, 210, 210, 210);
+
+            IntPtr glyphTexture = occupied ? occupiedRomSocketTexture : emptyRomSocketTexture;
+            if (glyphTexture != IntPtr.Zero)
+                _ = SDL_RenderCopy(renderer, glyphTexture, IntPtr.Zero, ref slotRect);
+
+            if (hovered || movingSource)
+            {
+                _ = SDL_SetRenderDrawColor(renderer, movingSource ? (byte)255 : (byte)230, movingSource ? (byte)210 : (byte)230, movingSource ? (byte)90 : (byte)230, 255);
+                DrawRectOutline(new SdlRect(slotRect.X - 2, slotRect.Y - 2, slotRect.W + 4, slotRect.H + 4));
+            }
+
+            string label = occupied ? slot.DisplayName : "EMPTY";
+            byte labelGrey = slot.Missing ? (byte)245 : occupied ? (byte)235 : (byte)90;
+            DrawRomSlotLabel(label, slotRect, labelGrey, labelGrey, slot.Missing ? (byte)80 : labelGrey);
+        }
+
+        private void DrawRomSlotLabel(string label, SdlRect slotRect, byte red, byte green, byte blue)
+        {
+            string[] lines = WrapRomSlotLabel(label);
+            int firstLineX = lines.Length == 1 ? slotRect.X + 25 : slotRect.X + 20;
+            for (int i = 0; i < lines.Length; i++)
+                DrawRendererTextRotatedCcw(lines[i], firstLineX + (i * 10), slotRect.Y + slotRect.H - 14, red, green, blue);
+        }
+
+        private static string[] WrapRomSlotLabel(string label)
+        {
+            string trimmed = label.Trim();
+            if (trimmed.Length <= RomLabelMaxCharacters)
+                return [trimmed];
+
+            int split = trimmed.LastIndexOf(' ', RomLabelMaxCharacters);
+            if (split <= 0)
+                split = trimmed.IndexOf(' ', RomLabelMaxCharacters);
+            if (split <= 0)
+                split = RomLabelMaxCharacters;
+
+            string first = trimmed[..split].Trim();
+            string second = trimmed[split..].Trim();
+            if (second.Length > RomLabelMaxCharacters)
+                second = second[..RomLabelMaxCharacters].TrimEnd();
+
+            return string.IsNullOrEmpty(second) ? [first] : [first, second];
+        }
+
+        private void DrawRomActionPopup(SdlRect slotRect)
+        {
+            int actionRows = GetRomActionRowCount(activeRomSlot);
+            SdlRect popup = GetRomActionRect(slotRect, actionRows);
+            _ = SDL_SetRenderDrawColor(renderer, 28, 28, 28, 255);
+            _ = SDL_RenderFillRect(renderer, ref popup);
+            _ = SDL_SetRenderDrawColor(renderer, 175, 175, 175, 255);
+            DrawRectOutline(popup);
+
+            if (IsBasicRomBank(activeRomSlot))
+            {
+                DrawRendererText("Info", popup.X + 8, popup.Y + 6, 230, 230, 230);
+                return;
+            }
+
+            if (IsDfsRomBank(activeRomSlot))
+            {
+                DrawRendererText("Replace", popup.X + 8, popup.Y + 6, 230, 230, 230);
+                DrawRendererText("Info", popup.X + 8, popup.Y + 6 + RomActionRowHeight, 230, 230, 230);
+                return;
+            }
+
+            DrawRendererText("Remove", popup.X + 8, popup.Y + 6, 230, 230, 230);
+            DrawRendererText("Move", popup.X + 8, popup.Y + 6 + RomActionRowHeight, 230, 230, 230);
+            DrawRendererText("Info", popup.X + 8, popup.Y + 6 + (RomActionRowHeight * 2), 230, 230, 230);
+        }
+
+        private void DrawRomInfoPanel(SdlRect panel, SidewaysRomSlot slot)
+        {
+            const int infoWidth = 318;
+            const int infoHeight = 112;
+            SdlRect info = new SdlRect(
+                panel.X + ((panel.W - infoWidth) / 2),
+                panel.Y + ((panel.H - infoHeight) / 2),
+                infoWidth,
+                infoHeight);
+
+            _ = SDL_SetRenderDrawColor(renderer, 10, 10, 10, 250);
+            _ = SDL_RenderFillRect(renderer, ref info);
+            _ = SDL_SetRenderDrawColor(renderer, 220, 220, 220, 255);
+            DrawRectOutline(info);
+
+            string languageEntry = slot.LanguageEntry.HasValue ? $"Language entry ${slot.LanguageEntry.Value:X4}" : "No language entry";
+            string serviceEntry = slot.ServiceEntry.HasValue ? $"Service entry ${slot.ServiceEntry.Value:X4}" : "No service entry";
+            string fileName = slot.Path is null ? string.Empty : Path.GetFileName(slot.Path);
+            int columns = Math.Max(1, (info.W - 18) / MenuTextCellWidth);
+
+            int y = info.Y + 10;
+            DrawRendererText(TrimRendererText($"Bank {slot.Bank}: {slot.Title}", columns), info.X + 9, y, 245, 245, 245);
+            y += 18;
+            DrawRendererText(TrimRendererText(slot.RomType, columns), info.X + 9, y, 190, 190, 190);
+            y += 14;
+            DrawRendererText(TrimRendererText(languageEntry, columns), info.X + 9, y, 190, 190, 190);
+            y += 14;
+            DrawRendererText(TrimRendererText(serviceEntry, columns), info.X + 9, y, 190, 190, 190);
+            y += 14;
+            if (!string.IsNullOrWhiteSpace(slot.Copyright))
+            {
+                DrawRendererText(TrimRendererText(slot.Copyright, columns), info.X + 9, y, 160, 160, 160);
+                y += 14;
+            }
+            DrawRendererText(TrimRendererText(fileName, columns), info.X + 9, y, 160, 160, 160);
+        }
+
+        private bool HandleRomManagerClick(int x, int y)
+        {
+            if (activeRomSlot >= 0 && movingRomSlot < 0)
+            {
+                int action = GetRomActionAt(x, y);
+                if (action >= 0)
+                {
+                    HandleRomActionChoice(action);
+                    return true;
+                }
+            }
+
+            int bank = GetRomSlotAt(x, y);
+            if (bank < 0)
+                return IsInRomManagerPanel(x, y);
+
+            SidewaysRomSlot slot = romSlots[bank];
+            if (movingRomSlot >= 0)
+            {
+                if (!slot.Occupied && movingRomSlot != bank)
+                    pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.Move, movingRomSlot, bank, string.Empty));
+
+                movingRomSlot = -1;
+                activeRomSlot = -1;
+                return true;
+            }
+
+            if (slot.Occupied)
+            {
+                activeRomSlot = bank;
+                infoRomSlot = -1;
+                return true;
+            }
+
+            string? path = SelectNativeRomFile();
+            if (!string.IsNullOrWhiteSpace(path))
+                pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.Add, bank, -1, path));
+
+            activeRomSlot = -1;
+            return true;
+        }
+
+        private void HandleRomActionChoice(int action)
+        {
+            int bank = activeRomSlot;
+            activeRomSlot = -1;
+
+            if (IsBasicRomBank(bank))
+            {
+                infoRomSlot = bank;
+                return;
+            }
+
+            if (IsDfsRomBank(bank))
+            {
+                if (action == 0)
+                {
+                    string? path = SelectNativeRomFile();
+                    if (!string.IsNullOrWhiteSpace(path))
+                        pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.Add, bank, -1, path));
+                    return;
+                }
+
+                infoRomSlot = bank;
+                return;
+            }
+
+            switch (action)
+            {
+                case 0:
+                    pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.Remove, bank, -1, string.Empty));
+                    break;
+                case 1:
+                    movingRomSlot = bank;
+                    break;
+                case 2:
+                    infoRomSlot = bank;
+                    break;
+            }
+        }
+
+        private int GetRomActionAt(int x, int y)
+        {
+            if (activeRomSlot < 0)
+                return -1;
+
+            SdlRect panel = GetRomManagerPanelRect(activeMenuIndex);
+            int actionRows = GetRomActionRowCount(activeRomSlot);
+            SdlRect popup = GetRomActionRect(GetRomSlotRect(panel, activeRomSlot), actionRows);
+            if (x < popup.X || x >= popup.X + popup.W || y < popup.Y || y >= popup.Y + popup.H)
+                return -1;
+
+            int action = (y - popup.Y) / RomActionRowHeight;
+            if (IsBasicRomBank(activeRomSlot))
+                return action == 0 ? 2 : -1;
+
+            if (IsDfsRomBank(activeRomSlot))
+                return action is >= 0 and <= 1 ? action : -1;
+
+            return action is >= 0 and <= 2 ? action : -1;
+        }
+
+        private int GetRomSlotAt(int x, int y)
+        {
+            if (!IsRomManagerMenu(activeMenuIndex))
+                return -1;
+
+            SdlRect panel = GetRomManagerPanelRect(activeMenuIndex);
+            for (int bank = 0; bank < romSlots.Length; bank++)
+            {
+                SdlRect slot = GetRomSlotRect(panel, bank);
+                if (x >= slot.X && x < slot.X + slot.W && y >= slot.Y && y < slot.Y + slot.H)
+                    return bank;
+            }
+
+            return -1;
+        }
+
+        private bool IsInRomManagerPanel(int x, int y)
+        {
+            if (!IsRomManagerMenu(activeMenuIndex))
+                return false;
+
+            SdlRect panel = GetRomManagerPanelRect(activeMenuIndex);
+            return x >= panel.X && x < panel.X + panel.W && y >= panel.Y && y < panel.Y + panel.H;
+        }
+
+        private SdlRect GetRomManagerPanelRect(int menuIndex)
+        {
+            int x = Math.Min(GetTopMenuX(menuIndex) - 4, Math.Max(0, logicalWidth - GetRomManagerPanelWidth() - 4));
+            return new SdlRect(x, TopMenuHeight, GetRomManagerPanelWidth(), GetRomManagerPanelHeight());
+        }
+
+        private static SdlRect GetRomSlotRect(SdlRect panel, int bank)
+        {
+            int column = bank % RomSlotColumns;
+            int row = bank / RomSlotColumns;
+            int x = panel.X + RomPanelPadding + (column * (RomSlotWidth + RomSlotGapX));
+            int y = panel.Y + RomPanelPadding + RomBankNumberHeight + (row * (RomSlotHeight + RomSlotGapY + RomBankNumberHeight));
+            return new SdlRect(x, y, RomSlotWidth, RomSlotHeight);
+        }
+
+        private SdlRect GetRomActionRect(SdlRect slotRect, int rows)
+        {
+            int height = RomActionRowHeight * rows;
+            int x = Math.Min(slotRect.X + slotRect.W + 4, logicalWidth - RomActionWidth - 4);
+            int y = Math.Min(slotRect.Y + 20, logicalHeight - height - 4);
+            return new SdlRect(x, y, RomActionWidth, height);
+        }
+
+        private static int GetRomActionRowCount(int bank)
+        {
+            if (IsBasicRomBank(bank))
+                return 1;
+            if (IsDfsRomBank(bank))
+                return 2;
+            return 3;
+        }
+
+        private static bool IsBasicRomBank(int bank)
+        {
+            return bank == BasicRomBank;
+        }
+
+        private static bool IsDfsRomBank(int bank)
+        {
+            return bank == DfsRomBank;
+        }
+
+        private static int GetRomManagerPanelWidth()
+        {
+            return (RomPanelPadding * 2) + (RomSlotColumns * RomSlotWidth) + ((RomSlotColumns - 1) * RomSlotGapX);
+        }
+
+        private static int GetRomManagerPanelHeight()
+        {
+            return (RomPanelPadding * 2)
+                + (RomSlotRows * (RomSlotHeight + RomBankNumberHeight))
+                + ((RomSlotRows - 1) * RomSlotGapY)
+                + 18;
+        }
+
+        private bool IsRomManagerMenu(int menuIndex)
+        {
+            return menuIndex >= 0 && menuIndex < menus.Length && menus[menuIndex].Title == "ROM Manager";
         }
 
         private void ExecuteMenuCommand(MenuCommand command)
@@ -824,9 +1230,40 @@ namespace BBC
             }
         }
 
+        private void DrawRendererTextRotatedCcw(string text, int x, int baselineY, byte red, byte green, byte blue)
+        {
+            _ = SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+            for (int i = 0; i < text.Length; i++)
+            {
+                byte[] glyph = NotificationFont.GetRows(text[i]);
+                int glyphY = baselineY - (i * MenuTextCellWidth);
+                for (int row = 0; row < glyph.Length; row++)
+                {
+                    byte mask = glyph[row];
+                    for (int column = 0; column < NotificationGlyphWidth; column++)
+                    {
+                        if ((mask & (1 << (NotificationGlyphWidth - 1 - column))) == 0)
+                            continue;
+
+                        SdlRect pixel = new SdlRect(x + row, glyphY - column, 1, 1);
+                        _ = SDL_RenderFillRect(renderer, ref pixel);
+                    }
+                }
+            }
+        }
+
         private static int GetRendererTextWidth(string text)
         {
             return text.Length * MenuTextCellWidth;
+        }
+
+        private static string TrimRendererText(string text, int columns)
+        {
+            string trimmed = text.Trim();
+            if (trimmed.Length <= columns)
+                return trimmed;
+
+            return columns <= 3 ? trimmed[..columns] : trimmed[..(columns - 3)] + "...";
         }
 
         private void DrawDriveGlyphs()
@@ -1259,6 +1696,72 @@ namespace BBC
             return glyph;
         }
 
+        private IntPtr CreateRomSocketTexture(bool occupied)
+        {
+            IntPtr texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, RomSlotWidth, RomSlotHeight);
+            if (texture == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            _ = SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+
+            uint[] pixels = new uint[RomSlotWidth * RomSlotHeight];
+            uint socket = 0xFFE8E8E8;
+            uint shadow = 0xFF707070;
+            uint hole = 0xFF050505;
+            uint chip = 0xFF181818;
+            uint chipEdge = 0xFFBBBBBB;
+            uint leg = 0xFFE0E0E0;
+
+            const int firstPinY = 10;
+            const int pinPitch = 8;
+            const int pinCount = 14;
+            int lastPinY = firstPinY + ((pinCount - 1) * pinPitch);
+
+            DrawPixelRectOutline(pixels, RomSlotWidth, RomSlotHeight, 9, 4, RomSlotWidth - 18, RomSlotHeight - 8, socket);
+            DrawPixelRectOutline(pixels, RomSlotWidth, RomSlotHeight, 14, 9, RomSlotWidth - 28, RomSlotHeight - 18, shadow);
+            FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, (RomSlotWidth / 2) - 5, 6, 10, 2, socket);
+            FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, (RomSlotWidth / 2) - 5, RomSlotHeight - 8, 10, 2, socket);
+
+            for (int pin = 0; pin < pinCount; pin++)
+            {
+                int y = firstPinY + (pin * pinPitch);
+                FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, 6, y, 4, 3, hole);
+                FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, RomSlotWidth - 10, y, 4, 3, hole);
+            }
+
+            if (occupied)
+            {
+                int chipX = 15;
+                int chipY = 8;
+                int chipWidth = RomSlotWidth - 30;
+                int chipHeight = RomSlotHeight - 16;
+                FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, chipX, chipY, chipWidth, chipHeight, chip);
+                DrawPixelRectOutline(pixels, RomSlotWidth, RomSlotHeight, chipX, chipY, chipWidth, chipHeight, chipEdge);
+                FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, (RomSlotWidth / 2) - 5, chipY + 2, 10, 3, 0xFF000000);
+                FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, (RomSlotWidth / 2) - 4, chipY + 36, 8, 8, 0xFF252525);
+                FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, (RomSlotWidth / 2) - 4, chipY + 72, 8, 8, 0xFF252525);
+
+                for (int pin = 0; pin < pinCount; pin++)
+                {
+                    int y = Math.Min(lastPinY, firstPinY + (pin * pinPitch));
+                    FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, 10, y + 1, 5, 2, leg);
+                    FillPixelRect(pixels, RomSlotWidth, RomSlotHeight, RomSlotWidth - 15, y + 1, 5, 2, leg);
+                }
+            }
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                _ = SDL_UpdateTexture(texture, IntPtr.Zero, handle.AddrOfPinnedObject(), RomSlotWidth * sizeof(uint));
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return texture;
+        }
+
         private static void DrawPixelRectOutline(uint[] pixels, int textureWidth, int textureHeight, int x, int y, int width, int height, uint colour)
         {
             FillPixelRect(pixels, textureWidth, textureHeight, x, y, width, 1, colour);
@@ -1315,6 +1818,18 @@ namespace BBC
             {
                 SDL_DestroyTexture(mountedDriveGlyphTexture);
                 mountedDriveGlyphTexture = IntPtr.Zero;
+            }
+
+            if (emptyRomSocketTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(emptyRomSocketTexture);
+                emptyRomSocketTexture = IntPtr.Zero;
+            }
+
+            if (occupiedRomSocketTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(occupiedRomSocketTexture);
+                occupiedRomSocketTexture = IntPtr.Zero;
             }
 
             if (texture != IntPtr.Zero)
@@ -1926,6 +2441,7 @@ namespace BBC
                     MenuSeparator(),
                     new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause)
                 ]),
+                new MenuDefinition("ROM Manager", []),
                 new MenuDefinition("View",
                 [
                     new MenuItem("Fullscreen", "", MenuCommand.ToggleFullScreen),
@@ -2114,6 +2630,32 @@ namespace BBC
 
                 if (OperatingSystem.IsLinux())
                     return RunProcessForSingleLine("zenity", "--file-selection", "--title=Load BBC state", "--file-filter=BBC save state (*.sav) | *.sav");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string? SelectNativeRomFile()
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select BBC sideways ROM'; $dialog.Filter = 'BBC ROM (*.rom)|*.rom|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"rom\"} with prompt \"Select BBC sideways ROM\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select BBC sideways ROM", "--file-filter=BBC ROM (*.rom) | *.rom");
             }
             catch
             {

@@ -404,12 +404,15 @@ namespace BBC
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly List<HostDiscAction> discActionScratch = new List<HostDiscAction>();
         private readonly List<HostStateAction> stateActionScratch = new List<HostStateAction>();
+        private readonly List<HostRomAction> romActionScratch = new List<HostRomAction>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
         private readonly Queue<string> pendingBootScriptLines = new Queue<string>();
         private readonly long[] matrixKeyPressedAtTicks = new long[128];
         private readonly long[] matrixKeyReleaseDueTicks = new long[128];
         private readonly bool[] matrixKeyReleasePending = new bool[128];
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
+        private readonly string?[] sidewaysRomPaths = new string?[SidewaysRomBanks];
+        private readonly SidewaysRomSlot[] sidewaysRomSlots = new SidewaysRomSlot[SidewaysRomBanks];
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
         private string? pendingBootExecScript;
@@ -453,6 +456,9 @@ namespace BBC
         private const int SaveStateVersion = 3;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
+        private bool romManagerPauseActive;
+        private bool romManagerPreviousPaused;
+        private bool romPatternChangedWhileManagerOpen;
 
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
 
@@ -569,6 +575,7 @@ namespace BBC
             long nextFrame = Stopwatch.GetTimestamp() + frameTicks;
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             Display.DefaultSaveStateFileName = CreateSaveStateFileName();
+            Display.SetRomSlots(sidewaysRomSlots);
             while (Display.PumpEvents())
             {
                 if (cpuException is not null)
@@ -576,11 +583,13 @@ namespace BBC
                 if (tube6502?.CpuException is not null)
                     throw new InvalidOperationException("Tube 6502 execution failed.", tube6502.CpuException);
 
+                SynchronizeRomManagerPause(Display);
                 DrainHostPauseRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
                 DrainHostBreakInput(Display);
                 DrainHostDiscLoads(Display);
                 DrainHostStateActions(Display);
+                DrainHostRomActions(Display);
                 DrainHostKeyMatrixInput(Display);
                 DrainHostJoystickInput(Display);
                 DrainHostAnalogJoystickInput(Display);
@@ -603,6 +612,7 @@ namespace BBC
                 Display.EmulationPaused = emulationPaused;
                 Display.Tube6502Enabled = tube6502 is not null;
                 Display.DefaultSaveStateFileName = CreateSaveStateFileName();
+                Display.SetRomSlots(sidewaysRomSlots);
                 Display.Present();
 
                 DumpTubeDebugStateIfDue();
@@ -895,6 +905,78 @@ namespace BBC
             int count = display.DrainTube6502ToggleRequests();
             for (int i = 0; i < count; i++)
                 SetTube6502Enabled(tube6502 is null);
+        }
+
+        private void SynchronizeRomManagerPause(Display display)
+        {
+            if (display.RomManagerOpen)
+            {
+                if (romManagerPauseActive)
+                    return;
+
+                romManagerPauseActive = true;
+                romManagerPreviousPaused = emulationPaused;
+                Cpu.SetPaused(true);
+                tube6502?.SetPaused(true);
+                Sound.SetHostOutputPaused(true);
+                return;
+            }
+
+            if (!romManagerPauseActive)
+                return;
+
+            romManagerPauseActive = false;
+            bool resetRequired = romPatternChangedWhileManagerOpen;
+            romPatternChangedWhileManagerOpen = false;
+
+            if (resetRequired)
+            {
+                PowerOnResetAfterRomChange(display);
+                return;
+            }
+
+            Cpu.SetPaused(romManagerPreviousPaused);
+            tube6502?.SetPaused(romManagerPreviousPaused);
+            Sound.SetHostOutputPaused(romManagerPreviousPaused);
+        }
+
+        private void DrainHostRomActions(Display display)
+        {
+            romActionScratch.Clear();
+            display.DrainRomActions(romActionScratch);
+
+            foreach (HostRomAction action in romActionScratch)
+            {
+                try
+                {
+                    switch (action.Kind)
+                    {
+                        case HostRomActionKind.Add:
+                            SetSidewaysRomBank(action.Bank, action.Path);
+                            romPatternChangedWhileManagerOpen = true;
+                            Console.WriteLine($"ROM bank {action.Bank}: {action.Path}");
+                            break;
+                        case HostRomActionKind.Remove:
+                            ClearSidewaysRomBank(action.Bank);
+                            romPatternChangedWhileManagerOpen = true;
+                            Console.WriteLine($"ROM bank {action.Bank}: empty");
+                            break;
+                        case HostRomActionKind.Move:
+                            MoveSidewaysRomBank(action.Bank, action.TargetBank);
+                            romPatternChangedWhileManagerOpen = true;
+                            Console.WriteLine($"ROM bank {action.Bank} moved to bank {action.TargetBank}");
+                            break;
+                    }
+                }
+                catch (Exception ex) when (ex is IOException
+                    or UnauthorizedAccessException
+                    or InvalidDataException
+                    or InvalidOperationException)
+                {
+                    display.ShowNotification("ROM manager", ex.Message, 4000);
+                    Console.WriteLine($"ROM manager failed: {ex.Message}");
+                }
+            }
         }
 
         private void DrainHostFrameAdvanceRequests(Display display)
@@ -1989,6 +2071,23 @@ namespace BBC
             Cpu.RequestReset();
         }
 
+        private void PowerOnResetAfterRomChange(Display display)
+        {
+            Array.Clear(Memory.Memory);
+            Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
+            pendingBreak = default;
+            pendingBootExecScript = null;
+            pendingBootScriptLines.Clear();
+            selectedSidewaysRom = BasicRomBank;
+            tubeUla.Reset();
+            tube6502?.Reset();
+            Cpu.RequestReset();
+            Cpu.SetPaused(romManagerPreviousPaused);
+            tube6502?.SetPaused(romManagerPreviousPaused);
+            Sound.SetHostOutputPaused(romManagerPreviousPaused);
+            display.ShowNotification("ROM pattern changed", "BBC reset", 2000);
+        }
+
         private void SetTube6502Enabled(bool enabled)
         {
             if (enabled == (tube6502 is not null))
@@ -2011,11 +2110,11 @@ namespace BBC
                     {
                         BasicRomPath = hiBasicRomPath;
                         ValidateRom(BasicRomPath, HiBasicRomMarker, RomSize);
-                        LoadSidewaysRomBank(BasicRomPath, BasicRomBank);
+                        SetSidewaysRomBank(BasicRomBank, BasicRomPath);
                     }
                     ValidateRom(DfsRomPath, DnfsRomMarker, RomSize / 2, RomSize);
                     ValidateRom(Tube6502RomPath, Tube6502RomMarker, 1, RomSize);
-                    LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
+                    SetSidewaysRomBank(DfsRomBank, DfsRomPath);
 
                     tubeUla.Reset();
                     tube6502 = new CoProcessor65C02(tubeUla);
@@ -2032,8 +2131,8 @@ namespace BBC
                     Tube6502RomPath = null;
                     ValidateRom(BasicRomPath, BasicRomMarker, RomSize);
                     ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
-                    LoadSidewaysRomBank(BasicRomPath, BasicRomBank);
-                    LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
+                    SetSidewaysRomBank(BasicRomBank, BasicRomPath);
+                    SetSidewaysRomBank(DfsRomBank, DfsRomPath);
 
                     tube6502?.Dispose();
                     tube6502 = null;
@@ -2041,6 +2140,7 @@ namespace BBC
                 }
 
                 tube6502Configured = enabled;
+                UpdateAmxMouseRomState();
                 UpdateCpuIrqLine();
 
                 Display?.ShowNotification(
@@ -2295,12 +2395,12 @@ namespace BBC
             Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
 
             Array.Fill(sidewaysRoms, (byte)0xFF);
-            LoadSidewaysRomBank(BasicRomPath, BasicRomBank);
-            LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
-            amxMouseRomLoaded = AmxMouseRomPath is not null;
-            hostFilingSystem.MouseCommandFallbackEnabled = !amxMouseRomLoaded;
-            if (amxMouseRomLoaded)
-                LoadSidewaysRomBank(AmxMouseRomPath!, AmxMouseRomBank);
+            Array.Clear(sidewaysRomPaths);
+            LoadDefaultSidewaysRoms();
+            if (tubeEnabled)
+                ApplyTubeHostSidewaysRoms();
+
+            UpdateAmxMouseRomState();
 
             if (Tube6502RomPath is not null)
             {
@@ -2309,6 +2409,28 @@ namespace BBC
                 tubeUla.Reset();
                 tube6502.Reset();
             }
+        }
+
+        private void LoadDefaultSidewaysRoms()
+        {
+            SetSidewaysRomBank(BasicRomBank, BasicRomPath);
+            SetSidewaysRomBank(DfsRomBank, DfsRomPath);
+            if (AmxMouseRomPath is not null)
+                SetSidewaysRomBank(AmxMouseRomBank, AmxMouseRomPath);
+            RefreshSidewaysRomSlots();
+        }
+
+        private void ApplyTubeHostSidewaysRoms()
+        {
+            SetSidewaysRomBank(BasicRomBank, BasicRomPath);
+            SetSidewaysRomBank(DfsRomBank, DfsRomPath);
+        }
+
+        private void UpdateAmxMouseRomState()
+        {
+            amxMouseRomLoaded = AmxMouseRomPath is not null
+                && string.Equals(sidewaysRomPaths[AmxMouseRomBank], Path.GetFullPath(AmxMouseRomPath), StringComparison.OrdinalIgnoreCase);
+            hostFilingSystem.MouseCommandFallbackEnabled = !amxMouseRomLoaded;
         }
 
         private static string GetRomRoot()
@@ -2325,11 +2447,82 @@ namespace BBC
 
         private void LoadSidewaysRomBank(string path, int bank)
         {
-            byte[] rom = File.ReadAllBytes(path);
+            byte[] rom = ReadRomFileForBank(path);
             int bankOffset = bank * RomSize;
 
             for (int i = 0; i < RomSize; i++)
                 sidewaysRoms[bankOffset + i] = rom[i % rom.Length];
+        }
+
+        private void SetSidewaysRomBank(int bank, string path)
+        {
+            if (bank < 0 || bank >= SidewaysRomBanks)
+                throw new ArgumentOutOfRangeException(nameof(bank));
+
+            string fullPath = Path.GetFullPath(path);
+            LoadSidewaysRomBank(fullPath, bank);
+            sidewaysRomPaths[bank] = fullPath;
+            RefreshSidewaysRomSlot(bank);
+        }
+
+        private void ClearSidewaysRomBank(int bank)
+        {
+            if (bank < 0 || bank >= SidewaysRomBanks)
+                throw new ArgumentOutOfRangeException(nameof(bank));
+
+            int bankOffset = bank * RomSize;
+            Array.Fill(sidewaysRoms, (byte)0xFF, bankOffset, RomSize);
+            sidewaysRomPaths[bank] = null;
+            RefreshSidewaysRomSlot(bank);
+        }
+
+        private void MoveSidewaysRomBank(int bank, int targetBank)
+        {
+            if (bank < 0 || bank >= SidewaysRomBanks)
+                throw new ArgumentOutOfRangeException(nameof(bank));
+            if (targetBank < 0 || targetBank >= SidewaysRomBanks)
+                throw new ArgumentOutOfRangeException(nameof(targetBank));
+            if (sidewaysRomPaths[bank] is null)
+                throw new InvalidOperationException($"ROM bank {bank} is empty.");
+            if (sidewaysRomPaths[targetBank] is not null)
+                throw new InvalidOperationException($"ROM bank {targetBank} is not empty.");
+
+            int sourceOffset = bank * RomSize;
+            int targetOffset = targetBank * RomSize;
+            Array.Copy(sidewaysRoms, sourceOffset, sidewaysRoms, targetOffset, RomSize);
+            Array.Fill(sidewaysRoms, (byte)0xFF, sourceOffset, RomSize);
+            sidewaysRomPaths[targetBank] = sidewaysRomPaths[bank];
+            sidewaysRomPaths[bank] = null;
+            RefreshSidewaysRomSlot(bank);
+            RefreshSidewaysRomSlot(targetBank);
+        }
+
+        private void RefreshSidewaysRomSlots()
+        {
+            for (int bank = 0; bank < SidewaysRomBanks; bank++)
+                RefreshSidewaysRomSlot(bank);
+        }
+
+        private void RefreshSidewaysRomSlot(int bank)
+        {
+            string? path = sidewaysRomPaths[bank];
+            byte[]? rom = null;
+            if (path is not null && File.Exists(path))
+                rom = ReadRomFileForBank(path);
+
+            sidewaysRomSlots[bank] = SidewaysRomHeader.Inspect(bank, path, rom);
+        }
+
+        private static byte[] ReadRomFileForBank(string path)
+        {
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"ROM not found: {path}");
+
+            byte[] rom = File.ReadAllBytes(path);
+            if (rom.Length <= 0 || rom.Length > RomSize)
+                throw new InvalidOperationException($"ROM '{path}' must be between 1 and {RomSize} bytes.");
+
+            return rom;
         }
 
         private static void ValidateRom(string path, string marker, int exactSize)
