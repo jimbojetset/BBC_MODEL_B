@@ -1125,7 +1125,9 @@ namespace BBC
             currentTrack[drive] = 0;
             motorSpinning[drive] = false;
             motorStartedAtCycle[drive] = 0;
-            driveActivityLedActive[drive] = false;
+
+            if (drive < driveActivityLedActive.Length)
+                driveActivityLedActive[drive] = false;
         }
 
         private bool TryReadCatalogue(out List<DfsFile> files)

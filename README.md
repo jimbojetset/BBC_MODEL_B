@@ -19,9 +19,13 @@ ROMS/OS12.rom
 ROMS/BASIC2.rom
 ROMS/DFS-0.9.rom
 ROMS/AMXMSE331.rom
+ROMS/DNFS302.rom
+ROMS/6502tube_120.rom
 ```
 
 `AMXMSE331.rom` is optional for a normal BBC boot. I keep it listed because AMX software is a useful test of the mouse path, and especially useful with the Repton 3 editor.
+
+`DNFS302.rom` and `6502tube_120.rom` are only needed when the 65C02 Tube co-processor is enabled.
 
 ## Build
 
@@ -86,6 +90,12 @@ The speed scale is held back until MOS has reached its input path. That is inten
 --headless-ms N    Run without a window for N milliseconds.
 --speed VALUE      CPU speed scale, for example 0.5 or 50%.
 --print-autoload   Print the DFS !BOOT command for a bootable image.
+
+--tube-6502        Start with the 65C02 Tube co-processor enabled.
+--tube-host-rom PATH
+                  Use a specific BBC-side Tube host ROM instead of ROMS/DNFS302.rom.
+--tube-6502-rom PATH
+                  Use a specific parasite ROM instead of ROMS/6502tube_120.rom.
 ```
 
 Plain paths are accepted too:
@@ -93,6 +103,20 @@ Plain paths are accepted too:
 ```bash
 dotnet run --project BBC_MODEL_B.csproj -- Games/Acornsoft/Elite.ssd
 ```
+
+## 65C02 Tube Co-Processor
+
+The emulator includes an Acorn Tube ULA bridge and a 65C02 second processor. In Tube mode the BBC side uses `DNFS302.rom` in the DFS ROM bank, and the parasite side boots from `6502tube_120.rom` with its own 64 KiB memory space.
+
+Start with the Tube enabled from the command line:
+
+```bash
+dotnet run --project BBC_MODEL_B.csproj -- --tube-6502 Games/Acornsoft/Elite-CoPro.ssd
+```
+
+The SDL Machine menu also has a `6502 Co-Processor` toggle. It changes the hardware configuration and swaps the DFS/DNFS ROM bank, but it does not force the BBC to re-detect the Tube. Use `Ctrl-BREAK` after enabling or disabling it, just as you would when changing the hardware under a running machine.
+
+The Tube CPU is advanced from host 6502 cycles rather than from a free-running host thread. That keeps the Tube protocol timing tied to the BBC side, which is important for software that is sensitive to the R1-R4 FIFO handshakes and NMI timing.
 
 ## Controls
 
@@ -103,7 +127,7 @@ The SDL window has a compact top menu for gameplay/session actions:
 ```text
 File      Save screenshot, save/load state, quit
 Disc      Mount/eject drive 0, mount/eject drive 1, create blank SSD
-Machine   BREAK, Shift-BREAK, Ctrl-BREAK, pause
+Machine   BREAK, Shift-BREAK, Ctrl-BREAK, 6502 Co-Processor, pause
 View      Fullscreen, scanlines
 Input     Paste clipboard, Shift Lock
 ```

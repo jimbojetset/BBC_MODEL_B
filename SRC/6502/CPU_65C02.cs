@@ -1,7 +1,7 @@
 // ============================================================================
 // Project:     BBC
-// File:        CPU_6502.cs
-// Description: NMOS 6502 core for the BBC Micro, including IRQ/NMI stack
+// File:        CPU_65C02.cs
+// Description: 65C02 core for the BBC Micro, including IRQ/NMI stack
 //              semantics, page-cross timing, and common undocumented opcodes.
 // Author:      James Booth
 // Created:     2025
@@ -21,10 +21,10 @@ namespace BBC.CPU
 {
 
     /// <summary>
-    /// The BBC Model B uses a 2 MHz NMOS 6502. Exact interrupt stack bits,
+    /// The BBC Model B uses a 2 MHz 65C02. Exact interrupt stack bits,
     /// branch timing, and undocumented opcodes matter for games, demos, and MOS.
     /// </summary>
-    public class CPU_6502
+    public class CPU_65C02
     {
 
         [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
@@ -55,6 +55,9 @@ namespace BBC.CPU
 
         private readonly ConcurrentQueue<ulong> IRQ_Buffer = new ConcurrentQueue<ulong>();
         private readonly ConcurrentQueue<ulong> NMI_Buffer = new ConcurrentQueue<ulong>();
+        private int nmiPending;
+        private long nmiQueuedCount;
+        private long nmiServicedCount;
         private int irqLineAsserted;
         private bool nmiLineWasAsserted;
 
@@ -72,8 +75,16 @@ namespace BBC.CPU
 
         public void InitiateNMI(ulong value)
         {
-            NMI_Buffer.Enqueue(value);
+            if (Interlocked.Exchange(ref nmiPending, 1) == 0)
+            {
+                Interlocked.Increment(ref nmiQueuedCount);
+                NMI_Buffer.Enqueue(value);
+            }
         }
+
+        public long NmiQueuedCount => Interlocked.Read(ref nmiQueuedCount);
+
+        public long NmiServicedCount => Interlocked.Read(ref nmiServicedCount);
 
         private int cyclesThisOperation = 0;
         private long totalCycles;
@@ -108,13 +119,13 @@ namespace BBC.CPU
             Interlocked.Add(ref externalStallCycles, cycles);
         }
 
-        public CPU_6502(int freq = 1000000)
+        public CPU_65C02(int freq = 1000000)
         {
             Initialise();
             clockFreq = freq;
         }
 
-        public CPU_6502(FlatMemoryBus bus, int freq = 1000000)
+        public CPU_65C02(FlatMemoryBus bus, int freq = 1000000)
         {
             Initialise();
             Bus = bus;
@@ -183,6 +194,7 @@ namespace BBC.CPU
             jamReported = reader.ReadBoolean();
             jamAddress = reader.ReadUInt64();
             nmiLineWasAsserted = reader.ReadBoolean();
+            Interlocked.Exchange(ref nmiPending, 0);
             Volatile.Write(ref irqLineAsserted, reader.ReadInt32());
             externalStallCycles = reader.ReadInt32();
             deferredIFlagPending = reader.ReadBoolean();
@@ -204,6 +216,7 @@ namespace BBC.CPU
             jamReported = false;
             jamAddress = 0;
             nmiLineWasAsserted = false;
+            Interlocked.Exchange(ref nmiPending, 0);
 
             while (IRQ_Buffer.TryDequeue(out _)) { }
             while (NMI_Buffer.TryDequeue(out _)) { }
@@ -277,8 +290,10 @@ namespace BBC.CPU
                             ProcessNMI();
                         nmiLineWasAsserted = nmiLineAsserted;
 
-                        while (NMI_Buffer.TryDequeue(out ulong nmiValue))
+                        if (NMI_Buffer.TryDequeue(out ulong nmiValue))
                         {
+                            Interlocked.Exchange(ref nmiPending, 0);
+                            Interlocked.Increment(ref nmiServicedCount);
                             if (nmiValue != 0xFFFA)
                                 ProcessNMI(nmiValue);
                             else
@@ -438,6 +453,10 @@ namespace BBC.CPU
                     LDA_ZPIY();
                     break;
 
+                case 0xB2:
+                    LDA_ZPI();
+                    break;
+
                 case 0xA2:
                     LDX_IM();
                     break;
@@ -534,6 +553,26 @@ namespace BBC.CPU
                     STA_ZPIY();
                     break;
 
+                case 0x92:
+                    STA_ZPI();
+                    break;
+
+                case 0x64:
+                    STZ_ZP();
+                    break;
+
+                case 0x74:
+                    STZ_ZPX();
+                    break;
+
+                case 0x9C:
+                    STZ_AB();
+                    break;
+
+                case 0x9E:
+                    STZ_ABX();
+                    break;
+
                 #endregion ST*
 
                 #region T**
@@ -590,6 +629,14 @@ namespace BBC.CPU
                     PHP();
                     break;
 
+                case 0xDA:
+                    PHX();
+                    break;
+
+                case 0x5A:
+                    PHY();
+                    break;
+
                 #endregion PH*
 
                 #region PL*
@@ -600,6 +647,14 @@ namespace BBC.CPU
 
                 case 0x28:
                     PLP();
+                    break;
+
+                case 0xFA:
+                    PLX();
+                    break;
+
+                case 0x7A:
+                    PLY();
                     break;
 
                 #endregion PL*
@@ -650,6 +705,10 @@ namespace BBC.CPU
                     DEY();
                     break;
 
+                case 0x3A:
+                    DECAC();
+                    break;
+
                 #endregion DE*
 
                 #region IN*
@@ -676,6 +735,10 @@ namespace BBC.CPU
 
                 case 0xC8:
                     INY();
+                    break;
+
+                case 0x1A:
+                    INCAC();
                     break;
 
                 #endregion IN*
@@ -712,6 +775,10 @@ namespace BBC.CPU
 
                 case 0xD1:
                     CMPYZI();
+                    break;
+
+                case 0xD2:
+                    CMPZI();
                     break;
 
                 #endregion CM*
@@ -782,6 +849,10 @@ namespace BBC.CPU
                     ADCYZI();
                     break;
 
+                case 0x72:
+                    ADCZI();
+                    break;
+
                 #endregion ADC
 
                 #region SBC
@@ -816,6 +887,10 @@ namespace BBC.CPU
 
                 case 0xF1:
                     SBCYZI();
+                    break;
+
+                case 0xF2:
+                    SBCZI();
                     break;
 
                 #endregion SBC
@@ -854,6 +929,10 @@ namespace BBC.CPU
                     EORYZI();
                     break;
 
+                case 0x52:
+                    EORZI();
+                    break;
+
                 #endregion EOR
 
                 #region ORA
@@ -888,6 +967,10 @@ namespace BBC.CPU
 
                 case 0x11:
                     ORAYZI();
+                    break;
+
+                case 0x12:
+                    ORAZI();
                     break;
 
                 #endregion ORA
@@ -926,6 +1009,10 @@ namespace BBC.CPU
                     ANDYZI();
                     break;
 
+                case 0x32:
+                    ANDZI();
+                    break;
+
                 #endregion AND
 
                 #region BIT
@@ -936,6 +1023,34 @@ namespace BBC.CPU
 
                 case 0x24:
                     BITZ();
+                    break;
+
+                case 0x89:
+                    BITI();
+                    break;
+
+                case 0x34:
+                    BITXZ();
+                    break;
+
+                case 0x3C:
+                    BITXA();
+                    break;
+
+                case 0x04:
+                    TSB_ZP();
+                    break;
+
+                case 0x0C:
+                    TSB_AB();
+                    break;
+
+                case 0x14:
+                    TRB_ZP();
+                    break;
+
+                case 0x1C:
+                    TRB_AB();
                     break;
 
                 #endregion BIT
@@ -1054,6 +1169,10 @@ namespace BBC.CPU
                     BMI();
                     break;
 
+                case 0x80:
+                    BRA();
+                    break;
+
                 case 0xd0:
                     BNE();
                     break;
@@ -1086,6 +1205,10 @@ namespace BBC.CPU
                     JMPAI();
                     break;
 
+                case 0x7C:
+                    JMPAXI();
+                    break;
+
                 case 0x20:
                     JSRA();
                     break;
@@ -1111,103 +1234,84 @@ namespace BBC.CPU
 
                 // LAX: load A and X from memory together.
                 case 0xA3: LAX(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 6; break;
-                case 0xA7: LAX(Zero_Page()); cyclesThisOperation += 3; break;
-                case 0xAF: LAX(Absolute()); cyclesThisOperation += 4; break;
+                case 0xA7: SMB(2); break;
+                case 0xAF: BBS(2); break;
                 case 0xB3: LAX(Zero_Page_Indirect_Y_Indexed()); cyclesThisOperation += 5; break;
-                case 0xB7: LAX(Y_Indexed_Zero_Page()); cyclesThisOperation += 4; break;
-                case 0xBF: LAX(Y_Indexed_Absolute()); cyclesThisOperation += 4; break;
+                case 0xB7: SMB(3); break;
+                case 0xBF: BBS(3); break;
 
                 // SAX: store A AND X; flags are untouched.
                 case 0x83: SAX(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 6; break;
-                case 0x87: SAX(Zero_Page()); cyclesThisOperation += 3; break;
-                case 0x8F: SAX(Absolute()); cyclesThisOperation += 4; break;
-                case 0x97: SAX(Y_Indexed_Zero_Page()); cyclesThisOperation += 4; break;
+                case 0x87: SMB(0); break;
+                case 0x8F: BBS(0); break;
+                case 0x97: SMB(1); break;
 
                 // DCP: decrement memory, then compare with A.
                 case 0xC3: DCP(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0xC7: DCP(Zero_Page()); cyclesThisOperation += 5; break;
-                case 0xCF: DCP(Absolute()); cyclesThisOperation += 6; break;
+                case 0xC7: SMB(4); break;
+                case 0xCF: BBS(4); break;
                 case 0xD3: DCP(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0xD7: DCP(X_Indexed_Zero_Page()); cyclesThisOperation += 6; break;
+                case 0xD7: SMB(5); break;
                 case 0xDB: DCP(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0xDF: DCP(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
+                case 0xDF: BBS(5); break;
 
                 // ISC/ISB: increment memory, then subtract with carry.
                 case 0xE3: ISC(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0xE7: ISC(Zero_Page()); cyclesThisOperation += 5; break;
-                case 0xEF: ISC(Absolute()); cyclesThisOperation += 6; break;
+                case 0xE7: SMB(6); break;
+                case 0xEF: BBS(6); break;
                 case 0xF3: ISC(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0xF7: ISC(X_Indexed_Zero_Page()); cyclesThisOperation += 6; break;
+                case 0xF7: SMB(7); break;
                 case 0xFB: ISC(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0xFF: ISC(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
+                case 0xFF: BBS(7); break;
 
                 // SLO: shift memory left, then OR into A.
                 case 0x03: SLO(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0x07: SLO(Zero_Page()); cyclesThisOperation += 5; break;
-                case 0x0F: SLO(Absolute()); cyclesThisOperation += 6; break;
+                case 0x07: RMB(0); break;
+                case 0x0F: BBR(0); break;
                 case 0x13: SLO(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0x17: SLO(X_Indexed_Zero_Page()); cyclesThisOperation += 6; break;
+                case 0x17: RMB(1); break;
                 case 0x1B: SLO(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0x1F: SLO(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
+                case 0x1F: BBR(1); break;
 
                 // SRE: shift memory right, then EOR into A.
                 case 0x43: SRE(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0x47: SRE(Zero_Page()); cyclesThisOperation += 5; break;
-                case 0x4F: SRE(Absolute()); cyclesThisOperation += 6; break;
+                case 0x47: RMB(4); break;
+                case 0x4F: BBR(4); break;
                 case 0x53: SRE(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0x57: SRE(X_Indexed_Zero_Page()); cyclesThisOperation += 6; break;
+                case 0x57: RMB(5); break;
                 case 0x5B: SRE(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0x5F: SRE(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
+                case 0x5F: BBR(5); break;
 
                 // RLA: rotate memory left, then AND into A.
                 case 0x23: RLA(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0x27: RLA(Zero_Page()); cyclesThisOperation += 5; break;
-                case 0x2F: RLA(Absolute()); cyclesThisOperation += 6; break;
+                case 0x27: RMB(2); break;
+                case 0x2F: BBR(2); break;
                 case 0x33: RLA(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0x37: RLA(X_Indexed_Zero_Page()); cyclesThisOperation += 6; break;
+                case 0x37: RMB(3); break;
                 case 0x3B: RLA(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0x3F: RLA(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
+                case 0x3F: BBR(3); break;
 
                 // RRA: rotate memory right, then add with carry.
                 case 0x63: RRA(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0x67: RRA(Zero_Page()); cyclesThisOperation += 5; break;
-                case 0x6F: RRA(Absolute()); cyclesThisOperation += 6; break;
+                case 0x67: RMB(6); break;
+                case 0x6F: BBR(6); break;
                 case 0x73: RRA(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0x77: RRA(X_Indexed_Zero_Page()); cyclesThisOperation += 6; break;
+                case 0x77: RMB(7); break;
                 case 0x7B: RRA(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0x7F: RRA(X_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
+                case 0x7F: BBR(7); break;
 
-                // Multi-byte NOPs still consume operand bytes on NMOS 6502.
-                case 0x1A:
-                case 0x3A:
-                case 0x5A:
-                case 0x7A:
-                case 0xDA:
-                case 0xFA:
-                    cyclesThisOperation += 2; break;
-                case 0x80:
+                // Multi-byte NOPs still consume operand bytes on 65C02.
                 case 0x82:
-                case 0x89:
                 case 0xC2:
                 case 0xE2:
                     Immediate(); cyclesThisOperation += 2; break;
-                case 0x04:
                 case 0x44:
-                case 0x64:
                     Zero_Page(); cyclesThisOperation += 3; break;
-                case 0x14:
-                case 0x34:
                 case 0x54:
-                case 0x74:
                 case 0xD4:
                 case 0xF4:
                     X_Indexed_Zero_Page(); cyclesThisOperation += 4; break;
-                case 0x0C:
-                    Absolute(); cyclesThisOperation += 4; break;
-                case 0x1C:
-                case 0x3C:
                 case 0x5C:
-                case 0x7C:
                 case 0xDC:
                 case 0xFC:
                     X_Indexed_Absolute(); cyclesThisOperation += 4; break;
@@ -1225,23 +1329,13 @@ namespace BBC.CPU
                 // Store-high variants used by some packed or protected code.
                 case 0x93: AHX_IY(); cyclesThisOperation += 6; break;
                 case 0x9B: TAS_AY(); cyclesThisOperation += 5; break;
-                case 0x9C: SHY_AX(); cyclesThisOperation += 5; break;
-                case 0x9E: SHX_AY(); cyclesThisOperation += 5; break;
                 case 0x9F: AHX_AY(); cyclesThisOperation += 5; break;
 
-                // JAM/KIL halts a real NMOS 6502 until reset.
+                // Keep NMOS KIL opcodes that remain invalid for the Tube CPU.
                 case 0x02:
-                case 0x12:
                 case 0x22:
-                case 0x32:
                 case 0x42:
-                case 0x52:
                 case 0x62:
-                case 0x72:
-                case 0x92:
-                case 0xB2:
-                case 0xD2:
-                case 0xF2:
                     jamAddress = (registers.PC - 1) & 0xFFFF;
                     jammed = true; cyclesThisOperation += 2; break;
 
@@ -1266,9 +1360,30 @@ namespace BBC.CPU
                 return 0;
             }
 
+            if (Volatile.Read(ref paused))
+                return 0;
+
+            if (Interlocked.Exchange(ref resetPending, 0) == 1)
+                DoReset();
+
+            cyclesThisOperation = 0;
             ushort pcBefore = (ushort)registers.PC;
             byte opcodeBefore = PeekByte(pcBefore);
-            int beforeCycles = cyclesThisOperation;
+            bool nmiLineAsserted = NmiLineAsserted?.Invoke() == true;
+            if (nmiLineAsserted && !nmiLineWasAsserted)
+                ProcessNMI();
+            nmiLineWasAsserted = nmiLineAsserted;
+
+            if (NMI_Buffer.TryDequeue(out ulong nmiValue))
+            {
+                Interlocked.Exchange(ref nmiPending, 0);
+                Interlocked.Increment(ref nmiServicedCount);
+                if (nmiValue != 0xFFFA)
+                    ProcessNMI(nmiValue);
+                else
+                    ProcessNMI();
+            }
+
             bool irqGate = !iFlagBeforeInstruction;
             while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
             {
@@ -1288,7 +1403,7 @@ namespace BBC.CPU
                 registers.Flags.I = deferredIFlagValue;
                 deferredIFlagPending = false;
             }
-            int elapsed = cyclesThisOperation - beforeCycles;
+            int elapsed = cyclesThisOperation;
             if (elapsed > 0)
             {
                 Interlocked.Add(ref totalCycles, elapsed);
@@ -1553,21 +1668,19 @@ namespace BBC.CPU
         private ulong AbsoluteIndirect()
         {
             ulong addr = Absolute();
-            byte lo;
-            byte hi;
-            if ((addr & 0x00FF) == 0xFF)
-            {
-                cyclesThisOperation += 2;
-                lo = ReadByteFromMemory((addr & 0xFF00) + 0xFF);
-                hi = ReadByteFromMemory((addr & 0xFF00));
-            }
-            else
-            {
-                lo = ReadByteFromMemory(addr);
-                hi = ReadByteFromMemory((addr + 1));
-            }
+            byte lo = ReadByteFromMemory(addr);
+            byte hi = ReadByteFromMemory((addr + 1) & 0xFFFF);
             ulong value = (ulong)((hi << 8) | lo);
             return value & 0xFFFF;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private ulong X_Indexed_AbsoluteIndirect()
+        {
+            ulong pointer = (Absolute() + registers.X) & 0xFFFF;
+            byte lo = ReadByteFromMemory(pointer);
+            byte hi = ReadByteFromMemory((pointer + 1) & 0xFFFF);
+            return (ulong)((hi << 8) | lo);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -1629,6 +1742,15 @@ namespace BBC.CPU
             ulong addr = value3 + registers.Y;
             if (CrossBoundary(addr, value3) && checkBoundary) { cyclesThisOperation += 1; }
             return addr & 0xFFFF;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private ulong Zero_Page_Indirect()
+        {
+            byte value = GetNextByteInstruction();
+            byte value1 = ReadByteFromMemory(value);
+            byte value2 = ReadByteFromMemory((byte)(value + 1));
+            return (ulong)((value2 << 8) | value1);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1696,6 +1818,13 @@ namespace BBC.CPU
         private void LDA_ZPIY()
         {
             registers.A = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
+            Set_FlagsNZ(registers.A);
+            cyclesThisOperation += 5;
+        }
+
+        private void LDA_ZPI()
+        {
+            registers.A = ReadByteFromMemory(Zero_Page_Indirect());
             Set_FlagsNZ(registers.A);
             cyclesThisOperation += 5;
         }
@@ -1814,6 +1943,36 @@ namespace BBC.CPU
         {
             WriteByteToMemory(Zero_Page_Indirect_Y_Indexed(false), registers.A);
             cyclesThisOperation += 6;
+        }
+
+        private void STA_ZPI()
+        {
+            WriteByteToMemory(Zero_Page_Indirect(), registers.A);
+            cyclesThisOperation += 5;
+        }
+
+        private void STZ_AB()
+        {
+            WriteByteToMemory(Absolute(), 0);
+            cyclesThisOperation += 4;
+        }
+
+        private void STZ_ABX()
+        {
+            WriteByteToMemory(X_Indexed_Absolute(false), 0);
+            cyclesThisOperation += 5;
+        }
+
+        private void STZ_ZP()
+        {
+            WriteByteToMemory(Zero_Page(), 0);
+            cyclesThisOperation += 3;
+        }
+
+        private void STZ_ZPX()
+        {
+            WriteByteToMemory(X_Indexed_Zero_Page(), 0);
+            cyclesThisOperation += 4;
         }
 
         private void STX_AB()
@@ -1938,6 +2097,18 @@ namespace BBC.CPU
             cyclesThisOperation += 3;
         }
 
+        private void PHX()
+        {
+            PushByteToStack(registers.X);
+            cyclesThisOperation += 3;
+        }
+
+        private void PHY()
+        {
+            PushByteToStack(registers.Y);
+            cyclesThisOperation += 3;
+        }
+
         #endregion PH*
 
         #region PL*
@@ -1955,6 +2126,20 @@ namespace BBC.CPU
             bool newI = (value & 0x04) != 0;
             registers.Flags.SetFlagsFromByte((byte)(value & ~0x04), 0xCB);
             ScheduleIFlag(newI);
+            cyclesThisOperation += 4;
+        }
+
+        private void PLX()
+        {
+            registers.X = PopByteFromStack();
+            Set_FlagsNZ(registers.X);
+            cyclesThisOperation += 4;
+        }
+
+        private void PLY()
+        {
+            registers.Y = PopByteFromStack();
+            Set_FlagsNZ(registers.Y);
             cyclesThisOperation += 4;
         }
 
@@ -2046,6 +2231,13 @@ namespace BBC.CPU
             cyclesThisOperation += 2;
         }
 
+        private void DECAC()
+        {
+            registers.A--;
+            Set_FlagsNZ(registers.A);
+            cyclesThisOperation += 2;
+        }
+
         #endregion DE*
 
         #region IN*
@@ -2103,6 +2295,13 @@ namespace BBC.CPU
             byte value1 = (byte)(registers.Y + 1);
             registers.Y = value1;
             Set_FlagsNZ(value1);
+            cyclesThisOperation += 2;
+        }
+
+        private void INCAC()
+        {
+            registers.A++;
+            Set_FlagsNZ(registers.A);
             cyclesThisOperation += 2;
         }
 
@@ -2176,6 +2375,15 @@ namespace BBC.CPU
         private void CMPYZI()
         {
             byte addr = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
+            byte value2 = (byte)(registers.A - addr);
+            registers.Flags.C = (addr <= registers.A);
+            Set_FlagsNZ(value2);
+            cyclesThisOperation += 5;
+        }
+
+        private void CMPZI()
+        {
+            byte addr = ReadByteFromMemory(Zero_Page_Indirect());
             byte value2 = (byte)(registers.A - addr);
             registers.Flags.C = (addr <= registers.A);
             Set_FlagsNZ(value2);
@@ -2304,6 +2512,13 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
+        private void ADCZI()
+        {
+            byte value = ReadByteFromMemory(Zero_Page_Indirect());
+            ADC(value);
+            cyclesThisOperation += 5;
+        }
+
         private void ADC(byte value)
         {
             int carry = registers.Flags.C ? 1 : 0;
@@ -2389,6 +2604,13 @@ namespace BBC.CPU
         private void SBCYZI()
         {
             byte value = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
+            SBC(value);
+            cyclesThisOperation += 5;
+        }
+
+        private void SBCZI()
+        {
+            byte value = ReadByteFromMemory(Zero_Page_Indirect());
             SBC(value);
             cyclesThisOperation += 5;
         }
@@ -2497,6 +2719,15 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
+        private void EORZI()
+        {
+            byte addr = ReadByteFromMemory(Zero_Page_Indirect());
+            byte value = (byte)(registers.A ^ addr);
+            registers.A = value;
+            Set_FlagsNZ(value);
+            cyclesThisOperation += 5;
+        }
+
         #endregion EOR
 
         #region ORA
@@ -2567,6 +2798,15 @@ namespace BBC.CPU
         private void ORAYZI()
         {
             byte addr = ReadByteFromMemory(Zero_Page_Indirect_Y_Indexed());
+            byte value = (byte)(registers.A | addr);
+            registers.A = value;
+            Set_FlagsNZ(value);
+            cyclesThisOperation += 5;
+        }
+
+        private void ORAZI()
+        {
+            byte addr = ReadByteFromMemory(Zero_Page_Indirect());
             byte value = (byte)(registers.A | addr);
             registers.A = value;
             Set_FlagsNZ(value);
@@ -2649,6 +2889,15 @@ namespace BBC.CPU
             cyclesThisOperation += 5;
         }
 
+        private void ANDZI()
+        {
+            byte addr = ReadByteFromMemory(Zero_Page_Indirect());
+            byte value = (byte)(registers.A & addr);
+            registers.A = value;
+            Set_FlagsNZ(value);
+            cyclesThisOperation += 5;
+        }
+
         #endregion AND
 
         #region BIT
@@ -2671,6 +2920,103 @@ namespace BBC.CPU
             registers.Flags.V = ((addr & (1 << 6)) != 0);
             registers.Flags.Z = (value == 0);
             cyclesThisOperation += 3;
+        }
+
+        private void BITI()
+        {
+            byte addr = Immediate();
+            registers.Flags.Z = (registers.A & addr) == 0;
+            cyclesThisOperation += 2;
+        }
+
+        private void BITXZ()
+        {
+            byte addr = ReadByteFromMemory(X_Indexed_Zero_Page());
+            byte value = (byte)(registers.A & addr);
+            registers.Flags.N = (addr & 0x80) != 0;
+            registers.Flags.V = (addr & 0x40) != 0;
+            registers.Flags.Z = value == 0;
+            cyclesThisOperation += 4;
+        }
+
+        private void BITXA()
+        {
+            byte addr = ReadByteFromMemory(X_Indexed_Absolute());
+            byte value = (byte)(registers.A & addr);
+            registers.Flags.N = (addr & 0x80) != 0;
+            registers.Flags.V = (addr & 0x40) != 0;
+            registers.Flags.Z = value == 0;
+            cyclesThisOperation += 4;
+        }
+
+        private void TSB_ZP()
+        {
+            ulong addr = Zero_Page();
+            byte value = ReadByteFromMemory(addr);
+            registers.Flags.Z = (registers.A & value) == 0;
+            WriteByteToMemory(addr, (byte)(value | registers.A));
+            cyclesThisOperation += 5;
+        }
+
+        private void TSB_AB()
+        {
+            ulong addr = Absolute();
+            byte value = ReadByteFromMemory(addr);
+            registers.Flags.Z = (registers.A & value) == 0;
+            WriteByteToMemory(addr, (byte)(value | registers.A));
+            cyclesThisOperation += 6;
+        }
+
+        private void TRB_ZP()
+        {
+            ulong addr = Zero_Page();
+            byte value = ReadByteFromMemory(addr);
+            registers.Flags.Z = (registers.A & value) == 0;
+            WriteByteToMemory(addr, (byte)(value & ~registers.A));
+            cyclesThisOperation += 5;
+        }
+
+        private void TRB_AB()
+        {
+            ulong addr = Absolute();
+            byte value = ReadByteFromMemory(addr);
+            registers.Flags.Z = (registers.A & value) == 0;
+            WriteByteToMemory(addr, (byte)(value & ~registers.A));
+            cyclesThisOperation += 6;
+        }
+
+        private void RMB(int bit)
+        {
+            ulong addr = Zero_Page();
+            byte value = ReadByteFromMemory(addr);
+            WriteByteToMemory(addr, (byte)(value & ~(1 << bit)));
+            cyclesThisOperation += 5;
+        }
+
+        private void SMB(int bit)
+        {
+            ulong addr = Zero_Page();
+            byte value = ReadByteFromMemory(addr);
+            WriteByteToMemory(addr, (byte)(value | (1 << bit)));
+            cyclesThisOperation += 5;
+        }
+
+        private void BBR(int bit)
+        {
+            byte zeroPage = GetNextByteInstruction();
+            byte offset = GetNextByteInstruction();
+            cyclesThisOperation += 5;
+            if ((ReadByteFromMemory(zeroPage) & (1 << bit)) == 0)
+                Branch(offset);
+        }
+
+        private void BBS(int bit)
+        {
+            byte zeroPage = GetNextByteInstruction();
+            byte offset = GetNextByteInstruction();
+            cyclesThisOperation += 5;
+            if ((ReadByteFromMemory(zeroPage) & (1 << bit)) != 0)
+                Branch(offset);
         }
 
         #endregion BIT
@@ -2972,6 +3318,14 @@ namespace BBC.CPU
                 Branch(value);
         }
 
+        private void BRA()
+        {
+            cyclesThisOperation += 2;
+            byte value = ReadByteFromMemory(registers.PC);
+            IncrementProgramCounter();
+            Branch(value);
+        }
+
         private void BNE()
         {
             cyclesThisOperation += 2;
@@ -3047,6 +3401,13 @@ namespace BBC.CPU
             ulong addr = AbsoluteIndirect();
             registers.PC = addr;
             cyclesThisOperation += 5;
+        }
+
+        private void JMPAXI()
+        {
+            ulong addr = X_Indexed_AbsoluteIndirect();
+            registers.PC = addr;
+            cyclesThisOperation += 6;
         }
 
         private void JSRA()

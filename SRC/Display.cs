@@ -86,6 +86,7 @@ namespace BBC
         private int pendingTraceToggleRequests;
         private int pendingPauseToggleRequests;
         private int pendingFrameAdvanceRequests;
+        private int pendingTube6502ToggleRequests;
         private HostMouseState mouseState;
         private bool relativeMouseMode;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
@@ -145,6 +146,8 @@ namespace BBC
         public bool ShiftLockLedActive { get; set; }
 
         public bool EmulationPaused { get; set; }
+
+        public bool Tube6502Enabled { get; set; }
 
         public string DefaultSaveStateFileName { get; set; } = "bbc-untitled.sav";
 
@@ -379,6 +382,13 @@ namespace BBC
         {
             int count = pendingFrameAdvanceRequests;
             pendingFrameAdvanceRequests = 0;
+            return count;
+        }
+
+        public int DrainTube6502ToggleRequests()
+        {
+            int count = pendingTube6502ToggleRequests;
+            pendingTube6502ToggleRequests = 0;
             return count;
         }
 
@@ -736,6 +746,9 @@ namespace BBC
                 case MenuCommand.TogglePause:
                     pendingPauseToggleRequests++;
                     break;
+                case MenuCommand.ToggleTube6502:
+                    pendingTube6502ToggleRequests++;
+                    break;
                 case MenuCommand.ToggleScanlines:
                     scanlinesEnabled = !scanlinesEnabled;
                     break;
@@ -759,6 +772,7 @@ namespace BBC
                 MenuCommand.ToggleFullScreen => fullScreenEnabled,
                 MenuCommand.ToggleShiftLock => bbcShiftLockEnabled,
                 MenuCommand.TogglePause => EmulationPaused,
+                MenuCommand.ToggleTube6502 => Tube6502Enabled,
                 _ => false
             };
         }
@@ -1866,6 +1880,7 @@ namespace BBC
             ShiftBreak,
             ControlBreak,
             TogglePause,
+            ToggleTube6502,
             ToggleScanlines,
             ToggleFullScreen,
             PasteClipboard,
@@ -1906,6 +1921,8 @@ namespace BBC
                     new MenuItem("BREAK", "F12", MenuCommand.Break),
                     new MenuItem("Shift-BREAK", "Shift+F12", MenuCommand.ShiftBreak),
                     new MenuItem("Ctrl-BREAK", "Ctrl+F12", MenuCommand.ControlBreak),
+                    MenuSeparator(),
+                    new MenuItem("6502 Co-Processor", "", MenuCommand.ToggleTube6502),
                     MenuSeparator(),
                     new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause)
                 ]),

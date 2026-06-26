@@ -1402,6 +1402,28 @@ namespace BBC
             return count;
         }
 
+        public string[] ReadMode7TextRows()
+        {
+            string[] rows = new string[Mode7Rows];
+
+            for (int row = 0; row < Mode7Rows; row++)
+            {
+                char[] line = new char[Mode7Columns];
+                int baseAddress = Mode7ScreenStart + row * Mode7Columns;
+
+                for (int column = 0; column < Mode7Columns; column++)
+                {
+                    byte value = memory[baseAddress + column];
+                    value &= 0x7F;
+                    line[column] = value >= 32 && value < 127 ? (char)value : ' ';
+                }
+
+                rows[row] = new string(line).TrimEnd();
+            }
+
+            return rows;
+        }
+
         private void ResetPalette()
         {
             ResetPaletteArray(paletteRegisters);

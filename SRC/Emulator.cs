@@ -13,6 +13,7 @@
 
 using BBC.CPU;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 
 namespace BBC
@@ -36,16 +37,21 @@ namespace BBC
                 return;
             }
 
+            if (options.Tube6502)
+                emulator.ConfigureTube6502(options.TubeHostRomPath, options.Tube6502RomPath);
+
             emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
             emulator.ConfigureStartupSpeedScale(options.SpeedScale);
 
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  ${Emulator.SidewaysRomStart:X4}-${Emulator.SidewaysRomEnd:X4}");
-            Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank}");
+            Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank} ({Path.GetFileName(emulator.DfsRomPath)})");
             if (emulator.AmxMouseRomPath is not null)
                 Console.WriteLine($"AMX ROM:    bank {Emulator.AmxMouseRomBank}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
+            if (emulator.tube6502 is not null)
+                Console.WriteLine($"Tube 6502:  reset PC ${emulator.tube6502.Cpu.registers.PC:X4} ({Path.GetFileName(emulator.Tube6502RomPath)})");
 
             foreach (MountRequest mount in options.Mounts)
             {
@@ -60,6 +66,9 @@ namespace BBC
                 }
             }
 
+            if (options.StartupCommands.Count > 0)
+                emulator.QueueBootScript(string.Join('\r', options.StartupCommands));
+
             if (options.HeadlessMilliseconds > 0)
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
             else
@@ -71,12 +80,41 @@ namespace BBC
             int headlessMilliseconds = 0;
             List<MountRequest> mounts = new List<MountRequest>();
             List<string> createdBlankImages = new List<string>();
+            List<string> startupCommands = new List<string>();
             string? printAutoLoadPath = null;
             double speedScale = 1.0;
             bool autoRunDisc = true;
+            bool tube6502 = false;
+            string? tubeHostRomPath = null;
+            string? tube6502RomPath = null;
 
             for (int i = 0; i < args.Length; i++)
             {
+                if (string.Equals(args[i], "--tube-6502", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(args[i], "--tube-enable", StringComparison.OrdinalIgnoreCase))
+                {
+                    tube6502 = true;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--tube-host-rom", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException("--tube-host-rom requires a ROM path.");
+
+                    tubeHostRomPath = args[++i];
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--tube-6502-rom", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException("--tube-6502-rom requires a ROM path.");
+
+                    tube6502RomPath = args[++i];
+                    continue;
+                }
+
                 if (string.Equals(args[i], "--print-autoload", StringComparison.OrdinalIgnoreCase))
                 {
                     if (i + 1 >= args.Length)
@@ -101,6 +139,15 @@ namespace BBC
                         throw new ArgumentException("--speed requires a value such as 0.25 or 25%.");
 
                     i++;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--type", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException("--type requires text to type into the BBC keyboard buffer.");
+
+                    startupCommands.Add(args[++i]);
                     continue;
                 }
 
@@ -163,7 +210,7 @@ namespace BBC
                     mounts.Add(new MountRequest(blankImage, null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mounts, printAutoLoadPath, speedScale, autoRunDisc);
+            return new StartupOptions(headlessMilliseconds, mounts, printAutoLoadPath, speedScale, autoRunDisc, tube6502, tubeHostRomPath, tube6502RomPath, startupCommands);
         }
 
         private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
@@ -264,7 +311,16 @@ namespace BBC
 
         private readonly record struct MountRequest(string Path, int? Drive);
 
-        private readonly record struct StartupOptions(int HeadlessMilliseconds, IReadOnlyList<MountRequest> Mounts, string? PrintAutoLoadPath, double SpeedScale, bool AutoRunDisc);
+        private readonly record struct StartupOptions(
+            int HeadlessMilliseconds,
+            IReadOnlyList<MountRequest> Mounts,
+            string? PrintAutoLoadPath,
+            double SpeedScale,
+            bool AutoRunDisc,
+            bool Tube6502,
+            string? TubeHostRomPath,
+            string? Tube6502RomPath,
+            IReadOnlyList<string> StartupCommands);
 
         private sealed class RuntimeTracePcSample
         {
@@ -301,9 +357,13 @@ namespace BBC
         private const string OsRomFileName = "OS12.rom";
         private const string BasicRomFileName = "BASIC2.rom";
         private const string DfsRomFileName = "DFS-0.9.rom";
+        private const string TubeHostRomFileName = "DNFS302.rom";
+        private const string Tube6502RomFileName = "6502tube_120.rom";
         private const string AmxMouseRomFileName = "AMXMSE331.rom";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
         private const string DfsRomMarker = "DFS\0" + "0.90";
+        private const string DnfsRomMarker = "DFS,NET";
+        private const string Tube6502RomMarker = "6502 TUBE";
         private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
         private const string OsRomMarker = "BBC Computer";
         private const string AmxMouseRomMarker = "AMX Mouse Support";
@@ -358,6 +418,12 @@ namespace BBC
         private readonly uPD7002_ADC adc = new uPD7002_ADC();
         private readonly HostFilingSystem hostFilingSystem;
         private readonly Intel8271_Disk discController;
+        private readonly TubeUla tubeUla = new TubeUla();
+        private SecondProcessor6502? tube6502;
+        private string? configuredTubeHostRomPath;
+        private string? configuredTube6502RomPath;
+        private bool tube6502Configured;
+        private bool tubeHostIrqAsserted;
         private readonly DiscDriveSound? discDriveSound;
         private JoystickState joystickState;
         private bool mouseEnabled;
@@ -381,8 +447,9 @@ namespace BBC
         private long runtimeTraceInstructionCount;
         private int runtimeTraceFrame;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 1;
+        private const int SaveStateVersion = 3;
         private int runtimeTraceActive;
+        private long nextTubeDebugDumpTicks;
 
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
 
@@ -402,6 +469,8 @@ namespace BBC
 
         public string? AmxMouseRomPath { get; private set; }
 
+        public string? Tube6502RomPath { get; private set; }
+
         public Emulator()
         {
             Sound = new SN76489_Sound();
@@ -417,6 +486,11 @@ namespace BBC
             discController.DriveMotorStarted += _ => discDriveSound?.MotorStarted();
             discController.DriveMotorStopped += _ => discDriveSound?.MotorStopped();
             discController.DriveSeek += (_, trackDelta) => discDriveSound?.Seek(trackDelta);
+            tubeUla.HostIrqChanged += asserted =>
+            {
+                tubeHostIrqAsserted = asserted;
+                UpdateCpuIrqLine();
+            };
             Video = new HD6845_Video(Memory.Memory);
             systemVia.ExternalVsyncLineEnabled = true;
             Video.VsyncChanged += systemVia.SetVsyncLine;
@@ -433,6 +507,16 @@ namespace BBC
                 systemVia.SignalAdcEndOfConversion(eocActive);
                 UpdateCpuIrqLine();
             };
+        }
+
+        public void ConfigureTube6502(string? hostRomPath = null, string? parasiteRomPath = null)
+        {
+            if (initialised)
+                throw new InvalidOperationException("Tube configuration must be applied before the emulator is initialised.");
+
+            tube6502Configured = true;
+            configuredTubeHostRomPath = hostRomPath;
+            configuredTube6502RomPath = parasiteRomPath;
         }
 
         /// <summary>MOS startup remains at real speed so the power-on path sounds and feels like a BBC.</summary>
@@ -487,8 +571,11 @@ namespace BBC
             {
                 if (cpuException is not null)
                     throw new InvalidOperationException("CPU execution failed.", cpuException);
+                if (tube6502?.CpuException is not null)
+                    throw new InvalidOperationException("Tube 6502 execution failed.", tube6502.CpuException);
 
                 DrainHostPauseRequests(Display);
+                DrainHostTube6502ToggleRequests(Display);
                 DrainHostBreakInput(Display);
                 DrainHostDiscLoads(Display);
                 DrainHostStateActions(Display);
@@ -512,8 +599,11 @@ namespace BBC
                 Display.CassetteMotorLedActive = tapeAciaStub.MotorRunning;
                 Display.CapsLockLedActive = bbcCapsLockState;
                 Display.EmulationPaused = emulationPaused;
+                Display.Tube6502Enabled = tube6502 is not null;
                 Display.DefaultSaveStateFileName = CreateSaveStateFileName();
                 Display.Present();
+
+                DumpTubeDebugStateIfDue();
 
                 WaitUntil(nextFrame);
                 nextFrame += frameTicks;
@@ -525,6 +615,27 @@ namespace BBC
             }
 
             StopCpu();
+        }
+
+        private void DumpTubeDebugStateIfDue()
+        {
+            if (tube6502 is null || Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") != "1")
+                return;
+
+            long now = Stopwatch.GetTimestamp();
+            if (now < nextTubeDebugDumpTicks)
+                return;
+
+            nextTubeDebugDumpTicks = now + Stopwatch.Frequency;
+            Console.WriteLine($"GUI Tube debug: host PC ${Cpu.registers.PC & 0xFFFF:X4}, tube PC ${tube6502.Cpu.registers.PC & 0xFFFF:X4}, overlay {(tube6502.BootRomEnabled ? "on" : "off")}, requested NMI {tube6502.QueuedParasiteNmis}, queued {tube6502.CpuQueuedNmis}, serviced {tube6502.CpuServicedNmis}");
+            Console.WriteLine(tubeUla.DebugStatus());
+            Console.WriteLine($"Host registers: {FormatRegisters(Cpu.registers)}");
+            Console.WriteLine($"Tube registers: {FormatRegisters(tube6502.Cpu.registers)}");
+            Console.WriteLine($"Host bytes: {FormatMemoryBytes(Memory.Memory, (ushort)Cpu.registers.PC, 12)}");
+            Console.WriteLine($"Tube bytes: {FormatMemoryBytes(tube6502.Memory, (ushort)tube6502.Cpu.registers.PC, 12)}");
+            Console.WriteLine("Recent Tube ops:");
+            foreach (string line in tubeUla.RecentTrace())
+                Console.WriteLine(line);
         }
 
         public void RunHeadless(TimeSpan duration)
@@ -554,10 +665,35 @@ namespace BBC
 
             if (cpuException is not null)
                 throw new InvalidOperationException("CPU execution failed.", cpuException);
+            if (tube6502?.CpuException is not null)
+                throw new InvalidOperationException("Tube 6502 execution failed.", tube6502.CpuException);
 
             Console.WriteLine($"Headless PC: ${Cpu.registers.PC:X4}");
+            if (tube6502 is not null)
+            {
+                Console.WriteLine($"Tube 6502 PC: ${tube6502.Cpu.registers.PC:X4}");
+                Console.WriteLine($"Tube 6502 boot ROM overlay: {(tube6502.BootRomEnabled ? "enabled" : "disabled")}");
+                if (Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1")
+                {
+                    Console.WriteLine(tubeUla.DebugStatus());
+                    Console.WriteLine($"Host registers: {FormatRegisters(Cpu.registers)}");
+                    Console.WriteLine($"Tube registers: {FormatRegisters(tube6502.Cpu.registers)}");
+                    Console.WriteLine($"Host bytes: {FormatMemoryBytes(Memory.Memory, (ushort)Cpu.registers.PC, 12)}");
+                    Console.WriteLine($"Tube bytes: {FormatMemoryBytes(tube6502.Memory, (ushort)tube6502.Cpu.registers.PC, 12)}");
+                    Console.WriteLine($"Host stack: {FormatMemoryBytes(Memory.Memory, (ushort)(0x0100 + Cpu.registers.S), 16)}");
+                    Console.WriteLine($"Tube stack: {FormatMemoryBytes(tube6502.Memory, (ushort)(0x0100 + tube6502.Cpu.registers.S), 16)}");
+                    Console.WriteLine("Recent Tube ops:");
+                    foreach (string line in tubeUla.RecentTrace())
+                        Console.WriteLine(line);
+                }
+                if (tube6502.Cpu.Jammed)
+                    Console.WriteLine($"Tube 6502 jam bytes: {FormatMemoryBytes(tube6502.Memory, tube6502.Cpu.JamAddress, 16)}");
+            }
             Console.WriteLine($"Mode 7 non-blank cells: {Video.CountMode7NonBlankCells()}");
             Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
+            Console.WriteLine("Mode 7 text:");
+            foreach (string row in Video.ReadMode7TextRows())
+                Console.WriteLine(row);
         }
 
         public void MountHostFile(string path, bool autoRunDisc = true, int? requestedDrive = null)
@@ -623,6 +759,7 @@ namespace BBC
             }
             discController.StopTrace();
             StopRuntimeTrace();
+            tube6502?.Dispose();
             Sound.Dispose();
             Display?.Dispose();
         }
@@ -645,6 +782,8 @@ namespace BBC
                 return;
 
             cpuException = null;
+            tube6502?.SetPaused(emulationPaused);
+            tube6502?.Start();
             Cpu.SetPaused(emulationPaused);
             cpuThread = new Thread(RunCpu)
             {
@@ -656,6 +795,7 @@ namespace BBC
 
         private void StopCpu()
         {
+            tube6502?.Stop();
             Cpu.Stop();
 
             if (cpuThread is not null && cpuThread.IsAlive)
@@ -686,6 +826,8 @@ namespace BBC
             hostDiscActivityLedUntilTicks = 0;
             joystickState = default;
             adc.Reset();
+            tubeUla.Reset();
+            tube6502?.Reset();
             UpdateAdcChannels();
             Cpu.SetIrqLine(false);
             SetEmulationPaused(false);
@@ -733,6 +875,7 @@ namespace BBC
             discController.Tick(cycles);
             adc.Tick(cycles);
             TickCapsLockTap(cycles);
+            tube6502?.AdvanceHostCycles(cycles);
 
             UpdateCpuIrqLine();
         }
@@ -742,6 +885,13 @@ namespace BBC
             int count = display.DrainPauseToggleRequests();
             for (int i = 0; i < count; i++)
                 SetEmulationPaused(!emulationPaused);
+        }
+
+        private void DrainHostTube6502ToggleRequests(Display display)
+        {
+            int count = display.DrainTube6502ToggleRequests();
+            for (int i = 0; i < count; i++)
+                SetTube6502Enabled(tube6502 is null);
         }
 
         private void DrainHostFrameAdvanceRequests(Display display)
@@ -761,6 +911,7 @@ namespace BBC
 
             emulationPaused = paused;
             Cpu.SetPaused(paused);
+            tube6502?.SetPaused(paused);
             Sound.SetHostOutputPaused(paused);
 
             if (Display is not null)
@@ -817,7 +968,7 @@ namespace BBC
 
         private void UpdateCpuIrqLine()
         {
-            Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted);
+            Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted || tubeHostIrqAsserted);
         }
 
         private bool HandleHostFirmwareHooks()
@@ -1238,6 +1389,12 @@ namespace BBC
                 discController.SaveState(writer);
                 Sound.SaveState(writer);
                 Video.SaveState(writer);
+                writer.Write(tube6502 is not null);
+                if (tube6502 is not null)
+                {
+                    tubeUla.SaveState(writer);
+                    tube6502.SaveState(writer);
+                }
             });
         }
 
@@ -1255,7 +1412,7 @@ namespace BBC
                     throw new InvalidDataException("Not a BBC Model B save state.");
 
                 int version = reader.ReadInt32();
-                if (version != SaveStateVersion)
+                if (version < 1 || version > SaveStateVersion)
                     throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
                 Cpu.LoadState(reader);
@@ -1290,6 +1447,23 @@ namespace BBC
                 discController.LoadState(reader);
                 Sound.LoadState(reader);
                 Video.LoadState(reader);
+                if (version >= 2)
+                {
+                    bool saveHasTube = reader.ReadBoolean();
+                    if (saveHasTube)
+                    {
+                        if (tube6502 is null)
+                            throw new InvalidDataException("This save state requires the 6502 Tube co-processor.");
+
+                        tubeUla.LoadState(reader, version);
+                        tube6502.LoadState(reader, version);
+                    }
+                    else
+                    {
+                        tubeUla.Reset();
+                        tube6502?.Reset();
+                    }
+                }
                 Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
                 UpdateCpuIrqLine();
                 UpdateAdcChannels();
@@ -1302,6 +1476,7 @@ namespace BBC
         {
             bool wasPaused = emulationPaused;
             Cpu.SetPaused(true);
+            tube6502?.SetPaused(true);
             Sound.SetHostOutputPaused(true);
             Thread.Sleep(5);
             try
@@ -1311,6 +1486,7 @@ namespace BBC
             finally
             {
                 Cpu.SetPaused(wasPaused);
+                tube6502?.SetPaused(wasPaused);
                 Sound.SetHostOutputPaused(wasPaused);
             }
         }
@@ -1370,6 +1546,31 @@ namespace BBC
         private static string? ReadString(BinaryReader reader)
         {
             return reader.ReadBoolean() ? reader.ReadString() : null;
+        }
+
+        private static string FormatRegisters(BBC.CPU.Registers registers)
+        {
+            return $"PC=${registers.PC & 0xFFFF:X4} A=${registers.A:X2} X=${registers.X:X2} Y=${registers.Y:X2} S=${registers.S:X2} P=${registers.P:X2}";
+        }
+
+        private static string FormatMemoryBytes(byte[] memory, ushort centerAddress, int radius)
+        {
+            StringBuilder builder = new StringBuilder();
+            int start = Math.Max(0, centerAddress - radius);
+            int end = Math.Min(memory.Length - 1, centerAddress + radius);
+
+            for (int address = start; address <= end; address++)
+            {
+                if (builder.Length > 0)
+                    builder.Append(' ');
+
+                builder.Append('$');
+                builder.Append(address.ToString("X4", CultureInfo.InvariantCulture));
+                builder.Append(':');
+                builder.Append(memory[address].ToString("X2", CultureInfo.InvariantCulture));
+            }
+
+            return builder.ToString();
         }
 
         private void DrainHostScreenshotRequests(Display display)
@@ -1778,7 +1979,66 @@ namespace BBC
 
             Array.Fill(display.FrameBuffer, DisplayBlack);
             display.Present();
+            tubeUla.Reset();
+            tube6502?.Reset();
             Cpu.RequestReset();
+        }
+
+        private void SetTube6502Enabled(bool enabled)
+        {
+            if (enabled == (tube6502 is not null))
+                return;
+
+            bool wasPaused = emulationPaused;
+            Cpu.SetPaused(true);
+            tube6502?.SetPaused(true);
+            Sound.SetHostOutputPaused(true);
+
+            try
+            {
+                if (enabled)
+                {
+                    string romRoot = GetRomRoot();
+                    DfsRomPath = configuredTubeHostRomPath ?? Path.Combine(romRoot, TubeHostRomFileName);
+                    Tube6502RomPath = configuredTube6502RomPath ?? Path.Combine(romRoot, Tube6502RomFileName);
+                    ValidateRom(DfsRomPath, DnfsRomMarker, RomSize / 2, RomSize);
+                    ValidateRom(Tube6502RomPath, Tube6502RomMarker, 1, RomSize);
+                    LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
+
+                    tubeUla.Reset();
+                    tube6502 = new SecondProcessor6502(tubeUla);
+                    tube6502.LoadRom(Tube6502RomPath);
+                    tube6502.SetPaused(emulationPaused);
+                    tube6502.Reset();
+                    tube6502.Start();
+                }
+                else
+                {
+                    string romRoot = GetRomRoot();
+                    DfsRomPath = Path.Combine(romRoot, DfsRomFileName);
+                    Tube6502RomPath = null;
+                    ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
+                    LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
+
+                    tube6502?.Dispose();
+                    tube6502 = null;
+                    tubeUla.Reset();
+                }
+
+                tube6502Configured = enabled;
+                UpdateCpuIrqLine();
+
+                Display?.ShowNotification(
+                    enabled ? "6502 Co-Processor enabled" : "6502 Co-Processor disabled",
+                    "Press Ctrl-BREAK for the BBC to recognise the change",
+                    6000);
+            }
+            finally
+            {
+                Cpu.SetPaused(wasPaused);
+                tube6502?.SetPaused(wasPaused);
+                Sound.SetHostOutputPaused(wasPaused);
+            }
         }
 
         private void HandleEscapeKeyPress()
@@ -1985,25 +2245,27 @@ namespace BBC
 
         private void LoadSystemRoms()
         {
-            string romRoot = Path.Combine(AppContext.BaseDirectory, RomDirectory);
-            if (!Directory.Exists(romRoot))
-                romRoot = Path.Combine(Environment.CurrentDirectory, RomDirectory);
-
-            if (!Directory.Exists(romRoot))
-                throw new DirectoryNotFoundException($"ROM directory not found: {romRoot}");
+            string romRoot = GetRomRoot();
 
             OsRomPath = Path.Combine(romRoot, OsRomFileName);
             BasicRomPath = Path.Combine(romRoot, BasicRomFileName);
-            DfsRomPath = Path.Combine(romRoot, DfsRomFileName);
+            bool tubeEnabled = tube6502Configured;
+            DfsRomPath = configuredTubeHostRomPath ?? Path.Combine(romRoot, tubeEnabled ? TubeHostRomFileName : DfsRomFileName);
             AmxMouseRomPath = Path.Combine(romRoot, AmxMouseRomFileName);
+            Tube6502RomPath = configuredTube6502RomPath ?? (tubeEnabled ? Path.Combine(romRoot, Tube6502RomFileName) : null);
 
             ValidateRom(OsRomPath, OsRomMarker, RomSize);
             ValidateRom(BasicRomPath, BasicRomMarker, RomSize);
-            ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
+            if (tubeEnabled)
+                ValidateRom(DfsRomPath, DnfsRomMarker, RomSize / 2, RomSize);
+            else
+                ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
             if (File.Exists(AmxMouseRomPath))
                 ValidateRom(AmxMouseRomPath, AmxMouseRomMarker, RomSize);
             else
                 AmxMouseRomPath = null;
+            if (Tube6502RomPath is not null)
+                ValidateRom(Tube6502RomPath, Tube6502RomMarker, 1, RomSize);
 
             Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
 
@@ -2014,6 +2276,26 @@ namespace BBC
             hostFilingSystem.MouseCommandFallbackEnabled = !amxMouseRomLoaded;
             if (amxMouseRomLoaded)
                 LoadSidewaysRomBank(AmxMouseRomPath!, AmxMouseRomBank);
+
+            if (Tube6502RomPath is not null)
+            {
+                tube6502 = new SecondProcessor6502(tubeUla);
+                tube6502.LoadRom(Tube6502RomPath);
+                tubeUla.Reset();
+                tube6502.Reset();
+            }
+        }
+
+        private static string GetRomRoot()
+        {
+            string romRoot = Path.Combine(AppContext.BaseDirectory, RomDirectory);
+            if (!Directory.Exists(romRoot))
+                romRoot = Path.Combine(Environment.CurrentDirectory, RomDirectory);
+
+            if (!Directory.Exists(romRoot))
+                throw new DirectoryNotFoundException($"ROM directory not found: {romRoot}");
+
+            return romRoot;
         }
 
         private void LoadSidewaysRomBank(string path, int bank)
@@ -2144,6 +2426,9 @@ namespace BBC
             if (uPD7002_ADC.IsAddress(address))
                 return adc.Read(address);
 
+            if (TubeUla.IsHostAddress(address) && tube6502 is not null)
+                return tubeUla.ReadHost(address);
+
             return address switch
             {
                 0xFE30 => (byte)selectedSidewaysRom,
@@ -2188,6 +2473,12 @@ namespace BBC
             if (uPD7002_ADC.IsAddress(address))
             {
                 adc.Write(address, value);
+                return;
+            }
+
+            if (TubeUla.IsHostAddress(address) && tube6502 is not null)
+            {
+                tubeUla.WriteHost(address, value);
                 return;
             }
 
