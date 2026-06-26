@@ -133,6 +133,8 @@ namespace BBC
         private int infoRomSlot = -1;
         private int logicalWidth;
         private int logicalHeight;
+        private int uiMouseX = -1;
+        private int uiMouseY = -1;
         private SdlRect viewportRect;
         private string notificationTitle = string.Empty;
         private string notificationBody = string.Empty;
@@ -160,6 +162,10 @@ namespace BBC
         public bool Drive0Mounted { get; set; }
 
         public bool Drive1Mounted { get; set; }
+
+        public string? Drive0Label { get; set; }
+
+        public string? Drive1Label { get; set; }
 
         public bool CassetteMotorLedActive { get; set; }
 
@@ -1280,6 +1286,7 @@ namespace BBC
             DrawDriveGlyph(drive1X, glyphY, Drive1Mounted, Drive1ActivityLedActive);
             DrawDriveNumber(drive0X, glyphY, 0);
             DrawDriveNumber(drive1X, glyphY, 1);
+            DrawHoveredDriveLabel(drive0X, drive1X, glyphY);
         }
 
         private static int GetBottomOverlayHeight()
@@ -1348,6 +1355,56 @@ namespace BBC
             int centerY = glyphY + DriveLedInset + radius;
 
             DrawRoundLed(centerX, centerY, radius, 220, 0, 0);
+        }
+
+        private void DrawHoveredDriveLabel(int drive0X, int drive1X, int glyphY)
+        {
+            string? label = null;
+            int centerX = 0;
+
+            if (Drive0Mounted && IsMouseOverDriveGlyph(drive0X, glyphY))
+            {
+                label = FormatDriveLabel(0, Drive0Label);
+                centerX = drive0X + (DriveGlyphWidth / 2);
+            }
+            else if (Drive1Mounted && IsMouseOverDriveGlyph(drive1X, glyphY))
+            {
+                label = FormatDriveLabel(1, Drive1Label);
+                centerX = drive1X + (DriveGlyphWidth / 2);
+            }
+
+            if (string.IsNullOrWhiteSpace(label))
+                return;
+
+            const int paddingX = 6;
+            const int paddingY = 4;
+            const int maxColumns = 34;
+            string text = TrimRendererText(label, maxColumns);
+            int width = GetRendererTextWidth(text) + (paddingX * 2);
+            int height = NotificationGlyphHeight + (paddingY * 2);
+            int x = Math.Clamp(centerX - (width / 2), 4, logicalWidth - width - 4);
+            int y = Math.Max(TopMenuHeight + 2, glyphY - height - 6);
+
+            SdlRect background = new SdlRect(x, y, width, height);
+            _ = SDL_SetRenderDrawColor(renderer, 12, 12, 12, 235);
+            _ = SDL_RenderFillRect(renderer, ref background);
+            _ = SDL_SetRenderDrawColor(renderer, 112, 112, 112, 255);
+            DrawRectOutline(background);
+            DrawRendererText(text, x + paddingX, y + paddingY, 220, 220, 220);
+        }
+
+        private bool IsMouseOverDriveGlyph(int glyphX, int glyphY)
+        {
+            return uiMouseX >= glyphX
+                && uiMouseX < glyphX + DriveGlyphWidth
+                && uiMouseY >= glyphY
+                && uiMouseY < glyphY + DriveGlyphHeight;
+        }
+
+        private static string FormatDriveLabel(int drive, string? label)
+        {
+            string disc = string.IsNullOrWhiteSpace(label) ? "disc" : label.Trim();
+            return $"{drive}: {disc}";
         }
 
         private void DrawRoundLed(int centerX, int centerY, int radius, byte red, byte green, byte blue)
@@ -2126,6 +2183,9 @@ namespace BBC
             float logicalY = hostY;
             if (renderer != IntPtr.Zero)
                 RenderWindowToLogical(hostX, hostY, out logicalX, out logicalY);
+
+            uiMouseX = (int)Math.Round(logicalX);
+            uiMouseY = (int)Math.Round(logicalY);
 
             int bbcX = relativeMouseMode
                 ? mouseState.X + relativeX

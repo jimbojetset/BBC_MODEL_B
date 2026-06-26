@@ -637,6 +637,8 @@ namespace BBC
                 DrainHostTraceToggleRequests(Display);
                 Display.Drive0Mounted = discController.IsPhysicalDriveMounted(0);
                 Display.Drive1Mounted = discController.IsPhysicalDriveMounted(1);
+                Display.Drive0Label = discController.GetPhysicalDriveLabel(0);
+                Display.Drive1Label = discController.GetPhysicalDriveLabel(1);
                 Display.Drive0ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(0)
                     || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
                 Display.Drive1ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(1);

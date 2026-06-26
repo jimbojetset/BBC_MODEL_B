@@ -113,6 +113,14 @@ namespace BBC
             return drive is >= 0 and <= 1 && driveActivityLedActive[drive];
         }
 
+        public string? GetPhysicalDriveLabel(int drive)
+        {
+            if (drive is < 0 or > 1)
+                return null;
+
+            return mountedFileNames[drive] ?? mountedFileNames[drive + 2];
+        }
+
         public string? AutoLoadCommand => TryGetBootExecScript(out string? script) && script is not null
             ? "*EXEC !BOOT"
             : null;
