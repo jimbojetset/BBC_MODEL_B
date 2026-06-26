@@ -43,6 +43,8 @@ namespace BBC
             emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
             emulator.ConfigureStartupSpeedScale(options.SpeedScale);
 
+            emulator.startupLoadStatePath = options.LoadStatePath;
+
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  bank {Emulator.BasicRomBank} ({Path.GetFileName(emulator.BasicRomPath)})");
@@ -52,6 +54,9 @@ namespace BBC
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
             if (emulator.tube6502 is not null)
                 Console.WriteLine($"Tube 6502:  reset PC ${emulator.tube6502.Cpu.registers.PC:X4} ({Path.GetFileName(emulator.Tube6502RomPath)})");
+
+            if (!string.IsNullOrWhiteSpace(options.LoadStatePath))
+                Console.WriteLine($"Startup state: {options.LoadStatePath}");
 
             foreach (MountRequest mount in options.Mounts)
             {
@@ -82,6 +87,7 @@ namespace BBC
             List<string> createdBlankImages = new List<string>();
             List<string> startupCommands = new List<string>();
             string? printAutoLoadPath = null;
+            string? loadStatePath = null;
             double speedScale = 1.0;
             bool autoRunDisc = true;
             bool tube6502 = false;
@@ -121,6 +127,15 @@ namespace BBC
                         throw new ArgumentException("--print-autoload requires an SSD path.");
 
                     printAutoLoadPath = args[++i];
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--load-state", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException("--load-state requires a .sav path.");
+
+                    loadStatePath = args[++i];
                     continue;
                 }
 
@@ -210,7 +225,7 @@ namespace BBC
                     mounts.Add(new MountRequest(blankImage, null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mounts, printAutoLoadPath, speedScale, autoRunDisc, tube6502, tubeHostRomPath, tube6502RomPath, startupCommands);
+            return new StartupOptions(headlessMilliseconds, mounts, printAutoLoadPath, loadStatePath, speedScale, autoRunDisc, tube6502, tubeHostRomPath, tube6502RomPath, startupCommands);
         }
 
         private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
@@ -309,12 +324,24 @@ namespace BBC
                 or InvalidOperationException;
         }
 
+        private static bool IsUserStateException(Exception exception)
+        {
+            return exception is FileNotFoundException
+                or DirectoryNotFoundException
+                or UnauthorizedAccessException
+                or IOException
+                or InvalidDataException
+                or EndOfStreamException
+                or InvalidOperationException;
+        }
+
         private readonly record struct MountRequest(string Path, int? Drive);
 
         private readonly record struct StartupOptions(
             int HeadlessMilliseconds,
             IReadOnlyList<MountRequest> Mounts,
             string? PrintAutoLoadPath,
+            string? LoadStatePath,
             double SpeedScale,
             bool AutoRunDisc,
             bool Tube6502,
@@ -442,6 +469,7 @@ namespace BBC
         private long hostDiscActivityLedUntilTicks;
         private double requestedStartupSpeedScale = 1.0;
         private bool startupSpeedScaleApplied = true;
+        private string? startupLoadStatePath;
         private int capsLockTapPulseCycles;
         private bool capsLockTapPressed;
         private bool hostCapsLockState;
@@ -576,6 +604,11 @@ namespace BBC
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
             Display.DefaultSaveStateFileName = CreateSaveStateFileName();
             Display.SetRomSlots(sidewaysRomSlots);
+            if (!LoadStartupStateIfRequested(Display))
+            {
+                StopCpu();
+                return;
+            }
             while (Display.PumpEvents())
             {
                 if (cpuException is not null)
@@ -659,6 +692,11 @@ namespace BBC
 
             long deadline = Stopwatch.GetTimestamp() + (long)(duration.TotalSeconds * Stopwatch.Frequency);
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            if (!LoadStartupStateIfRequested(null))
+            {
+                StopCpu();
+                return;
+            }
 
             while (Stopwatch.GetTimestamp() < deadline)
             {
@@ -1439,6 +1477,29 @@ namespace BBC
                     display.ShowNotification("State failed", ex.Message, 4000);
                     Console.WriteLine($"State action failed: {ex.Message}");
                 }
+            }
+        }
+
+        private bool LoadStartupStateIfRequested(Display? display)
+        {
+            string? path = startupLoadStatePath;
+            if (string.IsNullOrWhiteSpace(path))
+                return true;
+
+            startupLoadStatePath = null;
+            try
+            {
+                LoadStateFile(path);
+                display?.ShowNotification("State loaded", Path.GetFileName(path), 2000);
+                Console.WriteLine($"Loaded state: {path}");
+                return true;
+            }
+            catch (Exception ex) when (IsUserStateException(ex))
+            {
+                display?.ShowNotification("State failed", ex.Message, 4000);
+                Console.WriteLine($"Could not load state: {ex.Message}");
+                Environment.ExitCode = 1;
+                return false;
             }
         }
 

@@ -93,6 +93,7 @@ The speed scale is held back until MOS has reached its input path. That is inten
 --headless-ms N    Run without a window for N milliseconds.
 --speed VALUE      CPU speed scale, for example 0.5 or 50%.
 --print-autoload   Print the DFS !BOOT command for a bootable image.
+--load-state PATH  Restore a .sav state before running the emulator.
 
 --tube-6502        Start with the 65C02 Tube co-processor enabled.
 --tube-host-rom PATH
@@ -105,6 +106,12 @@ Plain paths are accepted too:
 
 ```bash
 dotnet run --project BBC_MODEL_B.csproj -- Games/Acornsoft/Elite.ssd
+```
+
+Resume a saved machine state:
+
+```bash
+dotnet run --project BBC_MODEL_B.csproj -- --load-state Saves/Elite.sav
 ```
 
 ## 65C02 Tube Co-Processor
