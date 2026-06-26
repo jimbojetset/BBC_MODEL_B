@@ -63,16 +63,21 @@ namespace BBC
             writer.Write(parasiteNmiAsserted);
             writer.Write(parasiteResetAsserted);
             WriteByteArray(writer, memory.Memory);
+            writer.Write(pendingCpuCycles);
+            writer.Write(Interlocked.Read(ref queuedParasiteNmis));
         }
 
-        public void LoadState(BinaryReader reader, int saveStateVersion)
+        public void LoadState(BinaryReader reader)
         {
             cpu.LoadState(reader);
             bootRomEnabled = reader.ReadBoolean();
             parasiteNmiAsserted = reader.ReadBoolean();
-            parasiteResetAsserted = saveStateVersion >= 3 && reader.ReadBoolean();
+            parasiteResetAsserted = reader.ReadBoolean();
             UpdateCpuPause();
             ReadByteArray(reader, memory.Memory, "Tube 6502 RAM");
+            pendingCpuCycles = reader.ReadDouble();
+            Interlocked.Exchange(ref queuedParasiteNmis, reader.ReadInt64());
+            cpuException = null;
         }
 
         public void LoadRom(string path)

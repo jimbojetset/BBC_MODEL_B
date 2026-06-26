@@ -118,7 +118,7 @@ namespace BBC
             }
         }
 
-        public void LoadState(BinaryReader reader, int saveStateVersion)
+        public void LoadState(BinaryReader reader)
         {
             lock (sync)
             {
@@ -142,7 +142,7 @@ namespace BBC
                 hostIrqAsserted = reader.ReadBoolean();
                 parasiteIrqAsserted = reader.ReadBoolean();
                 parasiteNmiAsserted = reader.ReadBoolean();
-                parasiteResetAsserted = saveStateVersion >= 3 && reader.ReadBoolean();
+                parasiteResetAsserted = reader.ReadBoolean();
                 UpdateInterrupts();
                 HostIrqChanged?.Invoke(hostIrqAsserted);
                 ParasiteIrqChanged?.Invoke(parasiteIrqAsserted);

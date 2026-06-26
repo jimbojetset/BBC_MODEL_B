@@ -183,6 +183,7 @@ namespace BBC.CPU
             jamReported = reader.ReadBoolean();
             jamAddress = reader.ReadUInt64();
             nmiLineWasAsserted = reader.ReadBoolean();
+            Interlocked.Exchange(ref resetPending, 0);
             Volatile.Write(ref irqLineAsserted, reader.ReadInt32());
             externalStallCycles = reader.ReadInt32();
             deferredIFlagPending = reader.ReadBoolean();

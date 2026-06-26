@@ -453,7 +453,7 @@ namespace BBC
         private long runtimeTraceInstructionCount;
         private int runtimeTraceFrame;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 3;
+        private const int SaveStateVersion = 6;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -1015,6 +1015,7 @@ namespace BBC
             long deadline = Stopwatch.GetTimestamp() + (Stopwatch.Frequency / 4);
 
             Cpu.SetPaused(false);
+            tube6502?.SetPaused(false);
             try
             {
                 while (systemVia.FrameCounter == startFrame && Stopwatch.GetTimestamp() < deadline)
@@ -1028,6 +1029,7 @@ namespace BBC
             finally
             {
                 Cpu.SetPaused(true);
+                tube6502?.SetPaused(true);
             }
         }
 
@@ -1431,7 +1433,8 @@ namespace BBC
                 catch (Exception ex) when (ex is IOException
                     or UnauthorizedAccessException
                     or InvalidDataException
-                    or EndOfStreamException)
+                    or EndOfStreamException
+                    or InvalidOperationException)
                 {
                     display.ShowNotification("State failed", ex.Message, 4000);
                     Console.WriteLine($"State action failed: {ex.Message}");
@@ -1453,6 +1456,7 @@ namespace BBC
                 WriteByteArray(writer, Memory.Memory);
                 WriteByteArray(writer, sidewaysRoms);
                 writer.Write(selectedSidewaysRom);
+                SaveRomState(writer);
                 writer.Write(breakContinuationQueued);
                 WriteString(writer, pendingBootExecScript);
                 WriteString(writer, pendingBootScriptLines.Count == 0 ? null : string.Join("\n", pendingBootScriptLines));
@@ -1477,8 +1481,8 @@ namespace BBC
                 writer.Write(tube6502 is not null);
                 if (tube6502 is not null)
                 {
-                    tubeUla.SaveState(writer);
-                    tube6502.SaveState(writer);
+                    WriteStateBlock(writer, tube6502.SaveState);
+                    WriteStateBlock(writer, tubeUla.SaveState);
                 }
             });
         }
@@ -1497,13 +1501,14 @@ namespace BBC
                     throw new InvalidDataException("Not a BBC Model B save state.");
 
                 int version = reader.ReadInt32();
-                if (version < 1 || version > SaveStateVersion)
+                if (version != SaveStateVersion)
                     throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
                 Cpu.LoadState(reader);
                 ReadByteArray(reader, Memory.Memory, "main memory");
                 ReadByteArray(reader, sidewaysRoms, "sideways ROM/RAM");
                 selectedSidewaysRom = reader.ReadInt32();
+                LoadRomState(reader);
                 breakContinuationQueued = reader.ReadBoolean();
                 pendingBootExecScript = ReadString(reader);
                 pendingBootScriptLines.Clear();
@@ -1532,23 +1537,25 @@ namespace BBC
                 discController.LoadState(reader);
                 Sound.LoadState(reader);
                 Video.LoadState(reader);
-                if (version >= 2)
+                bool saveHasTube = reader.ReadBoolean();
+                if (saveHasTube)
                 {
-                    bool saveHasTube = reader.ReadBoolean();
-                    if (saveHasTube)
-                    {
-                        if (tube6502 is null)
-                            throw new InvalidDataException("This save state requires the 6502 Tube co-processor.");
-
-                        tubeUla.LoadState(reader, version);
-                        tube6502.LoadState(reader, version);
-                    }
-                    else
-                    {
-                        tubeUla.Reset();
-                        tube6502?.Reset();
-                    }
+                    EnsureTube6502ForLoadedState();
+                    CoProcessor65C02 loadedTube = tube6502
+                        ?? throw new InvalidDataException("This save state requires the 6502 Tube co-processor.");
+                    LoadTubeState(reader, loadedTube);
                 }
+                else
+                {
+                    tubeUla.Reset();
+                    if (tube6502 is not null)
+                    {
+                        tube6502.Dispose();
+                        tube6502 = null;
+                    }
+                    tube6502Configured = false;
+                }
+                UpdateAmxMouseRomState();
                 Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
                 UpdateCpuIrqLine();
                 UpdateAdcChannels();
@@ -1631,6 +1638,73 @@ namespace BBC
         private static string? ReadString(BinaryReader reader)
         {
             return reader.ReadBoolean() ? reader.ReadString() : null;
+        }
+
+        private void SaveRomState(BinaryWriter writer)
+        {
+            writer.Write(tube6502Configured);
+            WriteString(writer, OsRomPath);
+            WriteString(writer, BasicRomPath);
+            WriteString(writer, DfsRomPath);
+            WriteString(writer, AmxMouseRomPath);
+            WriteString(writer, Tube6502RomPath);
+
+            writer.Write(sidewaysRomPaths.Length);
+            for (int bank = 0; bank < sidewaysRomPaths.Length; bank++)
+                WriteString(writer, sidewaysRomPaths[bank]);
+        }
+
+        private void LoadRomState(BinaryReader reader)
+        {
+            tube6502Configured = reader.ReadBoolean();
+            OsRomPath = ReadString(reader) ?? OsRomPath;
+            BasicRomPath = ReadString(reader) ?? BasicRomPath;
+            DfsRomPath = ReadString(reader) ?? DfsRomPath;
+            AmxMouseRomPath = ReadString(reader);
+            Tube6502RomPath = ReadString(reader);
+
+            int bankCount = reader.ReadInt32();
+            if (bankCount != sidewaysRomPaths.Length)
+                throw new InvalidDataException("Save state has an incompatible sideways ROM path block.");
+
+            for (int bank = 0; bank < sidewaysRomPaths.Length; bank++)
+                sidewaysRomPaths[bank] = ReadString(reader);
+
+            RefreshSidewaysRomSlotsFromSavedBytes();
+        }
+
+        private void LoadTubeState(BinaryReader reader, CoProcessor65C02 loadedTube)
+        {
+            byte[] parasiteState = ReadStateBlock(reader, "Tube 6502 state");
+            byte[] ulaState = ReadStateBlock(reader, "Tube ULA state");
+            using BinaryReader parasiteReader = new BinaryReader(new MemoryStream(parasiteState), Encoding.UTF8);
+            using BinaryReader ulaReader = new BinaryReader(new MemoryStream(ulaState), Encoding.UTF8);
+            tubeUla.LoadState(ulaReader);
+            loadedTube.LoadState(parasiteReader);
+        }
+
+        private static void WriteStateBlock(BinaryWriter writer, Action<BinaryWriter> write)
+        {
+            using MemoryStream stream = new MemoryStream();
+            using (BinaryWriter blockWriter = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+                write(blockWriter);
+
+            byte[] bytes = stream.ToArray();
+            writer.Write(bytes.Length);
+            writer.Write(bytes);
+        }
+
+        private static byte[] ReadStateBlock(BinaryReader reader, string name)
+        {
+            int length = reader.ReadInt32();
+            if (length < 0)
+                throw new InvalidDataException($"Save state has an invalid {name} block.");
+
+            byte[] bytes = reader.ReadBytes(length);
+            if (bytes.Length != length)
+                throw new EndOfStreamException();
+
+            return bytes;
         }
 
         private static string FormatRegisters(BBC.CPU.Registers registers)
@@ -2156,6 +2230,21 @@ namespace BBC
             }
         }
 
+        private void EnsureTube6502ForLoadedState()
+        {
+            string romRoot = GetRomRoot();
+            Tube6502RomPath ??= configuredTube6502RomPath ?? Path.Combine(romRoot, Tube6502RomFileName);
+            ValidateRom(Tube6502RomPath, Tube6502RomMarker, 1, RomSize);
+
+            if (tube6502 is null)
+                tube6502 = new CoProcessor65C02(tubeUla);
+
+            tube6502.LoadRom(Tube6502RomPath);
+            tube6502.SetPaused(true);
+            tube6502Configured = true;
+            tube6502.Start();
+        }
+
         private void HandleEscapeKeyPress()
         {
             if (Memory.Memory[EscapeKeyStatus] != 0)
@@ -2511,6 +2600,28 @@ namespace BBC
                 rom = ReadRomFileForBank(path);
 
             sidewaysRomSlots[bank] = SidewaysRomHeader.Inspect(bank, path, rom);
+        }
+
+        private void RefreshSidewaysRomSlotsFromSavedBytes()
+        {
+            for (int bank = 0; bank < SidewaysRomBanks; bank++)
+            {
+                string? path = sidewaysRomPaths[bank];
+                byte[] rom = new byte[RomSize];
+                Array.Copy(sidewaysRoms, bank * RomSize, rom, 0, RomSize);
+                sidewaysRomSlots[bank] = SidewaysRomHeader.Inspect(bank, path, IsEmptyRomBank(rom) ? null : rom);
+            }
+        }
+
+        private static bool IsEmptyRomBank(byte[] rom)
+        {
+            for (int i = 0; i < rom.Length; i++)
+            {
+                if (rom[i] != 0xFF)
+                    return false;
+            }
+
+            return true;
         }
 
         private static byte[] ReadRomFileForBank(string path)

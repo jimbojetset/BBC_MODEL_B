@@ -147,6 +147,8 @@ Input     Paste clipboard, Shift Lock
 
 Disc menu mounts behave like inserting media into a real drive: they do not auto-boot the disc. Use `Shift-BREAK` from the Machine menu or keyboard when you want to boot the mounted disc. `Create blank SSD` uses the first empty physical drive, preferring drive 0; if both drives are occupied, the menu item is unavailable.
 
+Save states are written from the File menu using the host file picker and use a `.sav` extension. The snapshot includes BBC RAM and device state, mounted DFS image state, sideways ROM bank contents and paths, and the 65C02 Tube state when the co-processor is enabled. Save states are tied to the current emulator save-state format; older save-state formats are rejected rather than converted.
+
 `ROM Manager` shows the BBC's 16 logical sideways ROM banks as two rows of chip sockets. Empty banks can be filled from the native host file picker, occupied banks show ROM title/type and language/service entry information, and non-system ROMs can be removed or moved to an empty bank. Bank 15, the BASIC ROM bank, is protected; bank 14, the filing-system ROM bank, can be replaced so you can swap DFS for alternatives such as a 1770 DFS ROM. The emulator pauses while the manager is open and performs a power-on reset when the ROM pattern has changed.
 
 ### Host Shortcuts
@@ -156,7 +158,7 @@ F12                     BBC BREAK
 Shift+F12               BBC Shift-BREAK
 Ctrl+F12                BBC Ctrl-BREAK
 Ctrl+P                  Pause or resume emulation
-Space                   Advance one frame while paused
+Space                   Advance one frame while paused, including Tube co-processor cycles
 F11                     Toggle scanline overlay
 Ctrl+S / Cmd+S          Save screenshot to Screenshots/
 Ctrl+T                  Toggle runtime and 8271 disc trace logging
