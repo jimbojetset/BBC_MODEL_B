@@ -45,7 +45,7 @@ namespace BBC
 
             Console.WriteLine("BBC Model B emulator initialised.");
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
-            Console.WriteLine($"BASIC ROM:  ${Emulator.SidewaysRomStart:X4}-${Emulator.SidewaysRomEnd:X4}");
+            Console.WriteLine($"BASIC ROM:  bank {Emulator.BasicRomBank} ({Path.GetFileName(emulator.BasicRomPath)})");
             Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank} ({Path.GetFileName(emulator.DfsRomPath)})");
             if (emulator.AmxMouseRomPath is not null)
                 Console.WriteLine($"AMX ROM:    bank {Emulator.AmxMouseRomBank}");
@@ -356,11 +356,13 @@ namespace BBC
         private const string RomDirectory = "ROMS";
         private const string OsRomFileName = "OS12.rom";
         private const string BasicRomFileName = "BASIC2.rom";
+        private const string HiBasicRomFileName = "HiBASIC.rom";
         private const string DfsRomFileName = "DFS-0.9.rom";
         private const string TubeHostRomFileName = "DNFS302.rom";
         private const string Tube6502RomFileName = "6502tube_120.rom";
         private const string AmxMouseRomFileName = "AMXMSE331.rom";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
+        private const string HiBasicRomMarker = "BASIC\0(C)1983 Acorn";
         private const string DfsRomMarker = "DFS\0" + "0.90";
         private const string DnfsRomMarker = "DFS,NET";
         private const string Tube6502RomMarker = "6502 TUBE";
@@ -2002,8 +2004,15 @@ namespace BBC
                 if (enabled)
                 {
                     string romRoot = GetRomRoot();
+                    string hiBasicRomPath = Path.Combine(romRoot, HiBasicRomFileName);
                     DfsRomPath = configuredTubeHostRomPath ?? Path.Combine(romRoot, TubeHostRomFileName);
                     Tube6502RomPath = configuredTube6502RomPath ?? Path.Combine(romRoot, Tube6502RomFileName);
+                    if (File.Exists(hiBasicRomPath))
+                    {
+                        BasicRomPath = hiBasicRomPath;
+                        ValidateRom(BasicRomPath, HiBasicRomMarker, RomSize);
+                        LoadSidewaysRomBank(BasicRomPath, BasicRomBank);
+                    }
                     ValidateRom(DfsRomPath, DnfsRomMarker, RomSize / 2, RomSize);
                     ValidateRom(Tube6502RomPath, Tube6502RomMarker, 1, RomSize);
                     LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
@@ -2018,9 +2027,12 @@ namespace BBC
                 else
                 {
                     string romRoot = GetRomRoot();
+                    BasicRomPath = Path.Combine(romRoot, BasicRomFileName);
                     DfsRomPath = Path.Combine(romRoot, DfsRomFileName);
                     Tube6502RomPath = null;
+                    ValidateRom(BasicRomPath, BasicRomMarker, RomSize);
                     ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
+                    LoadSidewaysRomBank(BasicRomPath, BasicRomBank);
                     LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
 
                     tube6502?.Dispose();
@@ -2251,14 +2263,24 @@ namespace BBC
             string romRoot = GetRomRoot();
 
             OsRomPath = Path.Combine(romRoot, OsRomFileName);
-            BasicRomPath = Path.Combine(romRoot, BasicRomFileName);
             bool tubeEnabled = tube6502Configured;
+            string basicRomMarker = BasicRomMarker;
+            BasicRomPath = Path.Combine(romRoot, BasicRomFileName);
+            if (tubeEnabled)
+            {
+                string hiBasicRomPath = Path.Combine(romRoot, HiBasicRomFileName);
+                if (File.Exists(hiBasicRomPath))
+                {
+                    BasicRomPath = hiBasicRomPath;
+                    basicRomMarker = HiBasicRomMarker;
+                }
+            }
             DfsRomPath = configuredTubeHostRomPath ?? Path.Combine(romRoot, tubeEnabled ? TubeHostRomFileName : DfsRomFileName);
             AmxMouseRomPath = Path.Combine(romRoot, AmxMouseRomFileName);
             Tube6502RomPath = configuredTube6502RomPath ?? (tubeEnabled ? Path.Combine(romRoot, Tube6502RomFileName) : null);
 
             ValidateRom(OsRomPath, OsRomMarker, RomSize);
-            ValidateRom(BasicRomPath, BasicRomMarker, RomSize);
+            ValidateRom(BasicRomPath, basicRomMarker, RomSize);
             if (tubeEnabled)
                 ValidateRom(DfsRomPath, DnfsRomMarker, RomSize / 2, RomSize);
             else

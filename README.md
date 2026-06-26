@@ -17,11 +17,14 @@ Expected ROMs:
 ```text
 ROMS/OS12.rom
 ROMS/BASIC2.rom
+ROMS/HiBASIC.rom
 ROMS/DFS-0.9.rom
 ROMS/AMXMSE331.rom
 ROMS/DNFS302.rom
 ROMS/6502tube_120.rom
 ```
+
+`HiBASIC.rom` is used as the bank 15 BASIC ROM when the 65C02 Tube co-processor is enabled. A normal non-Tube boot still uses `BASIC2.rom`.
 
 `AMXMSE331.rom` is optional for a normal BBC boot. I keep it listed because AMX software is a useful test of the mouse path, and especially useful with the Repton 3 editor.
 
@@ -115,6 +118,15 @@ dotnet run --project BBC_MODEL_B.csproj -- --tube-6502 Games/Acornsoft/Elite-CoP
 ```
 
 The SDL Machine menu also has a `6502 Co-Processor` toggle. It changes the hardware configuration and swaps the DFS/DNFS ROM bank, but it does not force the BBC to re-detect the Tube. Use `Ctrl-BREAK` after enabling or disabling it, just as you would when changing the hardware under a running machine.
+
+With `ROMS/HiBASIC.rom` present, Tube mode enters HI-BASIC through the normal `*BASIC` language ROM path. A quick check is:
+
+```text
+PRINT PAGE
+PRINT HIMEM
+```
+
+HI-BASIC should leave `PAGE` at `&0800` and raise `HIMEM` to `&B800` in the Tube's 64 KiB memory space.
 
 The Tube CPU is advanced from host 6502 cycles rather than from a free-running host thread. That keeps the Tube protocol timing tied to the BBC side, which is important for software that is sensitive to the R1-R4 FIFO handshakes and NMI timing.
 
