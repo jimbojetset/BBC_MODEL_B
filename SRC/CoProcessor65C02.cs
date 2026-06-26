@@ -1,7 +1,7 @@
 // ============================================================================
 // Project:     BBC
-// File:        SecondProcessor6502.cs
-// Description: Acorn Tube 6502 second processor host.
+// File:        CoProcessor65C02.cs
+// Description: Acorn 65C02 Tube co-processor host.
 // Author:      James Booth
 // Created:     2026
 // License:     GPL-2.0-only - See COPYING in the project root
@@ -15,7 +15,7 @@ using BBC.CPU;
 namespace BBC
 {
 
-    public sealed class SecondProcessor6502 : IDisposable
+    public sealed class CoProcessor65C02 : IDisposable
     {
         public const int ClockHz = 3_000_000;
 
@@ -31,7 +31,7 @@ namespace BBC
         private long queuedParasiteNmis;
         private Exception? cpuException;
 
-        public SecondProcessor6502(TubeUla tube)
+        public CoProcessor65C02(TubeUla tube)
         {
             this.tube = tube;
             cpu = new CPU_65C02(memory, ClockHz);

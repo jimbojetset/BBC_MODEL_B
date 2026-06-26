@@ -34,6 +34,7 @@ namespace BBC
 
         private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_TRACE") == "1";
         private static readonly bool DebugEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1";
+        private static readonly bool TraceCaptureEnabled = TraceEnabled || DebugEnabled;
 
         private readonly object sync = new object();
         private readonly byte[] hostStatus = new byte[4];
@@ -193,7 +194,8 @@ namespace BBC
                     case 0:
                         value = (byte)((hostStatus[R1] & (DataAvailable | SpaceAvailable))
                             | (internalStatus & ~(DataAvailable | SpaceAvailable)));
-                        TraceStatus("H", "R", address, value, 0);
+                        if (TraceCaptureEnabled)
+                            TraceStatus("H", "R", address, value, 0);
                         return value;
                     case 1:
                         value = HostReadR1();
@@ -202,7 +204,8 @@ namespace BBC
                     case 4:
                     case 6:
                         value = hostStatus[register];
-                        TraceStatus("H", "R", address, value, register);
+                        if (TraceCaptureEnabled)
+                            TraceStatus("H", "R", address, value, register);
                         return value;
                     case 3:
                         value = HostReadSingle(R2, parasiteToHost[R2]);
@@ -218,7 +221,8 @@ namespace BBC
                         break;
                 }
 
-                Trace("H", "R", address, value, register, status);
+                if (TraceCaptureEnabled)
+                    Trace("H", "R", address, value, register, status);
                 UpdateInterrupts();
                 return value;
             }
@@ -230,7 +234,8 @@ namespace BBC
             {
                 int register = RegisterIndex(address);
                 bool status = (address & 1) == 0;
-                Trace("H", "W", address, value, register, status);
+                if (TraceCaptureEnabled)
+                    Trace("H", "W", address, value, register, status);
 
                 switch (address & 7)
                 {
@@ -271,13 +276,15 @@ namespace BBC
                         value = parasiteStatus[R3];
                         if (parasiteToHostR3Count == 0)
                             value |= DataAvailable;
-                        TraceStatus("P", "R", address, value, register + 4);
+                        if (TraceCaptureEnabled)
+                            TraceStatus("P", "R", address, value, register + 4);
                         return value;
                     case 0:
                     case 2:
                     case 6:
                         value = parasiteStatus[register];
-                        TraceStatus("P", "R", address, value, register + 4);
+                        if (TraceCaptureEnabled)
+                            TraceStatus("P", "R", address, value, register + 4);
                         return value;
                     case 1:
                         value = ParasiteReadSingle(R1, hostToParasite[R1]);
@@ -296,7 +303,8 @@ namespace BBC
                         break;
                 }
 
-                Trace("P", "R", address, value, register, status);
+                if (TraceCaptureEnabled)
+                    Trace("P", "R", address, value, register, status);
                 UpdateInterrupts();
                 return value;
             }
@@ -308,7 +316,8 @@ namespace BBC
             {
                 int register = RegisterIndex(address);
                 bool status = (address & 1) == 0;
-                Trace("P", "W", address, value, register, status);
+                if (TraceCaptureEnabled)
+                    Trace("P", "W", address, value, register, status);
 
                 switch (address & 7)
                 {

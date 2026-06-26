@@ -365,6 +365,7 @@ namespace BBC
         private const string DnfsRomMarker = "DFS,NET";
         private const string Tube6502RomMarker = "6502 TUBE";
         private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
+        private static readonly bool TubeDebugEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1";
         private const string OsRomMarker = "BBC Computer";
         private const string AmxMouseRomMarker = "AMX Mouse Support";
         private const int TargetFramesPerSecond = 50;
@@ -419,7 +420,7 @@ namespace BBC
         private readonly HostFilingSystem hostFilingSystem;
         private readonly Intel8271_Disk discController;
         private readonly TubeUla tubeUla = new TubeUla();
-        private SecondProcessor6502? tube6502;
+        private CoProcessor65C02? tube6502;
         private string? configuredTubeHostRomPath;
         private string? configuredTube6502RomPath;
         private bool tube6502Configured;
@@ -499,7 +500,6 @@ namespace BBC
             Cpu.NmiLineAsserted = () => discController.NmiLineAsserted;
             Cpu.OnReset = ResetDeviceState;
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
-            Cpu.OnInstructionExecuted = TraceRuntimeInstruction;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
             Cpu.OnAccessStretch = ComputeBusStretchCycles;
             adc.EndOfConversionChanged += eocActive =>
@@ -619,7 +619,7 @@ namespace BBC
 
         private void DumpTubeDebugStateIfDue()
         {
-            if (tube6502 is null || Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") != "1")
+            if (tube6502 is null || !TubeDebugEnabled)
                 return;
 
             long now = Stopwatch.GetTimestamp();
@@ -673,7 +673,7 @@ namespace BBC
             {
                 Console.WriteLine($"Tube 6502 PC: ${tube6502.Cpu.registers.PC:X4}");
                 Console.WriteLine($"Tube 6502 boot ROM overlay: {(tube6502.BootRomEnabled ? "enabled" : "disabled")}");
-                if (Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1")
+                if (TubeDebugEnabled)
                 {
                     Console.WriteLine(tubeUla.DebugStatus());
                     Console.WriteLine($"Host registers: {FormatRegisters(Cpu.registers)}");
@@ -857,7 +857,8 @@ namespace BBC
         private void RenderDisplayFrame(Display display)
         {
             Video.Render(display);
-            TraceRuntimeFrame();
+            if (Volatile.Read(ref runtimeTraceActive) != 0)
+                TraceRuntimeFrame();
         }
 
         private void PulseHostDiscActivityLed()
@@ -1623,6 +1624,7 @@ namespace BBC
                 runtimeTraceWriter.WriteLine($"TRACE START {DateTimeOffset.Now:O}");
                 runtimeTraceWriter.WriteLine($"MOUNTED {discController.MountedDriveSummary}");
                 runtimeTraceWriter.WriteLine("Instruction lines are compressed after the first few thousand opcodes; HOT counts show repeated PCs within the current frame.");
+                Cpu.OnInstructionExecuted = TraceRuntimeInstruction;
                 Volatile.Write(ref runtimeTraceActive, 1);
             }
         }
@@ -1632,6 +1634,7 @@ namespace BBC
             lock (runtimeTraceLock)
             {
                 Volatile.Write(ref runtimeTraceActive, 0);
+                Cpu.OnInstructionExecuted = null;
                 if (runtimeTraceWriter is null)
                     return runtimeTracePath;
 
@@ -2006,7 +2009,7 @@ namespace BBC
                     LoadSidewaysRomBank(DfsRomPath, DfsRomBank);
 
                     tubeUla.Reset();
-                    tube6502 = new SecondProcessor6502(tubeUla);
+                    tube6502 = new CoProcessor65C02(tubeUla);
                     tube6502.LoadRom(Tube6502RomPath);
                     tube6502.SetPaused(emulationPaused);
                     tube6502.Reset();
@@ -2279,7 +2282,7 @@ namespace BBC
 
             if (Tube6502RomPath is not null)
             {
-                tube6502 = new SecondProcessor6502(tubeUla);
+                tube6502 = new CoProcessor65C02(tubeUla);
                 tube6502.LoadRom(Tube6502RomPath);
                 tubeUla.Reset();
                 tube6502.Reset();
