@@ -14,6 +14,7 @@
 using BBC.CPU;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO.Compression;
 using System.Text;
 
 namespace BBC
@@ -321,6 +322,7 @@ namespace BBC
                 or DirectoryNotFoundException
                 or UnauthorizedAccessException
                 or IOException
+                or InvalidDataException
                 or InvalidOperationException;
         }
 
@@ -416,6 +418,7 @@ namespace BBC
         private const int BootScriptInitialDelayMilliseconds = 1000;
         private const int ExecScriptInitialDelayMilliseconds = 100;
         private const int KeyboardScriptLineDelayMilliseconds = 120;
+        private const int PausedFrameAdvanceCount = 10;
         private const int RuntimeTraceFirstInstructions = 4096;
         private const int RuntimeTraceHotPcInterval = 512;
         private const int RuntimeTraceTopPcCount = 8;
@@ -748,8 +751,11 @@ namespace BBC
                 Console.WriteLine(row);
         }
 
-        public void MountHostFile(string path, bool autoRunDisc = true, int? requestedDrive = null)
+        public bool MountHostFile(string path, bool autoRunDisc = true, int? requestedDrive = null)
         {
+            if (IsZipArchivePath(path))
+                return MountZipArchive(path, autoRunDisc, requestedDrive);
+
             if (IsDiscImagePath(path))
             {
                 if (discController.HasMountedDisc && discController.ImageDirty)
@@ -764,12 +770,49 @@ namespace BBC
                 Console.WriteLine($"Mounted DFS: {discController.MountedDriveSummary}");
                 if (autoRunDisc && requestedDrive.GetValueOrDefault(0) == 0)
                     QueueMountedDiscAutoRun();
-                return;
+                return true;
             }
 
             hostFilingSystem.Mount(path);
 
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedFileName}");
+            return false;
+        }
+
+        private bool MountZipArchive(string path, bool autoRunDisc, int? requestedDrive)
+        {
+            List<ArchiveDiscEntry> entries = GetArchiveDiscEntries(path);
+            if (entries.Count == 0)
+                throw new InvalidOperationException($"'{Path.GetFileName(path)}' does not contain any SSD or DSD images.");
+
+            int drive = requestedDrive.GetValueOrDefault(0);
+            if (entries.Count == 1 || Display is null)
+            {
+                MountArchiveDisc(path, entries[0].EntryPath, drive, autoRunDisc);
+                return true;
+            }
+
+            Display.ShowDiscArchive(path, entries, drive);
+            return false;
+        }
+
+        private void MountArchiveDisc(string archivePath, string entryPath, int drive, bool autoRunDisc)
+        {
+            byte[] image = ReadArchiveEntry(archivePath, entryPath);
+            string displayName = $"{Path.GetFileName(archivePath)}:{Path.GetFileName(entryPath)}";
+
+            if (discController.HasMountedDisc && discController.ImageDirty)
+            {
+                if (discController.Flush())
+                    Console.WriteLine($"Saved disc:   {discController.MountedFileName}");
+            }
+
+            discController.MountImage(image, drive, null, displayName, readOnly: true);
+            hostFilingSystem.Unmount();
+
+            Console.WriteLine($"Mounted DFS: {discController.MountedDriveSummary}");
+            if (autoRunDisc && drive == 0)
+                QueueMountedDiscAutoRun();
         }
 
         public void EjectDisc(int drive)
@@ -1026,7 +1069,7 @@ namespace BBC
                 return;
 
             for (int i = 0; i < count; i++)
-                AdvanceOnePausedFrame();
+                AdvancePausedFrames(PausedFrameAdvanceCount);
         }
 
         private void SetEmulationPaused(bool paused)
@@ -1044,21 +1087,22 @@ namespace BBC
                 Display.EmulationPaused = paused;
                 Display.ShowNotification(
                     paused ? "Paused" : "Running",
-                    paused ? "Space advances one frame" : string.Empty,
+                    paused ? $"Space advances {PausedFrameAdvanceCount} frames" : string.Empty,
                     paused ? 15000 : 1500);
             }
         }
 
-        private void AdvanceOnePausedFrame()
+        private void AdvancePausedFrames(int frames)
         {
             int startFrame = systemVia.FrameCounter;
-            long deadline = Stopwatch.GetTimestamp() + (Stopwatch.Frequency / 4);
+            int targetFrame = startFrame + Math.Max(1, frames);
+            long deadline = Stopwatch.GetTimestamp() + (Stopwatch.Frequency / 4 * Math.Max(1, frames));
 
             Cpu.SetPaused(false);
             tube6502?.SetPaused(false);
             try
             {
-                while (systemVia.FrameCounter == startFrame && Stopwatch.GetTimestamp() < deadline)
+                while (systemVia.FrameCounter < targetFrame && Stopwatch.GetTimestamp() < deadline)
                 {
                     if (cpuException is not null)
                         throw new InvalidOperationException("CPU execution failed.", cpuException);
@@ -1422,11 +1466,17 @@ namespace BBC
                     switch (action.Kind)
                     {
                         case HostDiscActionKind.Mount:
-                            MountHostFile(action.Path, autoRunDisc: false, requestedDrive: action.Drive);
+                            if (MountHostFile(action.Path, autoRunDisc: false, requestedDrive: action.Drive))
+                                ShowDiscLoadedNotice(display, action.Drive);
+                            break;
+                        case HostDiscActionKind.MountArchiveEntry:
+                            MountArchiveDisc(action.Path, action.ArchiveEntryPath, action.Drive, autoRunDisc: false);
+                            ShowDiscLoadedNotice(display, action.Drive);
                             break;
                         case HostDiscActionKind.CreateBlankSsd:
                             CreateBlankSsdImage(action.Path, overwrite: true);
-                            MountHostFile(action.Path, autoRunDisc: false, requestedDrive: action.Drive);
+                            if (MountHostFile(action.Path, autoRunDisc: false, requestedDrive: action.Drive))
+                                ShowDiscLoadedNotice(display, action.Drive);
                             break;
                         case HostDiscActionKind.Eject:
                             EjectDisc(action.Drive);
@@ -1437,6 +1487,7 @@ namespace BBC
                     or DirectoryNotFoundException
                     or UnauthorizedAccessException
                     or IOException
+                    or InvalidDataException
                     or InvalidOperationException)
                 {
                     string message = string.IsNullOrWhiteSpace(action.Path)
@@ -1445,6 +1496,13 @@ namespace BBC
                     Console.WriteLine(message);
                 }
             }
+        }
+
+        private void ShowDiscLoadedNotice(Display display, int drive)
+        {
+            int physicalDrive = drive & 1;
+            string label = discController.GetPhysicalDriveLabel(physicalDrive) ?? "Disc";
+            display.ShowNotification($"{label} loaded", "Press SHIFT+BREAK to boot", 4000);
         }
 
         private void DrainHostStateActions(Display display)
@@ -2887,6 +2945,51 @@ namespace BBC
             string extension = Path.GetExtension(path);
             return string.Equals(extension, ".ssd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsZipArchivePath(string path)
+        {
+            return string.Equals(Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static List<ArchiveDiscEntry> GetArchiveDiscEntries(string path)
+        {
+            using ZipArchive archive = ZipFile.OpenRead(path);
+            List<ArchiveDiscEntry> entries = new List<ArchiveDiscEntry>();
+
+            foreach (ZipArchiveEntry entry in archive.Entries)
+            {
+                if (entry.Length <= 0 || !IsDiscImagePath(entry.FullName))
+                    continue;
+
+                string folder = Path.GetDirectoryName(entry.FullName.Replace('\\', Path.DirectorySeparatorChar)) ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(folder))
+                    folder = "(root)";
+
+                entries.Add(new ArchiveDiscEntry(folder, Path.GetFileName(entry.FullName), entry.FullName));
+            }
+
+            entries.Sort((left, right) =>
+            {
+                int folderCompare = string.Compare(left.Folder, right.Folder, StringComparison.OrdinalIgnoreCase);
+                return folderCompare != 0
+                    ? folderCompare
+                    : string.Compare(left.FileName, right.FileName, StringComparison.OrdinalIgnoreCase);
+            });
+
+            return entries;
+        }
+
+        private static byte[] ReadArchiveEntry(string archivePath, string entryPath)
+        {
+            using ZipArchive archive = ZipFile.OpenRead(archivePath);
+            ZipArchiveEntry entry = archive.GetEntry(entryPath)
+                ?? throw new FileNotFoundException($"Archive entry not found: {entryPath}", entryPath);
+
+            using Stream entryStream = entry.Open();
+            using MemoryStream image = new MemoryStream();
+            entryStream.CopyTo(image);
+            return image.ToArray();
         }
     }
 }

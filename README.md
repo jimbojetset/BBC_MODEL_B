@@ -152,7 +152,7 @@ View      Fullscreen, scanlines
 Input     Paste clipboard, Shift Lock
 ```
 
-Disc menu mounts behave like inserting media into a real drive: they do not auto-boot the disc. Use `Shift-BREAK` from the Machine menu or keyboard when you want to boot the mounted disc. `Create blank SSD` uses the first empty physical drive, preferring drive 0; if both drives are occupied, the menu item is unavailable.
+Disc menu mounts behave like inserting media into a real drive: they do not auto-boot the disc. Use `Shift-BREAK` from the Machine menu or keyboard when you want to boot the mounted disc. `.zip` archives can be selected without extracting them; the emulator scans for `.ssd` and `.dsd` entries, presents folders and disc images in a chooser, and streams only the selected image into the drive as read-only media. `Create blank SSD` uses the first empty physical drive, preferring drive 0; if both drives are occupied, the menu item is unavailable.
 
 Save states are written from the File menu using the host file picker and use a `.sav` extension. The snapshot includes BBC RAM and device state, mounted DFS image state, sideways ROM bank contents and paths, and the 65C02 Tube state when the co-processor is enabled. Save states are tied to the current emulator save-state format; older save-state formats are rejected rather than converted.
 
@@ -165,7 +165,7 @@ F12                     BBC BREAK
 Shift+F12               BBC Shift-BREAK
 Ctrl+F12                BBC Ctrl-BREAK
 Ctrl+P                  Pause or resume emulation
-Space                   Advance one frame while paused, including Tube co-processor cycles
+Space                   Advance 10 frames while paused, including Tube co-processor cycles
 F11                     Toggle scanline overlay
 Ctrl+S / Cmd+S          Save screenshot to Screenshots/
 Ctrl+T                  Toggle runtime and 8271 disc trace logging

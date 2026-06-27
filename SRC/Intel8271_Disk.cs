@@ -195,11 +195,19 @@ namespace BBC
             string fileName = Path.GetFileName(fullPath);
             byte[] image = File.ReadAllBytes(fullPath);
 
+            MountImage(image, drive, fullPath, fileName, readOnly: false);
+        }
+
+        public void MountImage(byte[] image, int drive, string? sourcePath, string displayName, bool readOnly)
+        {
+            if (image.Length == 0)
+                throw new InvalidOperationException($"'{displayName}' is empty.");
+
             if (drive < 0 || drive >= drives.Length)
                 throw new ArgumentOutOfRangeException(nameof(drive), "DFS drive must be 0-3.");
 
             if (image.Length < 512 || image.Length % SectorSize != 0)
-                throw new InvalidOperationException($"'{fullPath}' is not a sector-aligned DFS image.");
+                throw new InvalidOperationException($"'{displayName}' is not a sector-aligned DFS image.");
 
             if (image.Length >= SingleSidedImageBytes * 2)
             {
@@ -212,10 +220,10 @@ namespace BBC
                 DeinterleaveDsdImage(image, drives[drive], drives[reverseSideDrive]);
                 driveMounted[drive] = true;
                 driveMounted[reverseSideDrive] = true;
-                mountedPaths[drive] = fullPath;
-                mountedFileNames[drive] = fileName;
-                mountedPaths[reverseSideDrive] = fullPath;
-                mountedFileNames[reverseSideDrive] = fileName;
+                mountedPaths[drive] = readOnly ? null : sourcePath;
+                mountedFileNames[drive] = displayName;
+                mountedPaths[reverseSideDrive] = readOnly ? null : sourcePath;
+                mountedFileNames[reverseSideDrive] = displayName;
                 imageDirtyByDrive[drive] = false;
                 imageDirtyByDrive[reverseSideDrive] = false;
             }
@@ -223,8 +231,8 @@ namespace BBC
             {
                 drives[drive] = image;
                 driveMounted[drive] = true;
-                mountedPaths[drive] = fullPath;
-                mountedFileNames[drive] = fileName;
+                mountedPaths[drive] = readOnly ? null : sourcePath;
+                mountedFileNames[drive] = displayName;
                 imageDirtyByDrive[drive] = false;
             }
 
@@ -233,9 +241,10 @@ namespace BBC
             Array.Clear(motorStartedAtCycle);
             Array.Clear(driveActivityLedActive);
             motorIdleCycles = 0;
-            mountedPath = mountedPaths[0] ?? fullPath;
-            mountedFileName = mountedFileNames[0] ?? fileName;
+            mountedPath = mountedPaths[0] ?? sourcePath;
+            mountedFileName = mountedFileNames[0] ?? displayName;
             imageDirty = false;
+            writeProtected = readOnly;
             Reset();
         }
 

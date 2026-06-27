@@ -45,6 +45,7 @@ namespace BBC
         private const int BasicRomBank = 15;
         private const int RomActionWidth = 82;
         private const int RomActionRowHeight = 20;
+        private const int ArchivePanelTopGap = 42;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
@@ -98,6 +99,8 @@ namespace BBC
         private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
         private readonly MenuDefinition[] menus;
         private readonly SidewaysRomSlot[] romSlots = new SidewaysRomSlot[16];
+        private readonly List<ArchiveDiscEntry> archiveEntries = new List<ArchiveDiscEntry>();
+        private string[] archiveFolders = [];
         private int pendingScreenshotRequests;
         private int pendingTraceToggleRequests;
         private int pendingPauseToggleRequests;
@@ -135,6 +138,13 @@ namespace BBC
         private int logicalHeight;
         private int uiMouseX = -1;
         private int uiMouseY = -1;
+        private string archivePath = string.Empty;
+        private int archiveDrive;
+        private int activeArchiveFolder = -1;
+        private int hoveredArchiveFolder = -1;
+        private int hoveredArchiveEntry = -1;
+        private int archiveFolderScroll;
+        private int archiveEntryScroll;
         private SdlRect viewportRect;
         private string notificationTitle = string.Empty;
         private string notificationBody = string.Empty;
@@ -270,6 +280,9 @@ namespace BBC
 
                 if (ev.Type == SDL_MOUSEMOTION)
                 {
+                    if (HandleArchiveMouseMotion(ev.MouseX, ev.MouseY))
+                        continue;
+
                     if (HandleMenuMouseMotion(ev.MouseX, ev.MouseY))
                         continue;
 
@@ -278,11 +291,17 @@ namespace BBC
 
                 if (ev.Type is SDL_MOUSEBUTTONDOWN or SDL_MOUSEBUTTONUP)
                 {
+                    if (HandleArchiveMouseButton(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY))
+                        continue;
+
                     if (HandleMenuMouseButton(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY))
                         continue;
 
                     UpdateMouseButtonState(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY);
                 }
+
+                if (ev.Type == SDL_MOUSEWHEEL && HandleArchiveMouseWheel(ev.MouseWheelY))
+                    continue;
 
                 if (ev.Type == SDL_CONTROLLERAXISMOTION)
                     UpdateControllerAxis(ev.ControllerAxis, ev.ControllerAxisValue);
@@ -404,6 +423,25 @@ namespace BBC
                 romSlots[i] = slots[i];
         }
 
+        public void ShowDiscArchive(string path, IReadOnlyList<ArchiveDiscEntry> entries, int drive)
+        {
+            archivePath = path;
+            archiveDrive = drive;
+            archiveEntries.Clear();
+            archiveEntries.AddRange(entries);
+            archiveFolders = archiveEntries
+                .Select(entry => entry.Folder)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(folder => folder, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            activeArchiveFolder = archiveFolders.Length == 0 ? -1 : 0;
+            hoveredArchiveFolder = -1;
+            hoveredArchiveEntry = -1;
+            archiveFolderScroll = 0;
+            archiveEntryScroll = 0;
+            activeMenuIndex = -1;
+        }
+
         public int DrainScreenshotRequests()
         {
             int count = pendingScreenshotRequests;
@@ -461,6 +499,7 @@ namespace BBC
                 handle.Free();
             }
 
+            ThrowIfSdlFailed(SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255), "SDL_SetRenderDrawColor");
             ThrowIfSdlFailed(SDL_RenderClear(renderer), "SDL_RenderClear");
             ThrowIfSdlFailed(SDL_RenderCopy(renderer, texture, IntPtr.Zero, ref viewportRect), "SDL_RenderCopy");
 
@@ -470,6 +509,7 @@ namespace BBC
             DrawTopBorderStatusMessage();
             DrawDriveGlyphs();
             DrawMenuBar();
+            DrawArchiveBrowser();
 
             SDL_RenderPresent(renderer);
         }
@@ -598,9 +638,75 @@ namespace BBC
             }
         }
 
+        private void DrawArchiveBrowser()
+        {
+            if (archiveEntries.Count == 0)
+                return;
+
+            SdlRect panel = GetArchivePanelRect();
+            _ = SDL_SetRenderDrawColor(renderer, 24, 24, 24, 235);
+            _ = SDL_RenderFillRect(renderer, ref panel);
+            _ = SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
+            DrawRectOutline(panel);
+
+            string title = TrimRendererText(Path.GetFileName(archivePath), 48);
+            DrawRendererText(title, panel.X + 12, panel.Y + 10, 235, 235, 235);
+            DrawRendererText($"Drive {archiveDrive}", panel.X + panel.W - 72, panel.Y + 10, 170, 170, 170);
+
+            int listY = panel.Y + 34;
+            int listHeight = panel.H - 46;
+            int folderWidth = 150;
+            int visibleRows = GetArchiveVisibleRows();
+            SdlRect divider = new SdlRect(panel.X + folderWidth, listY, 1, listHeight);
+            _ = SDL_SetRenderDrawColor(renderer, 72, 72, 72, 255);
+            _ = SDL_RenderFillRect(renderer, ref divider);
+
+            for (int rowIndex = 0; rowIndex < visibleRows; rowIndex++)
+            {
+                int i = archiveFolderScroll + rowIndex;
+                if (i >= archiveFolders.Length)
+                    break;
+
+                int rowY = listY + (rowIndex * MenuItemHeight);
+                if (i == activeArchiveFolder || i == hoveredArchiveFolder)
+                {
+                    SdlRect row = new SdlRect(panel.X + 6, rowY - 1, folderWidth - 12, MenuItemHeight - 1);
+                    _ = SDL_SetRenderDrawColor(renderer, i == activeArchiveFolder ? (byte)58 : (byte)42, 58, 58, 255);
+                    _ = SDL_RenderFillRect(renderer, ref row);
+                }
+
+                DrawRendererText(TrimRendererText(archiveFolders[i], 18), panel.X + 12, rowY + 4, 220, 220, 220);
+            }
+
+            string folder = activeArchiveFolder >= 0 && activeArchiveFolder < archiveFolders.Length
+                ? archiveFolders[activeArchiveFolder]
+                : string.Empty;
+            List<ArchiveDiscEntry> discs = GetArchiveFolderEntries(folder);
+            int discX = panel.X + folderWidth + 12;
+            int discColumns = Math.Max(8, (panel.X + panel.W - 12 - discX) / MenuTextCellWidth);
+            for (int rowIndex = 0; rowIndex < visibleRows; rowIndex++)
+            {
+                int i = archiveEntryScroll + rowIndex;
+                if (i >= discs.Count)
+                    break;
+
+                int rowY = listY + (rowIndex * MenuItemHeight);
+                if (i == hoveredArchiveEntry)
+                {
+                    SdlRect row = new SdlRect(discX - 6, rowY - 1, panel.X + panel.W - discX - 6, MenuItemHeight - 1);
+                    _ = SDL_SetRenderDrawColor(renderer, 54, 54, 54, 255);
+                    _ = SDL_RenderFillRect(renderer, ref row);
+                }
+
+                DrawRendererText(TrimRendererText(discs[i].FileName, discColumns), discX, rowY + 4, 230, 230, 230);
+            }
+        }
+
         private bool HandleMenuMouseMotion(int hostX, int hostY)
         {
             RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+            uiMouseX = (int)Math.Round(logicalX);
+            uiMouseY = (int)Math.Round(logicalY);
 
             hoveredMenuIndex = GetMenuIndexAt((int)logicalX, (int)logicalY);
             hoveredMenuItemIndex = activeMenuIndex >= 0
@@ -620,6 +726,19 @@ namespace BBC
             }
 
             return IsMenuArea((int)logicalX, (int)logicalY);
+        }
+
+        private bool HandleArchiveMouseMotion(int hostX, int hostY)
+        {
+            if (archiveEntries.Count == 0)
+                return false;
+
+            RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+            uiMouseX = (int)Math.Round(logicalX);
+            uiMouseY = (int)Math.Round(logicalY);
+            hoveredArchiveFolder = GetArchiveFolderIndexAt(uiMouseX, uiMouseY);
+            hoveredArchiveEntry = GetArchiveEntryIndexAt(uiMouseX, uiMouseY);
+            return true;
         }
 
         private bool HandleMenuMouseButton(byte button, bool pressed, int hostX, int hostY)
@@ -682,6 +801,70 @@ namespace BBC
             return false;
         }
 
+        private bool HandleArchiveMouseButton(byte button, bool pressed, int hostX, int hostY)
+        {
+            if (archiveEntries.Count == 0 || button != SDL_BUTTON_LEFT)
+                return false;
+
+            RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+            int x = (int)logicalX;
+            int y = (int)logicalY;
+            if (!pressed)
+                return true;
+
+            int folderIndex = GetArchiveFolderIndexAt(x, y);
+            if (folderIndex >= 0)
+            {
+                activeArchiveFolder = folderIndex;
+                hoveredArchiveEntry = -1;
+                archiveEntryScroll = 0;
+                return true;
+            }
+
+            int entryIndex = GetArchiveEntryIndexAt(x, y);
+            if (entryIndex >= 0)
+            {
+                string folder = archiveFolders[activeArchiveFolder];
+                ArchiveDiscEntry entry = GetArchiveFolderEntries(folder)[entryIndex];
+                pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.MountArchiveEntry, archivePath, archiveDrive, entry.EntryPath));
+                CloseArchiveBrowser();
+                return true;
+            }
+
+            if (!IsInArchivePanel(x, y))
+                CloseArchiveBrowser();
+
+            return true;
+        }
+
+        private bool HandleArchiveMouseWheel(int wheelY)
+        {
+            if (archiveEntries.Count == 0 || wheelY == 0)
+                return false;
+
+            SdlRect panel = GetArchivePanelRect();
+            int folderWidth = 150;
+            int rows = GetArchiveVisibleRows();
+            int direction = wheelY > 0 ? -1 : 1;
+            if (!IsInArchivePanel(uiMouseX, uiMouseY))
+                return true;
+
+            if (uiMouseX >= panel.X && uiMouseX < panel.X + folderWidth)
+            {
+                archiveFolderScroll = ClampScroll(archiveFolderScroll + direction, archiveFolders.Length, rows);
+                return true;
+            }
+
+            if (activeArchiveFolder >= 0 && activeArchiveFolder < archiveFolders.Length)
+            {
+                int count = GetArchiveFolderEntries(archiveFolders[activeArchiveFolder]).Count;
+                archiveEntryScroll = ClampScroll(archiveEntryScroll + direction, count, rows);
+                return true;
+            }
+
+            return true;
+        }
+
         private bool IsMenuArea(int x, int y)
         {
             if (y >= 0 && y < TopMenuHeight)
@@ -691,6 +874,80 @@ namespace BBC
                 return true;
 
             return activeMenuIndex >= 0 && GetMenuItemIndexAt(activeMenuIndex, x, y) >= 0;
+        }
+
+        private SdlRect GetArchivePanelRect()
+        {
+            int width = Math.Min(560, logicalWidth - 48);
+            int y = TopMenuHeight + ArchivePanelTopGap;
+            int height = Math.Min(360, logicalHeight - y - GetBottomOverlayHeight() - 18);
+            return new SdlRect((logicalWidth - width) / 2, y, width, height);
+        }
+
+        private bool IsInArchivePanel(int x, int y)
+        {
+            SdlRect panel = GetArchivePanelRect();
+            return x >= panel.X && x < panel.X + panel.W && y >= panel.Y && y < panel.Y + panel.H;
+        }
+
+        private int GetArchiveFolderIndexAt(int x, int y)
+        {
+            SdlRect panel = GetArchivePanelRect();
+            int listY = panel.Y + 34;
+            int folderWidth = 150;
+            if (x < panel.X || x >= panel.X + folderWidth || y < listY || y >= panel.Y + panel.H - 6)
+                return -1;
+
+            int index = archiveFolderScroll + ((y - listY) / MenuItemHeight);
+            return index >= 0 && index < archiveFolders.Length ? index : -1;
+        }
+
+        private int GetArchiveEntryIndexAt(int x, int y)
+        {
+            if (activeArchiveFolder < 0 || activeArchiveFolder >= archiveFolders.Length)
+                return -1;
+
+            SdlRect panel = GetArchivePanelRect();
+            int listY = panel.Y + 34;
+            int discX = panel.X + 162;
+            if (x < discX || x >= panel.X + panel.W || y < listY || y >= panel.Y + panel.H - 6)
+                return -1;
+
+            int index = archiveEntryScroll + ((y - listY) / MenuItemHeight);
+            int count = GetArchiveFolderEntries(archiveFolders[activeArchiveFolder]).Count;
+            return index >= 0 && index < count ? index : -1;
+        }
+
+        private int GetArchiveVisibleRows()
+        {
+            SdlRect panel = GetArchivePanelRect();
+            return Math.Max(1, (panel.H - 46) / MenuItemHeight);
+        }
+
+        private static int ClampScroll(int scroll, int itemCount, int visibleRows)
+        {
+            int max = Math.Max(0, itemCount - visibleRows);
+            return Math.Clamp(scroll, 0, max);
+        }
+
+        private List<ArchiveDiscEntry> GetArchiveFolderEntries(string folder)
+        {
+            return archiveEntries
+                .Where(entry => string.Equals(entry.Folder, folder, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(entry => entry.FileName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private void CloseArchiveBrowser()
+        {
+            archivePath = string.Empty;
+            archiveEntries.Clear();
+            archiveFolders = [];
+            activeArchiveFolder = -1;
+            hoveredArchiveFolder = -1;
+            hoveredArchiveEntry = -1;
+            archiveFolderScroll = 0;
+            archiveEntryScroll = 0;
         }
 
         private int GetMenuIndexAt(int x, int y)
@@ -1280,6 +1537,10 @@ namespace BBC
             int drive1X = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
             int drive0X = drive1X - DriveGlyphGap - DriveGlyphWidth;
             int glyphY = bottomOverlayY + ((bottomOverlayHeight - driveBlockHeight) / 2);
+
+            SdlRect bottomOverlay = new SdlRect(0, bottomOverlayY, logicalWidth, bottomOverlayHeight);
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            _ = SDL_RenderFillRect(renderer, ref bottomOverlay);
 
             DrawStatusLeds(bottomOverlayY);
             DrawDriveGlyph(drive0X, glyphY, Drive0Mounted, Drive0ActivityLedActive);
@@ -1916,6 +2177,12 @@ namespace BBC
         private void EnqueueKeyDown(int keySym)
         {
             int modifiers = SDL_GetModState();
+
+            if (archiveEntries.Count > 0 && keySym == SDLK_ESCAPE)
+            {
+                CloseArchiveBrowser();
+                return;
+            }
 
             if (TryToggleBbcShiftLock(keySym, modifiers))
                 return;
@@ -2605,13 +2872,13 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc or file'; $dialog.Filter = 'BBC files (*.ssd;*.dsd)|*.ssd;*.dsd|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc, archive, or file'; $dialog.Filter = 'BBC discs and archives (*.ssd;*.dsd;*.zip)|*.ssd;*.dsd;*.zip|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc or file\")");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc, archive, or file\")");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc or file");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc, archive, or file");
             }
             catch
             {
@@ -2934,6 +3201,7 @@ namespace BBC
         private const uint SDL_MOUSEMOTION = 0x400;
         private const uint SDL_MOUSEBUTTONDOWN = 0x401;
         private const uint SDL_MOUSEBUTTONUP = 0x402;
+        private const uint SDL_MOUSEWHEEL = 0x403;
         private const uint SDL_JOYAXISMOTION = 0x600;
         private const uint SDL_JOYHATMOTION = 0x602;
         private const uint SDL_JOYBUTTONDOWN = 0x603;
@@ -3067,6 +3335,7 @@ namespace BBC
             [FieldOffset(24)] public int MouseY;
             [FieldOffset(28)] public int MouseRelativeX;
             [FieldOffset(32)] public int MouseRelativeY;
+            [FieldOffset(20)] public int MouseWheelY;
             [FieldOffset(8)] public int JoystickDeviceInstanceId;
             [FieldOffset(12)] public byte JoystickAxis;
             [FieldOffset(12)] public byte JoystickButton;
@@ -3276,7 +3545,7 @@ namespace BBC
     /// <summary>AMX-style mouse code works in BBC screen coordinates plus relative movement pulses.</summary>
     public readonly record struct HostMouseState(int X, int Y, byte Buttons, int DeltaX, int DeltaY);
 
-    public readonly record struct HostDiscAction(HostDiscActionKind Kind, string Path, int Drive);
+    public readonly record struct HostDiscAction(HostDiscActionKind Kind, string Path, int Drive, string ArchiveEntryPath = "");
 
     public readonly record struct HostStateAction(HostStateActionKind Kind, string Path);
 
@@ -3289,9 +3558,12 @@ namespace BBC
     public enum HostDiscActionKind
     {
         Mount,
+        MountArchiveEntry,
         CreateBlankSsd,
         Eject
     }
+
+    public readonly record struct ArchiveDiscEntry(string Folder, string FileName, string EntryPath);
 
     public enum JoystickControl
     {
