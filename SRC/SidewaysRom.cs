@@ -11,6 +11,7 @@
 // ============================================================================
 
 using System.Text;
+using System.Text.Json;
 
 namespace BBC
 {
@@ -34,7 +35,57 @@ namespace BBC
     {
         Add,
         Remove,
-        Move
+        Move,
+        ImportLayout,
+        ExportLayout
+    }
+
+    public sealed class SidewaysRomLayoutFile
+    {
+        public int Version { get; set; } = 1;
+
+        public List<SidewaysRomLayoutBank> Banks { get; set; } = new List<SidewaysRomLayoutBank>();
+
+        public static SidewaysRomLayoutFile FromPaths(IReadOnlyList<string?> romPaths)
+        {
+            SidewaysRomLayoutFile layout = new SidewaysRomLayoutFile();
+            for (int bank = 0; bank < romPaths.Count; bank++)
+            {
+                if (!string.IsNullOrWhiteSpace(romPaths[bank]))
+                    layout.Banks.Add(new SidewaysRomLayoutBank { Bank = bank, Path = romPaths[bank]! });
+            }
+
+            return layout;
+        }
+
+        public static SidewaysRomLayoutFile Load(string path)
+        {
+            string json = File.ReadAllText(path);
+            SidewaysRomLayoutFile? layout = JsonSerializer.Deserialize<SidewaysRomLayoutFile>(json, JsonOptions);
+            if (layout is null || layout.Version != 1)
+                throw new InvalidDataException("Unsupported sideways ROM layout.");
+
+            layout.Banks ??= new List<SidewaysRomLayoutBank>();
+            return layout;
+        }
+
+        public void Save(string path)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Environment.CurrentDirectory);
+            File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+        }
+
+        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
+        {
+            WriteIndented = true
+        };
+    }
+
+    public sealed class SidewaysRomLayoutBank
+    {
+        public int Bank { get; set; }
+
+        public string Path { get; set; } = string.Empty;
     }
 
     public static class SidewaysRomHeader

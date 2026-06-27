@@ -1076,6 +1076,17 @@ namespace BBC
                             romPatternChangedWhileManagerOpen = true;
                             Console.WriteLine($"ROM bank {action.Bank} moved to bank {action.TargetBank}");
                             break;
+                        case HostRomActionKind.ImportLayout:
+                            ImportSidewaysRomLayout(action.Path);
+                            romPatternChangedWhileManagerOpen = true;
+                            display.ShowNotification("ROM layout imported", Path.GetFileName(action.Path), 2000);
+                            Console.WriteLine($"ROM layout imported: {action.Path}");
+                            break;
+                        case HostRomActionKind.ExportLayout:
+                            ExportSidewaysRomLayout(action.Path);
+                            display.ShowNotification("ROM layout exported", Path.GetFileName(action.Path), 2000);
+                            Console.WriteLine($"ROM layout exported: {action.Path}");
+                            break;
                     }
                 }
                 catch (Exception ex) when (ex is IOException
@@ -2738,6 +2749,43 @@ namespace BBC
             sidewaysRomPaths[bank] = null;
             RefreshSidewaysRomSlot(bank);
             RefreshSidewaysRomSlot(targetBank);
+        }
+
+        private void ExportSidewaysRomLayout(string path)
+        {
+            SidewaysRomLayoutFile.FromPaths(sidewaysRomPaths).Save(path);
+        }
+
+        private void ImportSidewaysRomLayout(string path)
+        {
+            SidewaysRomLayoutFile layout = SidewaysRomLayoutFile.Load(path);
+            string?[] importedPaths = new string?[SidewaysRomBanks];
+
+            foreach (SidewaysRomLayoutBank entry in layout.Banks)
+            {
+                if (entry.Bank < 0 || entry.Bank >= SidewaysRomBanks)
+                    throw new InvalidDataException($"ROM layout bank {entry.Bank} is outside 0-15.");
+                if (importedPaths[entry.Bank] is not null)
+                    throw new InvalidDataException($"ROM layout contains bank {entry.Bank} more than once.");
+                if (string.IsNullOrWhiteSpace(entry.Path))
+                    throw new InvalidDataException($"ROM layout bank {entry.Bank} has no ROM path.");
+
+                string fullPath = Path.GetFullPath(entry.Path);
+                _ = ReadRomFileForBank(fullPath);
+                importedPaths[entry.Bank] = fullPath;
+            }
+
+            for (int bank = 0; bank < SidewaysRomBanks; bank++)
+            {
+                if (importedPaths[bank] is null)
+                    ClearSidewaysRomBank(bank);
+                else
+                    SetSidewaysRomBank(bank, importedPaths[bank]!);
+            }
+
+            selectedSidewaysRom = BasicRomBank;
+            UpdateAmxMouseRomState();
+            RefreshSidewaysRomSlots();
         }
 
         private void RefreshSidewaysRomSlots()

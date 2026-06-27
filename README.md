@@ -144,19 +144,19 @@ The Tube CPU is advanced from host 6502 cycles rather than from a free-running h
 The SDL window has a compact top menu for gameplay/session actions:
 
 ```text
-File      Save screenshot, save/load state, quit
+File      Save screenshot, open/save state, quit
 Disc      Mount/eject drive 0, mount/eject drive 1, create blank SSD
 Machine   BREAK, Shift-BREAK, Ctrl-BREAK, 6502 Co-Processor, pause
-ROM Manager
+ROM Manager  Edit sideways ROM banks, import/export ROM layouts
 View      Fullscreen, scanlines
 Input     Paste clipboard, Shift Lock
 ```
 
 Disc menu mounts behave like inserting media into a real drive: they do not auto-boot the disc. Use `Shift-BREAK` from the Machine menu or keyboard when you want to boot the mounted disc. `.zip` archives can be selected without extracting them; the emulator scans for `.ssd` and `.dsd` entries, presents folders and disc images in a searchable chooser, and streams only the selected image into the drive as read-only media. While the archive chooser is open, type to filter folders and disc names, use arrow keys to navigate, and press Return to select a disc. `Create blank SSD` uses the first empty physical drive, preferring drive 0; if both drives are occupied, the menu item is unavailable.
 
-Save states are written from the File menu using the host file picker and use a `.sav` extension. Successful saves and loads are added to a small recent-state list in the File menu, so commonly used states can be reloaded without reopening the file picker. The snapshot includes BBC RAM and device state, mounted DFS image state, sideways ROM bank contents and paths, and the 65C02 Tube state when the co-processor is enabled. Save states are tied to the current emulator save-state format; older save-state formats are rejected rather than converted.
+Save states are written from the File menu using the host file picker and use a `.sav` extension. Successful saves and opens are added to a small recent-state list in the File menu, so commonly used states can be reopened without reopening the file picker. The snapshot includes BBC RAM and device state, mounted DFS image state, sideways ROM bank contents and paths, and the 65C02 Tube state when the co-processor is enabled. Save states are tied to the current emulator save-state format; older save-state formats are rejected rather than converted.
 
-`ROM Manager` shows the BBC's 16 logical sideways ROM banks as two rows of chip sockets. Empty banks can be filled from the native host file picker, occupied banks show ROM title/type and language/service entry information, and non-system ROMs can be removed or moved to an empty bank. Bank 15, the BASIC ROM bank, is protected; bank 14, the filing-system ROM bank, can be replaced so you can swap DFS for alternatives such as a 1770 DFS ROM. The emulator pauses while the manager is open and performs a power-on reset when the ROM pattern has changed.
+`ROM Manager` shows the BBC's 16 logical sideways ROM banks as two rows of chip sockets. Empty banks can be filled from the native host file picker, occupied banks show ROM title/type and language/service entry information, and non-system ROMs can be removed or moved to an empty bank. Bank 15, the BASIC ROM bank, is protected; bank 14, the filing-system ROM bank, can be replaced so you can swap DFS for alternatives such as a 1770 DFS ROM. The manager can export the current bank-to-ROM-path pattern as a named JSON layout and import a chosen layout later; layouts are explicit files and are not loaded automatically at boot. The emulator pauses while the manager is open and performs a power-on reset when the ROM pattern has changed.
 
 ### Host Shortcuts
 
@@ -191,7 +191,7 @@ On macOS, `§` is also used for the BBC `COPY` key.
 
 Host Caps Lock follows the BBC `CAPS LOCK` key. `Left Ctrl+Left Shift` toggles a BBC-style `SHIFT LOCK` by holding the BBC Shift matrix key down until the chord is pressed again.
 
-The `Input` menu includes a visual keyboard mapper. Open `Input > Keyboard Mapper`, click a BBC key, then press the host key you want to bind to it. The mapper is file-based rather than disc-based: `Input > Save Map` prompts for a JSON profile name and location, `Input > Load Map` opens a chosen profile, and profiles are never loaded automatically when discs change. `Input > Reset Map` returns the current map to the emulator default. If `Assets/DefaultInputProfile.json` exists, it is loaded at startup and used as that default; otherwise the built-in BBC keyboard layout is used.
+The `Input` menu includes a visual keyboard mapper. Open `Input > Keyboard Mapper`, click a BBC key, then press the host key you want to bind to it. The mapper is file-based rather than disc-based: `Input > Save Map` prompts for a JSON profile name and location, `Input > Open Map` opens a chosen profile, and profiles are never loaded automatically when discs change. `Input > Reset Map` returns the current map to the emulator default. If `Assets/DefaultInputProfile.json` exists, it is loaded at startup and used as that default; otherwise the built-in BBC keyboard layout is used.
 
 The bottom border includes small status LEDs for cassette motor, caps lock, shift lock, and drive activity. The cassette/caps/shift indicators sit at the bottom left; the drive glyphs, drive numbers, and drive LEDs sit at the bottom right.
 

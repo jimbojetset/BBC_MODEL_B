@@ -42,6 +42,9 @@ namespace BBC
         private const int RomPanelPadding = 16;
         private const int RomBankNumberHeight = 10;
         private const int RomLabelMaxCharacters = 14;
+        private const int RomLayoutButtonWidth = 98;
+        private const int RomLayoutButtonHeight = 20;
+        private const int RomLayoutButtonBottomInset = 14;
         private const int DfsRomBank = 14;
         private const int BasicRomBank = 15;
         private const int RomActionWidth = 82;
@@ -49,7 +52,7 @@ namespace BBC
         private const int ArchivePanelTopGap = 42;
         private const int ArchiveSearchHeight = 18;
         private const int InputPanelWidth = 780;
-        private const int InputPanelHeight = 340;
+        private const int InputPanelHeight = 390;
         private const bool InputKeyEllipsisEnabled = false;
         private const int MaxRecentStateFiles = 5;
         private const byte BbcShiftKey = 0x00;
@@ -790,7 +793,7 @@ namespace BBC
                 ? $"Press host key for {BbcKeyLabel((byte)selectedInputKey)}"
                 : "Click a BBC key to bind";
             DrawRendererText(prompt, panel.X + 14, panel.Y + panel.H - 26, 220, 220, 160);
-            DrawRendererText("Save from Input > Save Map", panel.X + panel.W - 205, panel.Y + panel.H - 26, 150, 150, 150);
+            DrawRendererText("Open/Save from Input menu", panel.X + panel.W - 220, panel.Y + panel.H - 26, 150, 150, 150);
 
             for (int i = 0; i < InputKeys.Length; i++)
                 DrawInputKey(panel, i, InputKeys[i]);
@@ -1517,12 +1520,30 @@ namespace BBC
 
             if (movingRomSlot >= 0)
                 DrawRendererText("Click an empty bank", panel.X + 12, panel.Y + panel.H - 18, 210, 210, 130);
+            else
+                DrawRomLayoutButtons(panel);
 
             if (activeRomSlot >= 0 && movingRomSlot < 0)
                 DrawRomActionPopup(GetRomSlotRect(panel, activeRomSlot));
 
             if (infoRomSlot >= 0)
                 DrawRomInfoPanel(panel, romSlots[infoRomSlot]);
+        }
+
+        private void DrawRomLayoutButtons(SdlRect panel)
+        {
+            DrawRomLayoutButton(GetRomImportButtonRect(panel), "Import");
+            DrawRomLayoutButton(GetRomExportButtonRect(panel), "Export");
+        }
+
+        private void DrawRomLayoutButton(SdlRect rect, string label)
+        {
+            bool hovered = uiMouseX >= rect.X && uiMouseX < rect.X + rect.W && uiMouseY >= rect.Y && uiMouseY < rect.Y + rect.H;
+            _ = SDL_SetRenderDrawColor(renderer, hovered ? (byte)42 : (byte)24, hovered ? (byte)42 : (byte)24, hovered ? (byte)42 : (byte)24, 255);
+            _ = SDL_RenderFillRect(renderer, ref rect);
+            _ = SDL_SetRenderDrawColor(renderer, 125, 125, 125, 255);
+            DrawRectOutline(rect);
+            DrawRendererText(label, rect.X + 8, rect.Y + 5, 230, 230, 230);
         }
 
         private void DrawRomSlot(int bank, SdlRect slotRect)
@@ -1654,6 +1675,9 @@ namespace BBC
                 }
             }
 
+            if (movingRomSlot < 0 && HandleRomLayoutButtonClick(x, y))
+                return true;
+
             int bank = GetRomSlotAt(x, y);
             if (bank < 0)
                 return IsInRomManagerPanel(x, y);
@@ -1682,6 +1706,34 @@ namespace BBC
 
             activeRomSlot = -1;
             return true;
+        }
+
+        private bool HandleRomLayoutButtonClick(int x, int y)
+        {
+            SdlRect panel = GetRomManagerPanelRect(activeMenuIndex);
+            SdlRect import = GetRomImportButtonRect(panel);
+            if (x >= import.X && x < import.X + import.W && y >= import.Y && y < import.Y + import.H)
+            {
+                string? path = SelectNativeLoadRomLayoutFile();
+                if (!string.IsNullOrWhiteSpace(path))
+                    pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.ImportLayout, -1, -1, path));
+                activeRomSlot = -1;
+                infoRomSlot = -1;
+                return true;
+            }
+
+            SdlRect export = GetRomExportButtonRect(panel);
+            if (x >= export.X && x < export.X + export.W && y >= export.Y && y < export.Y + export.H)
+            {
+                string? path = SelectNativeSaveRomLayoutFile("BBC-ROM-Layout.json");
+                if (!string.IsNullOrWhiteSpace(path))
+                    pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.ExportLayout, -1, -1, EnsureRomLayoutExtension(path)));
+                activeRomSlot = -1;
+                infoRomSlot = -1;
+                return true;
+            }
+
+            return false;
         }
 
         private void HandleRomActionChoice(int action)
@@ -1792,6 +1844,20 @@ namespace BBC
             return new SdlRect(x, y, RomActionWidth, height);
         }
 
+        private static SdlRect GetRomImportButtonRect(SdlRect panel)
+        {
+            int y = panel.Y + panel.H - RomLayoutButtonHeight - RomLayoutButtonBottomInset;
+            int x = panel.X + panel.W - (RomLayoutButtonWidth * 2) - 18;
+            return new SdlRect(x, y, RomLayoutButtonWidth, RomLayoutButtonHeight);
+        }
+
+        private static SdlRect GetRomExportButtonRect(SdlRect panel)
+        {
+            int y = panel.Y + panel.H - RomLayoutButtonHeight - RomLayoutButtonBottomInset;
+            int x = panel.X + panel.W - RomLayoutButtonWidth - 10;
+            return new SdlRect(x, y, RomLayoutButtonWidth, RomLayoutButtonHeight);
+        }
+
         private static int GetRomActionRowCount(int bank)
         {
             if (IsBasicRomBank(bank))
@@ -1821,7 +1887,7 @@ namespace BBC
             return (RomPanelPadding * 2)
                 + (RomSlotRows * (RomSlotHeight + RomBankNumberHeight))
                 + ((RomSlotRows - 1) * RomSlotGapY)
-                + 18;
+                + 34;
         }
 
         private SdlRect GetInputPanelRect()
@@ -3198,83 +3264,83 @@ namespace BBC
 
         private static readonly BbcInputKey[] InputKeys =
         [
-            new BbcInputKey(0x71, "F1", 120, 38, 38, 28),
-            new BbcInputKey(0x72, "F2", 162, 38, 38, 28),
-            new BbcInputKey(0x73, "F3", 204, 38, 38, 28),
-            new BbcInputKey(0x14, "F4", 246, 38, 38, 28),
-            new BbcInputKey(0x74, "F5", 288, 38, 38, 28),
-            new BbcInputKey(0x75, "F6", 330, 38, 38, 28),
-            new BbcInputKey(0x16, "F7", 372, 38, 38, 28),
-            new BbcInputKey(0x76, "F8", 414, 38, 38, 28),
-            new BbcInputKey(0x77, "F9", 456, 38, 38, 28),
-            new BbcInputKey(0x20, "F0", 498, 38, 38, 28),
+            new BbcInputKey(0x71, "F1", 120, 38, 38, 38),
+            new BbcInputKey(0x72, "F2", 162, 38, 38, 38),
+            new BbcInputKey(0x73, "F3", 204, 38, 38, 38),
+            new BbcInputKey(0x14, "F4", 246, 38, 38, 38),
+            new BbcInputKey(0x74, "F5", 288, 38, 38, 38),
+            new BbcInputKey(0x75, "F6", 330, 38, 38, 38),
+            new BbcInputKey(0x16, "F7", 372, 38, 38, 38),
+            new BbcInputKey(0x76, "F8", 414, 38, 38, 38),
+            new BbcInputKey(0x77, "F9", 456, 38, 38, 38),
+            new BbcInputKey(0x20, "F0", 498, 38, 38, 38),
 
-            new BbcInputKey(0x70, "ESC", 31, 74, 38, 28),
-            new BbcInputKey(0x30, "1", 72, 74, 38, 28),
-            new BbcInputKey(0x31, "2", 114, 74, 38, 28),
-            new BbcInputKey(0x11, "3", 156, 74, 38, 28),
-            new BbcInputKey(0x12, "4", 198, 74, 38, 28),
-            new BbcInputKey(0x13, "5", 240, 74, 38, 28),
-            new BbcInputKey(0x34, "6", 282, 74, 38, 28),
-            new BbcInputKey(0x24, "7", 324, 74, 38, 28),
-            new BbcInputKey(0x15, "8", 366, 74, 38, 28),
-            new BbcInputKey(0x26, "9", 408, 74, 38, 28),
-            new BbcInputKey(0x27, "0", 450, 74, 38, 28),
-            new BbcInputKey(0x17, "-", 492, 74, 38, 28),
-            new BbcInputKey(0x18, "^", 534, 74, 38, 28),
-            new BbcInputKey(0x78, "\\", 576, 74, 38, 28),
-            new BbcInputKey(0x19, "LEFT", 622, 74, 38, 28),
-            new BbcInputKey(0x79, "RIGHT", 664, 74, 38, 28),
+            new BbcInputKey(0x70, "ESC", 31, 84, 38, 38),
+            new BbcInputKey(0x30, "1", 72, 84, 38, 38),
+            new BbcInputKey(0x31, "2", 114, 84, 38, 38),
+            new BbcInputKey(0x11, "3", 156, 84, 38, 38),
+            new BbcInputKey(0x12, "4", 198, 84, 38, 38),
+            new BbcInputKey(0x13, "5", 240, 84, 38, 38),
+            new BbcInputKey(0x34, "6", 282, 84, 38, 38),
+            new BbcInputKey(0x24, "7", 324, 84, 38, 38),
+            new BbcInputKey(0x15, "8", 366, 84, 38, 38),
+            new BbcInputKey(0x26, "9", 408, 84, 38, 38),
+            new BbcInputKey(0x27, "0", 450, 84, 38, 38),
+            new BbcInputKey(0x17, "-", 492, 84, 38, 38),
+            new BbcInputKey(0x18, "^", 534, 84, 38, 38),
+            new BbcInputKey(0x78, "\\", 576, 84, 38, 38),
+            new BbcInputKey(0x19, "LEFT", 622, 84, 38, 38),
+            new BbcInputKey(0x79, "RIGHT", 664, 84, 38, 38),
 
-            new BbcInputKey(0x60, "TAB", 36, 108, 52, 28),
-            new BbcInputKey(0x10, "Q", 90, 108, 38, 28),
-            new BbcInputKey(0x21, "W", 132, 108, 38, 28),
-            new BbcInputKey(0x22, "E", 174, 108, 38, 28),
-            new BbcInputKey(0x33, "R", 216, 108, 38, 28),
-            new BbcInputKey(0x23, "T", 258, 108, 38, 28),
-            new BbcInputKey(0x44, "Y", 300, 108, 38, 28),
-            new BbcInputKey(0x35, "U", 342, 108, 38, 28),
-            new BbcInputKey(0x25, "I", 384, 108, 38, 28),
-            new BbcInputKey(0x36, "O", 426, 108, 38, 28),
-            new BbcInputKey(0x37, "P", 468, 108, 38, 28),
-            new BbcInputKey(0x47, "@", 510, 108, 38, 28),
-            new BbcInputKey(0x38, "[", 552, 108, 38, 28),
-            new BbcInputKey(0x28, "_", 594, 108, 38, 28),
-            new BbcInputKey(0x58, "]", 576, 142, 38, 28),
-            new BbcInputKey(0x39, "UP", 640, 108, 38, 28),
-            new BbcInputKey(0x29, "DOWN", 682, 108, 38, 28),
+            new BbcInputKey(0x60, "TAB", 36, 128, 52, 38),
+            new BbcInputKey(0x10, "Q", 90, 128, 38, 38),
+            new BbcInputKey(0x21, "W", 132, 128, 38, 38),
+            new BbcInputKey(0x22, "E", 174, 128, 38, 38),
+            new BbcInputKey(0x33, "R", 216, 128, 38, 38),
+            new BbcInputKey(0x23, "T", 258, 128, 38, 38),
+            new BbcInputKey(0x44, "Y", 300, 128, 38, 38),
+            new BbcInputKey(0x35, "U", 342, 128, 38, 38),
+            new BbcInputKey(0x25, "I", 384, 128, 38, 38),
+            new BbcInputKey(0x36, "O", 426, 128, 38, 38),
+            new BbcInputKey(0x37, "P", 468, 128, 38, 38),
+            new BbcInputKey(0x47, "@", 510, 128, 38, 38),
+            new BbcInputKey(0x38, "[", 552, 128, 38, 38),
+            new BbcInputKey(0x28, "_", 594, 128, 38, 38),
+            new BbcInputKey(0x58, "]", 576, 172, 38, 38),
+            new BbcInputKey(0x39, "UP", 640, 128, 38, 38),
+            new BbcInputKey(0x29, "DOWN", 682, 128, 38, 38),
 
-            new BbcInputKey(0x40, "CAPS", 26, 142, 42, 28),
-            new BbcInputKey(0x01, "CTRL", 73, 142, 42, 28),
-            new BbcInputKey(0x41, "A", 114, 142, 38, 28),
-            new BbcInputKey(0x51, "S", 156, 142, 38, 28),
-            new BbcInputKey(0x32, "D", 198, 142, 38, 28),
-            new BbcInputKey(0x43, "F", 240, 142, 38, 28),
-            new BbcInputKey(0x53, "G", 282, 142, 38, 28),
-            new BbcInputKey(0x54, "H", 324, 142, 38, 28),
-            new BbcInputKey(0x45, "J", 366, 142, 38, 28),
-            new BbcInputKey(0x46, "K", 408, 142, 38, 28),
-            new BbcInputKey(0x56, "L", 450, 142, 38, 28),
-            new BbcInputKey(0x57, ";", 492, 142, 38, 28),
-            new BbcInputKey(0x48, ":", 534, 142, 38, 28),
-            new BbcInputKey(0x49, "RETURN", 620, 142, 76, 28),
+            new BbcInputKey(0x40, "CAPS", 26, 172, 42, 38),
+            new BbcInputKey(0x01, "CTRL", 73, 172, 42, 38),
+            new BbcInputKey(0x41, "A", 114, 172, 38, 38),
+            new BbcInputKey(0x51, "S", 156, 172, 38, 38),
+            new BbcInputKey(0x32, "D", 198, 172, 38, 38),
+            new BbcInputKey(0x43, "F", 240, 172, 38, 38),
+            new BbcInputKey(0x53, "G", 282, 172, 38, 38),
+            new BbcInputKey(0x54, "H", 324, 172, 38, 38),
+            new BbcInputKey(0x45, "J", 366, 172, 38, 38),
+            new BbcInputKey(0x46, "K", 408, 172, 38, 38),
+            new BbcInputKey(0x56, "L", 450, 172, 38, 38),
+            new BbcInputKey(0x57, ";", 492, 172, 38, 38),
+            new BbcInputKey(0x48, ":", 534, 172, 38, 38),
+            new BbcInputKey(0x49, "RETURN", 620, 172, 76, 38),
 
-            new BbcInputKey(BbcKeyboard.LeftShiftKey, "SHIFT", 64, 176, 76, 28),
-            new BbcInputKey(0x61, "Z", 132, 176, 38, 28),
-            new BbcInputKey(0x42, "X", 174, 176, 38, 28),
-            new BbcInputKey(0x52, "C", 216, 176, 38, 28),
-            new BbcInputKey(0x63, "V", 258, 176, 38, 28),
-            new BbcInputKey(0x64, "B", 300, 176, 38, 28),
-            new BbcInputKey(0x55, "N", 342, 176, 38, 28),
-            new BbcInputKey(0x65, "M", 384, 176, 38, 28),
-            new BbcInputKey(0x66, ",", 426, 176, 38, 28),
-            new BbcInputKey(0x67, ".", 468, 176, 38, 28),
-            new BbcInputKey(0x68, "/", 510, 176, 38, 28),
-            new BbcInputKey(BbcKeyboard.RightShiftKey, "SHIFT", 552, 176, 74, 28),
-            new BbcInputKey(0x59, "DEL", 632, 176, 38, 28),
-            new BbcInputKey(0x69, "COPY", 674, 176, 38, 28),
+            new BbcInputKey(BbcKeyboard.LeftShiftKey, "SHIFT", 64, 216, 76, 38),
+            new BbcInputKey(0x61, "Z", 132, 216, 38, 38),
+            new BbcInputKey(0x42, "X", 174, 216, 38, 38),
+            new BbcInputKey(0x52, "C", 216, 216, 38, 38),
+            new BbcInputKey(0x63, "V", 258, 216, 38, 38),
+            new BbcInputKey(0x64, "B", 300, 216, 38, 38),
+            new BbcInputKey(0x55, "N", 342, 216, 38, 38),
+            new BbcInputKey(0x65, "M", 384, 216, 38, 38),
+            new BbcInputKey(0x66, ",", 426, 216, 38, 38),
+            new BbcInputKey(0x67, ".", 468, 216, 38, 38),
+            new BbcInputKey(0x68, "/", 510, 216, 38, 38),
+            new BbcInputKey(BbcKeyboard.RightShiftKey, "SHIFT", 552, 216, 74, 38),
+            new BbcInputKey(0x59, "DEL", 632, 216, 38, 38),
+            new BbcInputKey(0x69, "COPY", 674, 216, 38, 38),
 
-            new BbcInputKey(0x62, "SPACE", 160, 208, 360, 36)
+            new BbcInputKey(0x62, "SPACE", 160, 258, 360, 46)
         ];
 
         private readonly record struct MenuDefinition(string Title, MenuItem[] Items);
@@ -3347,8 +3413,8 @@ namespace BBC
                 new MenuDefinition("Input",
                 [
                     new MenuItem("Keyboard Mapper", "", MenuCommand.OpenInputMapper),
+                    new MenuItem("Open Map...", "", MenuCommand.LoadInputMap),
                     new MenuItem("Save Map", "Ctrl/Cmd+S", MenuCommand.SaveInputMap),
-                    new MenuItem("Load Map", "", MenuCommand.LoadInputMap),
                     new MenuItem("Reset Map", "", MenuCommand.ResetInputMap),
                     MenuSeparator(),
                     new MenuItem("Paste clipboard", "Ctrl/Cmd+V", MenuCommand.PasteClipboard),
@@ -3362,8 +3428,8 @@ namespace BBC
             List<MenuItem> items =
             [
                 new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
-                new MenuItem("Save state...", "", MenuCommand.SaveState),
-                new MenuItem("Load state...", "", MenuCommand.LoadState)
+                new MenuItem("Open state...", "", MenuCommand.LoadState),
+                new MenuItem("Save state...", "", MenuCommand.SaveState)
             ];
 
             if (recentStatePaths.Count > 0)
@@ -3588,13 +3654,13 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Load BBC state'; $dialog.Filter = 'BBC save state (*.sav)|*.sav|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Open BBC state'; $dialog.Filter = 'BBC save state (*.sav)|*.sav|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"sav\"} with prompt \"Load BBC state\")");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"sav\"} with prompt \"Open BBC state\")");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Load BBC state", "--file-filter=BBC save state (*.sav) | *.sav");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Open BBC state", "--file-filter=BBC save state (*.sav) | *.sav");
             }
             catch
             {
@@ -3640,13 +3706,13 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Load BBC input profile'; $dialog.Filter = 'BBC input profile (*.json)|*.json|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Open BBC input profile'; $dialog.Filter = 'BBC input profile (*.json)|*.json|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"json\"} with prompt \"Load BBC input profile\")");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"json\"} with prompt \"Open BBC input profile\")");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Load BBC input profile", "--file-filter=BBC input profile (*.json) | *.json");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Open BBC input profile", "--file-filter=BBC input profile (*.json) | *.json");
             }
             catch
             {
@@ -3682,12 +3748,69 @@ namespace BBC
             return null;
         }
 
+        private static string? SelectNativeSaveRomLayoutFile(string defaultFileName)
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        $"Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.SaveFileDialog; $dialog.Title = 'Export BBC ROM layout'; $dialog.Filter = 'BBC ROM layout (*.json)|*.json'; $dialog.DefaultExt = 'json'; $dialog.FileName = '{defaultFileName}'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ $dialog.FileName }}");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", $"POSIX path of (choose file name with prompt \"Export BBC ROM layout\" default name \"{defaultFileName}\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--save", "--confirm-overwrite", "--title=Export BBC ROM layout", $"--filename={defaultFileName}");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string? SelectNativeLoadRomLayoutFile()
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Import BBC ROM layout'; $dialog.Filter = 'BBC ROM layout (*.json)|*.json|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"json\"} with prompt \"Import BBC ROM layout\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Import BBC ROM layout", "--file-filter=BBC ROM layout (*.json) | *.json");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
         private static string EnsureSaveStateExtension(string path)
         {
             return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".sav");
         }
 
         private static string EnsureInputProfileExtension(string path)
+        {
+            return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".json");
+        }
+
+        private static string EnsureRomLayoutExtension(string path)
         {
             return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".json");
         }
