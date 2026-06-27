@@ -489,6 +489,8 @@ namespace BBC
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
+        private bool inputMapperPauseActive;
+        private bool inputMapperPreviousPaused;
         private bool romPatternChangedWhileManagerOpen;
 
         public FlatMemoryBus Memory { get; } = new FlatMemoryBus();
@@ -620,6 +622,7 @@ namespace BBC
                     throw new InvalidOperationException("Tube 6502 execution failed.", tube6502.CpuException);
 
                 SynchronizeRomManagerPause(Display);
+                SynchronizeInputMapperPause(Display);
                 DrainHostPauseRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
                 DrainHostBreakInput(Display);
@@ -1021,6 +1024,30 @@ namespace BBC
             Cpu.SetPaused(romManagerPreviousPaused);
             tube6502?.SetPaused(romManagerPreviousPaused);
             Sound.SetHostOutputPaused(romManagerPreviousPaused);
+        }
+
+        private void SynchronizeInputMapperPause(Display display)
+        {
+            if (display.InputMapperOpen)
+            {
+                if (inputMapperPauseActive)
+                    return;
+
+                inputMapperPauseActive = true;
+                inputMapperPreviousPaused = emulationPaused;
+                Cpu.SetPaused(true);
+                tube6502?.SetPaused(true);
+                Sound.SetHostOutputPaused(true);
+                return;
+            }
+
+            if (!inputMapperPauseActive)
+                return;
+
+            inputMapperPauseActive = false;
+            Cpu.SetPaused(inputMapperPreviousPaused);
+            tube6502?.SetPaused(inputMapperPreviousPaused);
+            Sound.SetHostOutputPaused(inputMapperPreviousPaused);
         }
 
         private void DrainHostRomActions(Display display)

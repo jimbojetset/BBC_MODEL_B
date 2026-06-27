@@ -167,7 +167,8 @@ Ctrl+F12                BBC Ctrl-BREAK
 Ctrl+P                  Pause or resume emulation
 Space                   Advance 10 frames while paused, including Tube co-processor cycles
 F11                     Toggle scanline overlay
-Ctrl+S / Cmd+S          Save screenshot to Screenshots/
+Ctrl+S / Cmd+S          Save screenshot to Screenshots/ (mapper closed)
+Ctrl+S / Cmd+S          Save the current input map (mapper open)
 Ctrl+T                  Toggle runtime and 8271 disc trace logging
 Ctrl+L / Cmd+L          Open host file picker and mount selected file
 Ctrl+V / Cmd+V          Paste host clipboard text into the BBC keyboard buffer
@@ -189,6 +190,8 @@ Backspace/Delete  BBC DELETE
 On macOS, `§` is also used for the BBC `COPY` key.
 
 Host Caps Lock follows the BBC `CAPS LOCK` key. `Left Ctrl+Left Shift` toggles a BBC-style `SHIFT LOCK` by holding the BBC Shift matrix key down until the chord is pressed again.
+
+The `Input` menu includes a visual keyboard mapper. Open `Input > Keyboard Mapper`, click a BBC key, then press the host key you want to bind to it. The mapper is file-based rather than disc-based: `Input > Save Map` prompts for a JSON profile name and location, `Input > Load Map` opens a chosen profile, and profiles are never loaded automatically when discs change. `Input > Reset Map` returns the current map to the emulator default. If `Assets/DefaultInputProfile.json` exists, it is loaded at startup and used as that default; otherwise the built-in BBC keyboard layout is used.
 
 The bottom border includes small status LEDs for cassette motor, caps lock, shift lock, and drive activity. The cassette/caps/shift indicators sit at the bottom left; the drive glyphs, drive numbers, and drive LEDs sit at the bottom right.
 

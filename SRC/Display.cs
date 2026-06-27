@@ -46,6 +46,9 @@ namespace BBC
         private const int RomActionWidth = 82;
         private const int RomActionRowHeight = 20;
         private const int ArchivePanelTopGap = 42;
+        private const int InputPanelWidth = 780;
+        private const int InputPanelHeight = 340;
+        private const bool InputKeyEllipsisEnabled = false;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
@@ -97,6 +100,7 @@ namespace BBC
         private readonly Queue<HostStateAction> pendingStateActions = new Queue<HostStateAction>();
         private readonly Queue<HostRomAction> pendingRomActions = new Queue<HostRomAction>();
         private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
+        private InputProfile inputProfile = InputProfile.CreateEmulatorDefault();
         private readonly MenuDefinition[] menus;
         private readonly SidewaysRomSlot[] romSlots = new SidewaysRomSlot[16];
         private readonly List<ArchiveDiscEntry> archiveEntries = new List<ArchiveDiscEntry>();
@@ -109,6 +113,7 @@ namespace BBC
         private HostMouseState mouseState;
         private bool relativeMouseMode;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
+        private readonly Dictionary<byte, int> activeMatrixKeys = new Dictionary<byte, int>();
         private readonly int pitchBytes;
 
         private IntPtr window;
@@ -134,6 +139,11 @@ namespace BBC
         private int activeRomSlot = -1;
         private int movingRomSlot = -1;
         private int infoRomSlot = -1;
+        private int hoveredInputKey = -1;
+        private int selectedInputKey = -1;
+        private bool inputMapperOpen;
+        private bool inputProfileDirty;
+        private string activeInputProfileName = "Default";
         private int logicalWidth;
         private int logicalHeight;
         private int uiMouseX = -1;
@@ -191,6 +201,8 @@ namespace BBC
 
         public bool RomManagerOpen => IsRomManagerMenu(activeMenuIndex);
 
+        public bool InputMapperOpen => inputMapperOpen;
+
         public void ShowNotification(string title, string body, int durationMilliseconds = NotificationDurationMilliseconds)
         {
             notificationTitle = title.Trim();
@@ -207,6 +219,7 @@ namespace BBC
             Width = width;
             Height = height;
             scanlinesEnabled = scanlines;
+            activeInputProfileName = inputProfile.Name;
             pitchBytes = width * sizeof(uint);
             frameBuffer = new uint[width * height];
             Array.Fill(frameBuffer, Black);
@@ -280,6 +293,9 @@ namespace BBC
 
                 if (ev.Type == SDL_MOUSEMOTION)
                 {
+                    if (HandleInputMapperMouseMotion(ev.MouseX, ev.MouseY))
+                        continue;
+
                     if (HandleArchiveMouseMotion(ev.MouseX, ev.MouseY))
                         continue;
 
@@ -291,6 +307,9 @@ namespace BBC
 
                 if (ev.Type is SDL_MOUSEBUTTONDOWN or SDL_MOUSEBUTTONUP)
                 {
+                    if (HandleInputMapperMouseButton(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY))
+                        continue;
+
                     if (HandleArchiveMouseButton(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY))
                         continue;
 
@@ -510,6 +529,7 @@ namespace BBC
             DrawDriveGlyphs();
             DrawMenuBar();
             DrawArchiveBrowser();
+            DrawInputMapper();
 
             SDL_RenderPresent(renderer);
         }
@@ -700,6 +720,183 @@ namespace BBC
 
                 DrawRendererText(TrimRendererText(discs[i].FileName, discColumns), discX, rowY + 4, 230, 230, 230);
             }
+        }
+
+        private void DrawInputMapper()
+        {
+            if (!inputMapperOpen)
+                return;
+
+            SdlRect panel = GetInputPanelRect();
+            _ = SDL_SetRenderDrawColor(renderer, 24, 24, 24, 235);
+            _ = SDL_RenderFillRect(renderer, ref panel);
+            _ = SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
+            DrawRectOutline(panel);
+
+            DrawRendererText("Input Mapper", panel.X + 14, panel.Y + 12, 240, 240, 240);
+            DrawRendererText(TrimRendererText(inputProfileDirty ? "Unsaved" : inputProfile.Name, 40), panel.X + 130, panel.Y + 12, 170, 170, 170);
+
+            string prompt = selectedInputKey >= 0
+                ? $"Press host key for {BbcKeyLabel((byte)selectedInputKey)}"
+                : "Click a BBC key to bind";
+            DrawRendererText(prompt, panel.X + 14, panel.Y + panel.H - 26, 220, 220, 160);
+            DrawRendererText("Save from Input > Save Map", panel.X + panel.W - 205, panel.Y + panel.H - 26, 150, 150, 150);
+
+            for (int i = 0; i < InputKeys.Length; i++)
+                DrawInputKey(panel, i, InputKeys[i]);
+        }
+
+        private void DrawInputKey(SdlRect panel, int index, BbcInputKey key)
+        {
+            SdlRect rect = GetInputKeyRect(panel, key);
+            bool hovered = index == hoveredInputKey;
+            bool selected = selectedInputKey == key.InternalKey;
+            bool functionKey = IsFunctionInputKey(key);
+            bool oliveKey = IsOliveInputKey(key);
+            byte fillR = selected ? (byte)48 : hovered ? (byte)30 : (byte)0;
+            byte fillG = selected ? (byte)48 : hovered ? (byte)30 : (byte)0;
+            byte fillB = selected ? (byte)48 : hovered ? (byte)30 : (byte)0;
+
+            if (functionKey)
+            {
+                fillR = selected ? (byte)188 : hovered ? (byte)172 : (byte)154;
+                fillG = selected ? (byte)54 : hovered ? (byte)46 : (byte)38;
+                fillB = selected ? (byte)44 : hovered ? (byte)36 : (byte)30;
+            }
+            else if (oliveKey)
+            {
+                fillR = selected ? (byte)123 : hovered ? (byte)113 : (byte)103;
+                fillG = selected ? (byte)123 : hovered ? (byte)113 : (byte)103;
+                fillB = selected ? (byte)100 : hovered ? (byte)92 : (byte)84;
+            }
+
+            _ = SDL_SetRenderDrawColor(renderer, fillR, fillG, fillB, 255);
+            _ = SDL_RenderFillRect(renderer, ref rect);
+            _ = SDL_SetRenderDrawColor(renderer, selected ? (byte)245 : (byte)125, selected ? (byte)220 : (byte)125, selected ? (byte)130 : (byte)125, 255);
+            DrawRectOutline(rect);
+
+            DrawRendererText(FormatInputKeyText(key.Label, rect), rect.X + 4, rect.Y + 4, 235, 235, 235);
+            string hostKey = inputProfile.GetPrimaryHostKeyName(key.InternalKey);
+            if (hostKey.Length > 0)
+                DrawRendererText(FormatInputKeyText(hostKey, rect), rect.X + 4, rect.Y + 17, 150, 190, 150);
+        }
+
+        private static string FormatInputKeyText(string text, SdlRect keyRect)
+        {
+            text = ShortInputKeyText(text);
+            int maxCharacters = keyRect.W >= 52 ? 8 : 5;
+            return InputKeyEllipsisEnabled
+                ? TrimRendererText(text, maxCharacters)
+                : text.Length > maxCharacters ? text[..maxCharacters] : text;
+        }
+
+        private static string ShortInputKeyText(string text)
+        {
+            return text switch
+            {
+                "Escape" => "Esc",
+                "Caps Lock" => "Caps",
+                "Left Ctrl" => "LCtrl",
+                "Right Ctrl" => "RCtrl",
+                "Left Shift" => "L Shift",
+                "Right Shift" => "R Shift",
+                "Backspace" => "Del",
+                "Delete" => "Del",
+                "Insert" => "Ins",
+                "Section" => "Sect",
+                "Keypad *" => "KP *",
+                "Keypad Enter" => "KP Enter",
+                _ => text
+            };
+        }
+
+        private static bool IsFunctionInputKey(BbcInputKey key)
+        {
+            return key.InternalKey is 0x14 or 0x16 or 0x20 or >= 0x71 and <= 0x77;
+        }
+
+        private static bool IsOliveInputKey(BbcInputKey key)
+        {
+            return key.InternalKey is 0x19 or 0x29 or 0x39 or 0x69 or 0x79;
+        }
+
+        private bool HandleInputMapperMouseMotion(int hostX, int hostY)
+        {
+            if (!inputMapperOpen)
+                return false;
+
+            RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+            uiMouseX = (int)Math.Round(logicalX);
+            uiMouseY = (int)Math.Round(logicalY);
+            if (uiMouseY < TopMenuHeight)
+                return false;
+
+            hoveredInputKey = GetInputKeyIndexAt(uiMouseX, uiMouseY);
+            return IsInInputPanel(uiMouseX, uiMouseY);
+        }
+
+        private bool HandleInputMapperMouseButton(byte button, bool pressed, int hostX, int hostY)
+        {
+            if (!inputMapperOpen || button != SDL_BUTTON_LEFT)
+                return false;
+
+            RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+            int x = (int)logicalX;
+            int y = (int)logicalY;
+            if (y < TopMenuHeight)
+                return false;
+
+            if (!pressed)
+                return IsInInputPanel(x, y);
+
+            int keyIndex = GetInputKeyIndexAt(x, y);
+            if (keyIndex >= 0)
+            {
+                byte clickedKey = InputKeys[keyIndex].InternalKey;
+                selectedInputKey = selectedInputKey == clickedKey ? -1 : clickedKey;
+                return true;
+            }
+
+            if (selectedInputKey >= 0)
+            {
+                selectedInputKey = -1;
+                return true;
+            }
+
+            if (!IsInInputPanel(x, y))
+            {
+                inputMapperOpen = false;
+                selectedInputKey = -1;
+            }
+
+            return true;
+        }
+
+        private void HandleInputMapperKeyDown(int keySym, int modifiers)
+        {
+            if (keySym == SDLK_ESCAPE)
+            {
+                inputMapperOpen = false;
+                selectedInputKey = -1;
+                return;
+            }
+
+            if (keySym == SDLK_S && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
+            {
+                SaveInputProfile();
+                return;
+            }
+
+            if (selectedInputKey < 0)
+                return;
+
+            inputProfile.BindHostKey(keySym, (byte)selectedInputKey);
+            inputProfileDirty = true;
+            ShowNotification(
+                "Input mapped",
+                $"{SdlKey.GetName(keySym)} -> {BbcKeyLabel((byte)selectedInputKey)}",
+                2000);
+            selectedInputKey = -1;
         }
 
         private bool HandleMenuMouseMotion(int hostX, int hostY)
@@ -1367,6 +1564,57 @@ namespace BBC
                 + 18;
         }
 
+        private SdlRect GetInputPanelRect()
+        {
+            int width = Math.Min(InputPanelWidth, logicalWidth - 36);
+            int height = Math.Min(InputPanelHeight, logicalHeight - TopMenuHeight - 28);
+            int x = Math.Max(0, (logicalWidth - width) / 2);
+            int y = TopMenuHeight + 38;
+            return new SdlRect(x, y, width, height);
+        }
+
+        private bool IsInInputPanel(int x, int y)
+        {
+            SdlRect panel = GetInputPanelRect();
+            return x >= panel.X && x < panel.X + panel.W
+                && y >= panel.Y && y < panel.Y + panel.H;
+        }
+
+        private int GetInputKeyIndexAt(int x, int y)
+        {
+            SdlRect panel = GetInputPanelRect();
+            for (int i = 0; i < InputKeys.Length; i++)
+            {
+                SdlRect key = GetInputKeyRect(panel, InputKeys[i]);
+                if (x >= key.X && x < key.X + key.W && y >= key.Y && y < key.Y + key.H)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        private static SdlRect GetInputKeyRect(SdlRect panel, BbcInputKey key)
+        {
+            return new SdlRect(panel.X + key.X, panel.Y + key.Y, key.W, key.H);
+        }
+
+        private static string BbcKeyLabel(byte internalKey)
+        {
+            if (internalKey == BbcKeyboard.LeftShiftKey)
+                return "Left SHIFT";
+
+            if (internalKey == BbcKeyboard.RightShiftKey)
+                return "Right SHIFT";
+
+            for (int i = 0; i < InputKeys.Length; i++)
+            {
+                if (InputKeys[i].InternalKey == internalKey)
+                    return InputKeys[i].Label;
+            }
+
+            return $"${internalKey:X2}";
+        }
+
         private bool IsRomManagerMenu(int menuIndex)
         {
             return menuIndex >= 0 && menuIndex < menus.Length && menus[menuIndex].Title == "ROM Manager";
@@ -1430,7 +1678,72 @@ namespace BBC
                 case MenuCommand.ToggleShiftLock:
                     ToggleBbcShiftLock();
                     break;
+                case MenuCommand.OpenInputMapper:
+                    inputMapperOpen = true;
+                    selectedInputKey = -1;
+                    activeMenuIndex = -1;
+                    break;
+                case MenuCommand.SaveInputMap:
+                    SaveInputProfile();
+                    break;
+                case MenuCommand.LoadInputMap:
+                    LoadInputProfile();
+                    break;
+                case MenuCommand.ResetInputMap:
+                    ResetInputProfile();
+                    break;
             }
+        }
+
+        private void ResetInputProfile()
+        {
+            inputProfile.ResetToDefault();
+            selectedInputKey = -1;
+            inputProfileDirty = true;
+            ShowNotification("Input map reset", "Unsaved", 2000);
+        }
+
+        private void LoadInputProfile()
+        {
+            string? path = SelectNativeLoadInputProfileFile();
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            inputProfile = InputProfile.Load(path);
+            activeInputProfileName = inputProfile.Name;
+            inputProfileDirty = false;
+            selectedInputKey = -1;
+            activeHostKeys.Clear();
+            activeMatrixKeys.Clear();
+            ClearJoystickSource(HostJoystickSource.Keyboard);
+            ShowNotification("Input map loaded", inputProfile.Name, 2000);
+        }
+
+        private void SaveInputProfile(string title = "Input map saved")
+        {
+            string? path = SelectNativeSaveInputProfileFile(CreateInputProfileFileName());
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            path = EnsureInputProfileExtension(path);
+            try
+            {
+                inputProfile.Save(path);
+                activeInputProfileName = inputProfile.Name;
+                inputProfileDirty = false;
+                ShowNotification(title, inputProfile.Name, 2000);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                ShowNotification("Input map not saved", ex.Message, 4000);
+            }
+        }
+
+        private string CreateInputProfileFileName()
+        {
+            return string.IsNullOrWhiteSpace(activeInputProfileName)
+                ? "Default.json"
+                : EnsureInputProfileExtension(activeInputProfileName);
         }
 
         private bool IsMenuItemChecked(MenuCommand command)
@@ -2178,6 +2491,12 @@ namespace BBC
         {
             int modifiers = SDL_GetModState();
 
+            if (inputMapperOpen)
+            {
+                HandleInputMapperKeyDown(keySym, modifiers);
+                return;
+            }
+
             if (archiveEntries.Count > 0 && keySym == SDLK_ESCAPE)
             {
                 CloseArchiveBrowser();
@@ -2187,7 +2506,7 @@ namespace BBC
             if (TryToggleBbcShiftLock(keySym, modifiers))
                 return;
 
-            if (keySym == SDLK_CAPSLOCK)
+            if (keySym == SDLK_CAPSLOCK && inputProfile.SyncHostCapsLock)
             {
                 SyncHostCapsLockState();
                 return;
@@ -2245,18 +2564,24 @@ namespace BBC
 
             EnqueueKeyboardJoystickChange(keySym, true);
 
-            BbcKeyChord? chord = MapHostKeyToBbcKey(keySym, modifiers);
-            if (chord.HasValue)
+            BbcKeyBinding? key = inputProfile.MapHostKey(keySym, modifiers);
+            if (key.HasValue)
             {
-                bool shiftAdjusted = ApplyShiftAdjustment(chord.Value.ShiftAdjustment, (modifiers & KMOD_SHIFT) != 0);
-                activeHostKeys[keySym] = new ActiveHostKey(chord.Value.InternalKey, chord.Value.ShiftAdjustment, shiftAdjusted);
-                EnqueueBbcKeyChange(chord.Value.InternalKey, true);
+                if (activeHostKeys.ContainsKey(keySym))
+                    return;
+
+                bool shiftAdjusted = ApplyShiftAdjustment(key.Value.ShiftAdjustment, (modifiers & KMOD_SHIFT) != 0);
+                activeHostKeys[keySym] = new ActiveHostKey(key.Value.MatrixKey, key.Value.ShiftAdjustment, shiftAdjusted);
+                PressBbcMatrixKey(key.Value.MatrixKey);
             }
         }
 
         private void EnqueueKeyUp(int keySym)
         {
-            if (keySym == SDLK_CAPSLOCK)
+            if (inputMapperOpen)
+                return;
+
+            if (keySym == SDLK_CAPSLOCK && inputProfile.SyncHostCapsLock)
             {
                 SyncHostCapsLockState();
                 return;
@@ -2266,28 +2591,19 @@ namespace BBC
 
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
             {
-                EnqueueBbcKeyChange(activeKey.InternalKey, false);
+                ReleaseBbcMatrixKey(activeKey.MatrixKey);
                 RestoreAdjustedShift(activeKey, (SDL_GetModState() & KMOD_SHIFT) != 0);
                 return;
             }
 
-            BbcKeyChord? chord = MapHostKeyToBbcKey(keySym, SDL_GetModState());
-            if (chord.HasValue)
-                EnqueueBbcKeyChange(chord.Value.InternalKey, false);
+            BbcKeyBinding? key = inputProfile.MapHostKey(keySym, SDL_GetModState());
+            if (key.HasValue)
+                EnqueueBbcKeyChange(key.Value.MatrixKey, false);
         }
 
         private void EnqueueKeyboardJoystickChange(int keySym, bool pressed)
         {
-            JoystickControl? control = keySym switch
-            {
-                SDLK_LEFT => JoystickControl.Left,
-                SDLK_RIGHT => JoystickControl.Right,
-                SDLK_UP => JoystickControl.Up,
-                SDLK_DOWN => JoystickControl.Down,
-                SDLK_SPACE => JoystickControl.Fire,
-                _ => null
-            };
-
+            JoystickControl? control = inputProfile.MapKeyboardJoystick(keySym);
             if (control.HasValue)
                 SetJoystickSource(control.Value, HostJoystickSource.Keyboard, pressed);
         }
@@ -2369,60 +2685,29 @@ namespace BBC
 
         private void UpdateControllerAxis(byte axis, short value)
         {
-            if (axis == SDL_CONTROLLER_AXIS_LEFTX)
-            {
-                EnqueueAnalogJoystickChange(JoystickAxis.X, value);
-                SetJoystickSource(JoystickControl.Left, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
-                SetJoystickSource(JoystickControl.Right, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
-            }
-            else if (axis == SDL_CONTROLLER_AXIS_LEFTY)
-            {
-                EnqueueAnalogJoystickChange(JoystickAxis.Y, value);
-                SetJoystickSource(JoystickControl.Up, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
-                SetJoystickSource(JoystickControl.Down, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
-            }
+            if (!inputProfile.TryMapControllerAxis(axis, out JoystickAxis joystickAxis, out JoystickControl negative, out JoystickControl positive))
+                return;
+
+            EnqueueAnalogJoystickChange(joystickAxis, value);
+            SetJoystickSource(negative, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
+            SetJoystickSource(positive, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
         }
 
         private void UpdateControllerButton(byte button, bool pressed)
         {
-            switch (button)
-            {
-                case SDL_CONTROLLER_BUTTON_A:
-                    SetJoystickSource(JoystickControl.Fire, HostJoystickSource.ControllerButton, pressed);
-                    break;
-
-                case SDL_CONTROLLER_BUTTON_DPAD_UP:
-                    SetJoystickSource(JoystickControl.Up, HostJoystickSource.ControllerButton, pressed);
-                    break;
-
-                case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-                    SetJoystickSource(JoystickControl.Down, HostJoystickSource.ControllerButton, pressed);
-                    break;
-
-                case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                    SetJoystickSource(JoystickControl.Left, HostJoystickSource.ControllerButton, pressed);
-                    break;
-
-                case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-                    SetJoystickSource(JoystickControl.Right, HostJoystickSource.ControllerButton, pressed);
-                    break;
-            }
+            JoystickControl? control = inputProfile.MapControllerButton(button);
+            if (control.HasValue)
+                SetJoystickSource(control.Value, HostJoystickSource.ControllerButton, pressed);
         }
 
         private void UpdateJoystickAxis(byte axis, short value)
         {
-            if (axis == 0)
-            {
-                EnqueueAnalogJoystickChange(JoystickAxis.X, value);
-                SetJoystickSource(JoystickControl.Left, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
-                SetJoystickSource(JoystickControl.Right, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
-            }
-            else if (axis == 1)
-            {
-                EnqueueAnalogJoystickChange(JoystickAxis.Y, value);
-                SetJoystickSource(JoystickControl.Up, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
-                SetJoystickSource(JoystickControl.Down, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
-            }
+            if (!inputProfile.TryMapJoystickAxis(axis, out JoystickAxis joystickAxis, out JoystickControl negative, out JoystickControl positive))
+                return;
+
+            EnqueueAnalogJoystickChange(joystickAxis, value);
+            SetJoystickSource(negative, HostJoystickSource.ControllerAxis, value < -JoystickAxisThreshold);
+            SetJoystickSource(positive, HostJoystickSource.ControllerAxis, value > JoystickAxisThreshold);
         }
 
         private void EnqueueAnalogJoystickChange(JoystickAxis axis, short value)
@@ -2440,8 +2725,9 @@ namespace BBC
 
         private void UpdateJoystickButton(byte button, bool pressed)
         {
-            if (button == 0)
-                SetJoystickSource(JoystickControl.Fire, HostJoystickSource.ControllerButton, pressed);
+            JoystickControl? control = inputProfile.MapJoystickButton(button);
+            if (control.HasValue)
+                SetJoystickSource(control.Value, HostJoystickSource.ControllerButton, pressed);
         }
 
         private void UpdateMouseState(int hostX, int hostY, int relativeX, int relativeY, byte buttons)
@@ -2541,15 +2827,41 @@ namespace BBC
             pendingKeyChanges.Enqueue(new HostKeyChange(internalKey, pressed));
         }
 
-        private bool ApplyShiftAdjustment(ShiftAdjustment adjustment, bool hostShiftDown)
+        private void PressBbcMatrixKey(byte matrixKey)
         {
-            if (adjustment == ShiftAdjustment.Suppress && hostShiftDown)
+            activeMatrixKeys.TryGetValue(matrixKey, out int count);
+            activeMatrixKeys[matrixKey] = count + 1;
+            if (count == 0)
+                EnqueueBbcKeyChange(matrixKey, true);
+        }
+
+        private void ReleaseBbcMatrixKey(byte matrixKey)
+        {
+            if (!activeMatrixKeys.TryGetValue(matrixKey, out int count))
+            {
+                EnqueueBbcKeyChange(matrixKey, false);
+                return;
+            }
+
+            if (count > 1)
+            {
+                activeMatrixKeys[matrixKey] = count - 1;
+                return;
+            }
+
+            activeMatrixKeys.Remove(matrixKey);
+            EnqueueBbcKeyChange(matrixKey, false);
+        }
+
+        private bool ApplyShiftAdjustment(BbcShiftAdjustment adjustment, bool hostShiftDown)
+        {
+            if (adjustment == BbcShiftAdjustment.Suppress && hostShiftDown)
             {
                 EnqueueBbcKeyChange(BbcShiftKey, false);
                 return true;
             }
 
-            if (adjustment == ShiftAdjustment.Force && !hostShiftDown)
+            if (adjustment == BbcShiftAdjustment.Force && !hostShiftDown)
             {
                 EnqueueBbcKeyChange(BbcShiftKey, true);
                 return true;
@@ -2563,145 +2875,97 @@ namespace BBC
             if (!activeKey.ShiftAdjusted)
                 return;
 
-            if (activeKey.ShiftAdjustment == ShiftAdjustment.Suppress && hostShiftDown)
+            if (activeKey.ShiftAdjustment == BbcShiftAdjustment.Suppress && hostShiftDown)
                 EnqueueBbcKeyChange(BbcShiftKey, true);
 
-            if (activeKey.ShiftAdjustment == ShiftAdjustment.Force && !hostShiftDown)
+            if (activeKey.ShiftAdjustment == BbcShiftAdjustment.Force && !hostShiftDown)
                 EnqueueBbcKeyChange(BbcShiftKey, false);
         }
 
-        private static BbcKeyChord? MapHostKeyToBbcKey(int keySym, int modifiers)
-        {
-            if ((modifiers & KMOD_ALT) != 0)
-            {
-                BbcKeyChord? optionKey = MapOptionHostKeyToBbcKey(keySym);
-                if (optionKey.HasValue)
-                    return optionKey;
-            }
+        private readonly record struct ActiveHostKey(byte MatrixKey, BbcShiftAdjustment ShiftAdjustment, bool ShiftAdjusted);
 
-            if ((modifiers & KMOD_SHIFT) != 0)
-            {
-                BbcKeyChord? shiftedKey = MapShiftedHostKeyToBbcKey(keySym);
-                if (shiftedKey.HasValue)
-                    return shiftedKey;
-            }
+        private readonly record struct BbcInputKey(byte InternalKey, string Label, int X, int Y, int W = 36, int H = 28);
 
-            return keySym switch
-            {
-                SDLK_LSHIFT or SDLK_RSHIFT => Key(0x00),
-                SDLK_LCTRL or SDLK_RCTRL => Key(0x01),
-                SDLK_Q => Key(0x10),
-                SDLK_3 => Key(0x11),
-                SDLK_4 => Key(0x12),
-                SDLK_5 => Key(0x13),
-                SDLK_F4 => Key(0x14),
-                SDLK_8 => Key(0x15),
-                SDLK_F7 => Key(0x16),
-                SDLK_MINUS => Key(0x17),
-                SDLK_EQUALS => Key(0x17, ShiftAdjustment.Force),
-                SDLK_CARET => Key(0x18),
-                SDLK_LEFT => Key(0x19),
-                SDLK_F10 => Key(0x20),
-                SDLK_W => Key(0x21),
-                SDLK_E => Key(0x22),
-                SDLK_T => Key(0x23),
-                SDLK_7 => Key(0x24),
-                SDLK_APOSTROPHE => Key(0x24, ShiftAdjustment.Force),
-                SDLK_I => Key(0x25),
-                SDLK_9 => Key(0x26),
-                SDLK_0 => Key(0x27),
-                SDLK_UNDERSCORE => Key(0x28),
-                SDLK_HASH => Key(0x11, ShiftAdjustment.Force),
-                SDLK_DOWN => Key(0x29),
-                SDLK_1 => Key(0x30),
-                SDLK_2 => Key(0x31),
-                SDLK_D => Key(0x32),
-                SDLK_R => Key(0x33),
-                SDLK_6 => Key(0x34),
-                SDLK_U => Key(0x35),
-                SDLK_O => Key(0x36),
-                SDLK_P => Key(0x37),
-                SDLK_LEFTBRACKET => Key(0x38),
-                SDLK_UP => Key(0x39),
-                SDLK_A => Key(0x41),
-                SDLK_X => Key(0x42),
-                SDLK_F => Key(0x43),
-                SDLK_Y => Key(0x44),
-                SDLK_J => Key(0x45),
-                SDLK_K => Key(0x46),
-                SDLK_AT => Key(0x47),
-                SDLK_COLON => Key(0x48, ShiftAdjustment.Suppress),
-                SDLK_ASTERISK or SDLK_KP_MULTIPLY => Key(0x48, ShiftAdjustment.Force),
-                SDLK_RETURN or SDLK_RETURN2 or SDLK_KP_ENTER => Key(0x49),
-                SDLK_S => Key(0x51),
-                SDLK_C => Key(0x52),
-                SDLK_G => Key(0x53),
-                SDLK_H => Key(0x54),
-                SDLK_N => Key(0x55),
-                SDLK_L => Key(0x56),
-                SDLK_SEMICOLON => Key(0x57),
-                SDLK_PLUS => Key(0x57, ShiftAdjustment.Force),
-                SDLK_RIGHTBRACKET => Key(0x58),
-                SDLK_BACKSPACE or SDLK_DELETE => Key(0x59),
-                SDLK_TAB => Key(0x60),
-                SDLK_Z => Key(0x61),
-                SDLK_SPACE => Key(0x62),
-                SDLK_V => Key(0x63),
-                SDLK_B => Key(0x64),
-                SDLK_M => Key(0x65),
-                SDLK_COMMA => Key(0x66),
-                SDLK_PERIOD => Key(0x67),
-                SDLK_SLASH => Key(0x68),
-                SDLK_INSERT or SDLK_SECTION => Key(0x69),
-                SDLK_ESCAPE => Key(0x70),
-                SDLK_F1 => Key(0x71),
-                SDLK_F2 => Key(0x72),
-                SDLK_F3 => Key(0x73),
-                SDLK_F5 => Key(0x74),
-                SDLK_F6 => Key(0x75),
-                SDLK_F8 => Key(0x76),
-                SDLK_F9 => Key(0x77),
-                SDLK_BACKSLASH => Key(0x78),
-                SDLK_RIGHT => Key(0x79),
-                _ => null
-            };
-        }
+        private static readonly BbcInputKey[] InputKeys =
+        [
+            new BbcInputKey(0x71, "F1", 120, 38, 38, 28),
+            new BbcInputKey(0x72, "F2", 162, 38, 38, 28),
+            new BbcInputKey(0x73, "F3", 204, 38, 38, 28),
+            new BbcInputKey(0x14, "F4", 246, 38, 38, 28),
+            new BbcInputKey(0x74, "F5", 288, 38, 38, 28),
+            new BbcInputKey(0x75, "F6", 330, 38, 38, 28),
+            new BbcInputKey(0x16, "F7", 372, 38, 38, 28),
+            new BbcInputKey(0x76, "F8", 414, 38, 38, 28),
+            new BbcInputKey(0x77, "F9", 456, 38, 38, 28),
+            new BbcInputKey(0x20, "F0", 498, 38, 38, 28),
 
-        private static BbcKeyChord? MapShiftedHostKeyToBbcKey(int keySym)
-        {
-            return keySym switch
-            {
-                SDLK_0 => Key(0x27, ShiftAdjustment.Suppress),
-                SDLK_2 => Key(0x47, ShiftAdjustment.Suppress),
-                SDLK_AT => Key(0x47, ShiftAdjustment.Suppress),
-                SDLK_APOSTROPHE or SDLK_QUOTEDBL => Key(0x31, ShiftAdjustment.Force),
-                SDLK_HASH => Key(0x11, ShiftAdjustment.Force),
-                SDLK_UNDERSCORE => Key(0x17),
-                SDLK_8 => Key(0x48),
-                SDLK_9 => Key(0x15),
-                SDLK_EQUALS or SDLK_PLUS => Key(0x57),
-                SDLK_SEMICOLON or SDLK_COLON => Key(0x48, ShiftAdjustment.Suppress),
-                _ => null
-            };
-        }
+            new BbcInputKey(0x70, "ESC", 31, 74, 38, 28),
+            new BbcInputKey(0x30, "1", 72, 74, 38, 28),
+            new BbcInputKey(0x31, "2", 114, 74, 38, 28),
+            new BbcInputKey(0x11, "3", 156, 74, 38, 28),
+            new BbcInputKey(0x12, "4", 198, 74, 38, 28),
+            new BbcInputKey(0x13, "5", 240, 74, 38, 28),
+            new BbcInputKey(0x34, "6", 282, 74, 38, 28),
+            new BbcInputKey(0x24, "7", 324, 74, 38, 28),
+            new BbcInputKey(0x15, "8", 366, 74, 38, 28),
+            new BbcInputKey(0x26, "9", 408, 74, 38, 28),
+            new BbcInputKey(0x27, "0", 450, 74, 38, 28),
+            new BbcInputKey(0x17, "-", 492, 74, 38, 28),
+            new BbcInputKey(0x18, "^", 534, 74, 38, 28),
+            new BbcInputKey(0x78, "\\", 576, 74, 38, 28),
+            new BbcInputKey(0x19, "LEFT", 622, 74, 38, 28),
+            new BbcInputKey(0x79, "RIGHT", 664, 74, 38, 28),
 
-        private static BbcKeyChord? MapOptionHostKeyToBbcKey(int keySym)
-        {
-            return keySym switch
-            {
-                SDLK_3 or SDLK_HASH => Key(0x11, ShiftAdjustment.Force),
-                _ => null
-            };
-        }
+            new BbcInputKey(0x60, "TAB", 36, 108, 52, 28),
+            new BbcInputKey(0x10, "Q", 90, 108, 38, 28),
+            new BbcInputKey(0x21, "W", 132, 108, 38, 28),
+            new BbcInputKey(0x22, "E", 174, 108, 38, 28),
+            new BbcInputKey(0x33, "R", 216, 108, 38, 28),
+            new BbcInputKey(0x23, "T", 258, 108, 38, 28),
+            new BbcInputKey(0x44, "Y", 300, 108, 38, 28),
+            new BbcInputKey(0x35, "U", 342, 108, 38, 28),
+            new BbcInputKey(0x25, "I", 384, 108, 38, 28),
+            new BbcInputKey(0x36, "O", 426, 108, 38, 28),
+            new BbcInputKey(0x37, "P", 468, 108, 38, 28),
+            new BbcInputKey(0x47, "@", 510, 108, 38, 28),
+            new BbcInputKey(0x38, "[", 552, 108, 38, 28),
+            new BbcInputKey(0x28, "_", 594, 108, 38, 28),
+            new BbcInputKey(0x58, "]", 576, 142, 38, 28),
+            new BbcInputKey(0x39, "UP", 640, 108, 38, 28),
+            new BbcInputKey(0x29, "DOWN", 682, 108, 38, 28),
 
-        private static BbcKeyChord Key(byte internalKey, ShiftAdjustment shiftAdjustment = ShiftAdjustment.Preserve)
-        {
-            return new BbcKeyChord(internalKey, shiftAdjustment);
-        }
+            new BbcInputKey(0x40, "CAPS", 26, 142, 42, 28),
+            new BbcInputKey(0x01, "CTRL", 73, 142, 42, 28),
+            new BbcInputKey(0x41, "A", 114, 142, 38, 28),
+            new BbcInputKey(0x51, "S", 156, 142, 38, 28),
+            new BbcInputKey(0x32, "D", 198, 142, 38, 28),
+            new BbcInputKey(0x43, "F", 240, 142, 38, 28),
+            new BbcInputKey(0x53, "G", 282, 142, 38, 28),
+            new BbcInputKey(0x54, "H", 324, 142, 38, 28),
+            new BbcInputKey(0x45, "J", 366, 142, 38, 28),
+            new BbcInputKey(0x46, "K", 408, 142, 38, 28),
+            new BbcInputKey(0x56, "L", 450, 142, 38, 28),
+            new BbcInputKey(0x57, ";", 492, 142, 38, 28),
+            new BbcInputKey(0x48, ":", 534, 142, 38, 28),
+            new BbcInputKey(0x49, "RETURN", 620, 142, 76, 28),
 
-        private readonly record struct ActiveHostKey(byte InternalKey, ShiftAdjustment ShiftAdjustment, bool ShiftAdjusted);
+            new BbcInputKey(BbcKeyboard.LeftShiftKey, "SHIFT", 64, 176, 76, 28),
+            new BbcInputKey(0x61, "Z", 132, 176, 38, 28),
+            new BbcInputKey(0x42, "X", 174, 176, 38, 28),
+            new BbcInputKey(0x52, "C", 216, 176, 38, 28),
+            new BbcInputKey(0x63, "V", 258, 176, 38, 28),
+            new BbcInputKey(0x64, "B", 300, 176, 38, 28),
+            new BbcInputKey(0x55, "N", 342, 176, 38, 28),
+            new BbcInputKey(0x65, "M", 384, 176, 38, 28),
+            new BbcInputKey(0x66, ",", 426, 176, 38, 28),
+            new BbcInputKey(0x67, ".", 468, 176, 38, 28),
+            new BbcInputKey(0x68, "/", 510, 176, 38, 28),
+            new BbcInputKey(BbcKeyboard.RightShiftKey, "SHIFT", 552, 176, 74, 28),
+            new BbcInputKey(0x59, "DEL", 632, 176, 38, 28),
+            new BbcInputKey(0x69, "COPY", 674, 176, 38, 28),
 
-        private readonly record struct BbcKeyChord(byte InternalKey, ShiftAdjustment ShiftAdjustment);
+            new BbcInputKey(0x62, "SPACE", 160, 208, 360, 36)
+        ];
 
         private readonly record struct MenuDefinition(string Title, MenuItem[] Items);
 
@@ -2726,14 +2990,11 @@ namespace BBC
             ToggleScanlines,
             ToggleFullScreen,
             PasteClipboard,
-            ToggleShiftLock
-        }
-
-        private enum ShiftAdjustment
-        {
-            Preserve,
-            Suppress,
-            Force
+            ToggleShiftLock,
+            OpenInputMapper,
+            SaveInputMap,
+            LoadInputMap,
+            ResetInputMap
         }
 
         private static MenuDefinition[] CreateMenus()
@@ -2776,6 +3037,11 @@ namespace BBC
                 ]),
                 new MenuDefinition("Input",
                 [
+                    new MenuItem("Keyboard Mapper", "", MenuCommand.OpenInputMapper),
+                    new MenuItem("Save Map", "Ctrl/Cmd+S", MenuCommand.SaveInputMap),
+                    new MenuItem("Load Map", "", MenuCommand.LoadInputMap),
+                    new MenuItem("Reset Map", "", MenuCommand.ResetInputMap),
+                    MenuSeparator(),
                     new MenuItem("Paste clipboard", "Ctrl/Cmd+V", MenuCommand.PasteClipboard),
                     new MenuItem("Shift Lock", "L Ctrl+L Shift", MenuCommand.ToggleShiftLock)
                 ])
@@ -2966,6 +3232,58 @@ namespace BBC
             return null;
         }
 
+        private static string? SelectNativeSaveInputProfileFile(string defaultFileName)
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        $"Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.SaveFileDialog; $dialog.Title = 'Save BBC input profile'; $dialog.Filter = 'BBC input profile (*.json)|*.json'; $dialog.DefaultExt = 'json'; $dialog.FileName = '{defaultFileName}'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ $dialog.FileName }}");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", $"POSIX path of (choose file name with prompt \"Save BBC input profile\" default name \"{defaultFileName}\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--save", "--confirm-overwrite", "--title=Save BBC input profile", $"--filename={defaultFileName}");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string? SelectNativeLoadInputProfileFile()
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Load BBC input profile'; $dialog.Filter = 'BBC input profile (*.json)|*.json|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"json\"} with prompt \"Load BBC input profile\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Load BBC input profile", "--file-filter=BBC input profile (*.json) | *.json");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
         private static string? SelectNativeRomFile()
         {
             try
@@ -2995,6 +3313,11 @@ namespace BBC
         private static string EnsureSaveStateExtension(string path)
         {
             return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".sav");
+        }
+
+        private static string EnsureInputProfileExtension(string path)
+        {
+            return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".json");
         }
 
         private static string? RunProcessForSingleLine(string fileName, params string[] arguments)
