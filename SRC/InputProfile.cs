@@ -498,6 +498,105 @@ namespace BBC
         {
             return internalKey == RightShiftKey ? LeftShiftKey : internalKey;
         }
+
+        public static bool TryMapCharacter(char ch, out BbcKeyBinding key)
+        {
+            if (ch >= 'a' && ch <= 'z')
+                return TryMapLetter(ch, BbcShiftAdjustment.Preserve, out key);
+
+            if (ch >= 'A' && ch <= 'Z')
+                return TryMapLetter(char.ToLowerInvariant(ch), BbcShiftAdjustment.Force, out key);
+
+            key = ch switch
+            {
+                ' ' => new BbcKeyBinding(0x62, BbcShiftAdjustment.Preserve),
+                '0' => new BbcKeyBinding(0x27, BbcShiftAdjustment.Preserve),
+                '1' => new BbcKeyBinding(0x30, BbcShiftAdjustment.Preserve),
+                '2' => new BbcKeyBinding(0x31, BbcShiftAdjustment.Preserve),
+                '3' => new BbcKeyBinding(0x11, BbcShiftAdjustment.Preserve),
+                '4' => new BbcKeyBinding(0x12, BbcShiftAdjustment.Preserve),
+                '5' => new BbcKeyBinding(0x13, BbcShiftAdjustment.Preserve),
+                '6' => new BbcKeyBinding(0x34, BbcShiftAdjustment.Preserve),
+                '7' => new BbcKeyBinding(0x24, BbcShiftAdjustment.Preserve),
+                '8' => new BbcKeyBinding(0x15, BbcShiftAdjustment.Preserve),
+                '9' => new BbcKeyBinding(0x26, BbcShiftAdjustment.Preserve),
+                '!' => new BbcKeyBinding(0x30, BbcShiftAdjustment.Force),
+                '"' => new BbcKeyBinding(0x31, BbcShiftAdjustment.Force),
+                '#' => new BbcKeyBinding(0x11, BbcShiftAdjustment.Force),
+                '$' => new BbcKeyBinding(0x12, BbcShiftAdjustment.Force),
+                '%' => new BbcKeyBinding(0x13, BbcShiftAdjustment.Force),
+                '&' => new BbcKeyBinding(0x34, BbcShiftAdjustment.Force),
+                '\'' => new BbcKeyBinding(0x24, BbcShiftAdjustment.Force),
+                '(' => new BbcKeyBinding(0x15, BbcShiftAdjustment.Force),
+                ')' => new BbcKeyBinding(0x26, BbcShiftAdjustment.Force),
+                '-' => new BbcKeyBinding(0x17, BbcShiftAdjustment.Preserve),
+                '=' => new BbcKeyBinding(0x17, BbcShiftAdjustment.Force),
+                '^' => new BbcKeyBinding(0x18, BbcShiftAdjustment.Preserve),
+                '~' => new BbcKeyBinding(0x18, BbcShiftAdjustment.Force),
+                '_' => new BbcKeyBinding(0x28, BbcShiftAdjustment.Preserve),
+                '£' => new BbcKeyBinding(0x28, BbcShiftAdjustment.Force),
+                '@' => new BbcKeyBinding(0x47, BbcShiftAdjustment.Preserve),
+                '`' => new BbcKeyBinding(0x47, BbcShiftAdjustment.Force),
+                ':' => new BbcKeyBinding(0x48, BbcShiftAdjustment.Preserve),
+                '*' => new BbcKeyBinding(0x48, BbcShiftAdjustment.Force),
+                ';' => new BbcKeyBinding(0x57, BbcShiftAdjustment.Preserve),
+                '+' => new BbcKeyBinding(0x57, BbcShiftAdjustment.Force),
+                '[' => new BbcKeyBinding(0x38, BbcShiftAdjustment.Preserve),
+                '{' => new BbcKeyBinding(0x38, BbcShiftAdjustment.Force),
+                ']' => new BbcKeyBinding(0x58, BbcShiftAdjustment.Preserve),
+                '}' => new BbcKeyBinding(0x58, BbcShiftAdjustment.Force),
+                ',' => new BbcKeyBinding(0x66, BbcShiftAdjustment.Preserve),
+                '<' => new BbcKeyBinding(0x66, BbcShiftAdjustment.Force),
+                '.' => new BbcKeyBinding(0x67, BbcShiftAdjustment.Preserve),
+                '>' => new BbcKeyBinding(0x67, BbcShiftAdjustment.Force),
+                '/' => new BbcKeyBinding(0x68, BbcShiftAdjustment.Preserve),
+                '?' => new BbcKeyBinding(0x68, BbcShiftAdjustment.Force),
+                '\\' => new BbcKeyBinding(0x78, BbcShiftAdjustment.Preserve),
+                '|' => new BbcKeyBinding(0x78, BbcShiftAdjustment.Force),
+                '\r' or '\n' => new BbcKeyBinding(0x49, BbcShiftAdjustment.Preserve),
+                '\t' => new BbcKeyBinding(0x60, BbcShiftAdjustment.Preserve),
+                _ => default
+            };
+
+            return ch is >= ' ' and <= '~' or '£' or '\r' or '\n' or '\t'
+                && key.InternalKey != 0;
+        }
+
+        private static bool TryMapLetter(char ch, BbcShiftAdjustment shiftAdjustment, out BbcKeyBinding key)
+        {
+            key = ch switch
+            {
+                'a' => new BbcKeyBinding(0x41, shiftAdjustment),
+                'b' => new BbcKeyBinding(0x64, shiftAdjustment),
+                'c' => new BbcKeyBinding(0x52, shiftAdjustment),
+                'd' => new BbcKeyBinding(0x32, shiftAdjustment),
+                'e' => new BbcKeyBinding(0x22, shiftAdjustment),
+                'f' => new BbcKeyBinding(0x43, shiftAdjustment),
+                'g' => new BbcKeyBinding(0x53, shiftAdjustment),
+                'h' => new BbcKeyBinding(0x54, shiftAdjustment),
+                'i' => new BbcKeyBinding(0x25, shiftAdjustment),
+                'j' => new BbcKeyBinding(0x45, shiftAdjustment),
+                'k' => new BbcKeyBinding(0x46, shiftAdjustment),
+                'l' => new BbcKeyBinding(0x56, shiftAdjustment),
+                'm' => new BbcKeyBinding(0x65, shiftAdjustment),
+                'n' => new BbcKeyBinding(0x55, shiftAdjustment),
+                'o' => new BbcKeyBinding(0x36, shiftAdjustment),
+                'p' => new BbcKeyBinding(0x37, shiftAdjustment),
+                'q' => new BbcKeyBinding(0x10, shiftAdjustment),
+                'r' => new BbcKeyBinding(0x33, shiftAdjustment),
+                's' => new BbcKeyBinding(0x51, shiftAdjustment),
+                't' => new BbcKeyBinding(0x23, shiftAdjustment),
+                'u' => new BbcKeyBinding(0x35, shiftAdjustment),
+                'v' => new BbcKeyBinding(0x63, shiftAdjustment),
+                'w' => new BbcKeyBinding(0x21, shiftAdjustment),
+                'x' => new BbcKeyBinding(0x42, shiftAdjustment),
+                'y' => new BbcKeyBinding(0x44, shiftAdjustment),
+                'z' => new BbcKeyBinding(0x61, shiftAdjustment),
+                _ => default
+            };
+
+            return key.InternalKey != 0;
+        }
     }
 
     internal static class SdlModifier

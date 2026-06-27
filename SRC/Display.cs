@@ -113,6 +113,7 @@ namespace BBC
         private readonly List<ArchiveDiscEntry> archiveEntries = new List<ArchiveDiscEntry>();
         private string[] archiveFolders = [];
         private int pendingScreenshotRequests;
+        private int suppressedTextInputCharacters;
         private int pendingTraceToggleRequests;
         private int pendingPauseToggleRequests;
         private int pendingFrameAdvanceRequests;
@@ -120,6 +121,7 @@ namespace BBC
         private HostMouseState mouseState;
         private bool relativeMouseMode;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
+        private readonly HashSet<int> textInputHostKeys = new HashSet<int>();
         private readonly Dictionary<byte, int> activeMatrixKeys = new Dictionary<byte, int>();
         private readonly int pitchBytes;
 
@@ -296,8 +298,14 @@ namespace BBC
                     continue;
                 }
 
-                if (ev.Type == SDL_TEXTINPUT && HandleArchiveTextInput(ev.Text))
+                if (ev.Type == SDL_TEXTINPUT)
+                {
+                    if (HandleArchiveTextInput(ev.Text))
+                        continue;
+
+                    HandleBbcTextInput(ev.Text);
                     continue;
+                }
 
                 if (ev.Type == SDL_KEYDOWN && ev.KeyRepeat == 0)
                     EnqueueKeyDown(ev.KeySym);
@@ -1136,6 +1144,36 @@ namespace BBC
 
             UpdateArchiveFilter();
             return true;
+        }
+
+        private void HandleBbcTextInput(byte[] textBytes)
+        {
+            string text = DecodeSdlText(textBytes);
+            if (text.Length == 0)
+                return;
+
+            foreach (char ch in text)
+            {
+                if (suppressedTextInputCharacters > 0)
+                {
+                    suppressedTextInputCharacters--;
+                    continue;
+                }
+
+                EnqueueBbcCharacter(ch);
+            }
+        }
+
+        private void EnqueueBbcCharacter(char ch)
+        {
+            if (!BbcKeyboard.TryMapCharacter(ch, out BbcKeyBinding key))
+                return;
+
+            bool hostShiftDown = (SDL_GetModState() & KMOD_SHIFT) != 0;
+            bool shiftAdjusted = ApplyShiftAdjustment(key.ShiftAdjustment, hostShiftDown);
+            PressBbcMatrixKey(key.MatrixKey);
+            ReleaseBbcMatrixKey(key.MatrixKey);
+            RestoreAdjustedShift(new ActiveHostKey(key.MatrixKey, key.ShiftAdjustment, shiftAdjusted), hostShiftDown);
         }
 
         private bool HandleArchiveKeyDown(int keySym)
@@ -2941,6 +2979,12 @@ namespace BBC
             EnqueueKeyboardJoystickChange(keySym, true);
 
             BbcKeyBinding? key = inputProfile.MapHostKey(keySym, modifiers);
+            if (IsHostTextKey(keySym) && ShouldUseTextInputForKey(modifiers, key))
+            {
+                textInputHostKeys.Add(keySym);
+                return;
+            }
+
             if (key.HasValue)
             {
                 if (activeHostKeys.ContainsKey(keySym))
@@ -2949,7 +2993,27 @@ namespace BBC
                 bool shiftAdjusted = ApplyShiftAdjustment(key.Value.ShiftAdjustment, (modifiers & KMOD_SHIFT) != 0);
                 activeHostKeys[keySym] = new ActiveHostKey(key.Value.MatrixKey, key.Value.ShiftAdjustment, shiftAdjusted);
                 PressBbcMatrixKey(key.Value.MatrixKey);
+                if (IsHostTextKey(keySym))
+                    suppressedTextInputCharacters++;
             }
+        }
+
+        private bool ShouldUseTextInputForKey(int modifiers, BbcKeyBinding? key)
+        {
+            if ((modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
+                return false;
+
+            if (!key.HasValue)
+                return true;
+
+            return (modifiers & (KMOD_SHIFT | KMOD_ALT)) != 0
+                || key.Value.ShiftAdjustment != BbcShiftAdjustment.Preserve;
+        }
+
+        private static bool IsHostTextKey(int keySym)
+        {
+            return keySym >= 32 && keySym <= 126
+                || keySym == SDLK_SECTION;
         }
 
         private void EnqueueKeyUp(int keySym)
@@ -2964,6 +3028,9 @@ namespace BBC
             }
 
             EnqueueKeyboardJoystickChange(keySym, false);
+
+            if (textInputHostKeys.Remove(keySym))
+                return;
 
             if (activeHostKeys.Remove(keySym, out ActiveHostKey activeKey))
             {
