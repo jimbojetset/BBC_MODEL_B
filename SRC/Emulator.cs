@@ -1153,6 +1153,9 @@ namespace BBC
 
         private bool TryHandleSidewaysRomLanguageCommand()
         {
+            if (tube6502 is not null)
+                return false;
+
             if (!IsCliEntryPoint((ushort)(Cpu.registers.PC & 0xFFFF)))
                 return false;
 
