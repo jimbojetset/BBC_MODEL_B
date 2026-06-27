@@ -3414,7 +3414,7 @@ namespace BBC
                 [
                     new MenuItem("Keyboard Mapper", "", MenuCommand.OpenInputMapper),
                     new MenuItem("Open Map...", "", MenuCommand.LoadInputMap),
-                    new MenuItem("Save Map", "Ctrl/Cmd+S", MenuCommand.SaveInputMap),
+                    new MenuItem("Save Map", "", MenuCommand.SaveInputMap),
                     new MenuItem("Reset Map", "", MenuCommand.ResetInputMap),
                     MenuSeparator(),
                     new MenuItem("Paste clipboard", "Ctrl/Cmd+V", MenuCommand.PasteClipboard),
