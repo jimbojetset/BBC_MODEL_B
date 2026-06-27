@@ -1548,11 +1548,13 @@ namespace BBC
                     {
                         case HostStateActionKind.Save:
                             SaveStateFile(action.Path);
+                            display.AddRecentState(action.Path);
                             display.ShowNotification("State saved", Path.GetFileName(action.Path), 2000);
                             Console.WriteLine($"Saved state: {action.Path}");
                             break;
                         case HostStateActionKind.Load:
                             LoadStateFile(action.Path);
+                            display.AddRecentState(action.Path);
                             display.ShowNotification("State loaded", Path.GetFileName(action.Path), 2000);
                             Console.WriteLine($"Loaded state: {action.Path}");
                             break;
@@ -1580,6 +1582,7 @@ namespace BBC
             try
             {
                 LoadStateFile(path);
+                display?.AddRecentState(path);
                 display?.ShowNotification("State loaded", Path.GetFileName(path), 2000);
                 Console.WriteLine($"Loaded state: {path}");
                 return true;

@@ -15,6 +15,7 @@ using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO.Compression;
+using System.Text;
 
 namespace BBC
 {
@@ -46,9 +47,11 @@ namespace BBC
         private const int RomActionWidth = 82;
         private const int RomActionRowHeight = 20;
         private const int ArchivePanelTopGap = 42;
+        private const int ArchiveSearchHeight = 18;
         private const int InputPanelWidth = 780;
         private const int InputPanelHeight = 340;
         private const bool InputKeyEllipsisEnabled = false;
+        private const int MaxRecentStateFiles = 5;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
@@ -101,8 +104,9 @@ namespace BBC
         private readonly Queue<HostRomAction> pendingRomActions = new Queue<HostRomAction>();
         private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
         private InputProfile inputProfile = InputProfile.CreateEmulatorDefault();
-        private readonly MenuDefinition[] menus;
+        private MenuDefinition[] menus = [];
         private readonly SidewaysRomSlot[] romSlots = new SidewaysRomSlot[16];
+        private readonly List<string> recentStatePaths = new List<string>();
         private readonly List<ArchiveDiscEntry> archiveEntries = new List<ArchiveDiscEntry>();
         private string[] archiveFolders = [];
         private int pendingScreenshotRequests;
@@ -153,8 +157,11 @@ namespace BBC
         private int activeArchiveFolder = -1;
         private int hoveredArchiveFolder = -1;
         private int hoveredArchiveEntry = -1;
+        private int activeArchiveEntry = -1;
         private int archiveFolderScroll;
         private int archiveEntryScroll;
+        private bool archiveEntryFocus;
+        private string archiveSearchText = string.Empty;
         private SdlRect viewportRect;
         private string notificationTitle = string.Empty;
         private string notificationBody = string.Empty;
@@ -223,6 +230,7 @@ namespace BBC
             pitchBytes = width * sizeof(uint);
             frameBuffer = new uint[width * height];
             Array.Fill(frameBuffer, Black);
+            LoadRecentStatePaths();
             menus = CreateMenus();
 
             ThrowIfSdlFailed(SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK), "SDL_InitSubSystem");
@@ -284,6 +292,9 @@ namespace BBC
                     EnqueueDroppedFile(ev.DropFile);
                     continue;
                 }
+
+                if (ev.Type == SDL_TEXTINPUT && HandleArchiveTextInput(ev.Text))
+                    continue;
 
                 if (ev.Type == SDL_KEYDOWN && ev.KeyRepeat == 0)
                     EnqueueKeyDown(ev.KeySym);
@@ -429,6 +440,18 @@ namespace BBC
                 destination.Add(pendingStateActions.Dequeue());
         }
 
+        public void AddRecentState(string path)
+        {
+            string fullPath = Path.GetFullPath(path);
+            recentStatePaths.RemoveAll(existing => string.Equals(existing, fullPath, StringComparison.OrdinalIgnoreCase));
+            recentStatePaths.Insert(0, fullPath);
+            if (recentStatePaths.Count > MaxRecentStateFiles)
+                recentStatePaths.RemoveRange(MaxRecentStateFiles, recentStatePaths.Count - MaxRecentStateFiles);
+
+            SaveRecentStatePaths();
+            menus = CreateMenus();
+        }
+
         public void DrainRomActions(ICollection<HostRomAction> destination)
         {
             while (pendingRomActions.Count > 0)
@@ -448,13 +471,15 @@ namespace BBC
             archiveDrive = drive;
             archiveEntries.Clear();
             archiveEntries.AddRange(entries);
-            archiveFolders = archiveEntries
-                .Select(entry => entry.Folder)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(folder => folder, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            archiveSearchText = string.Empty;
+            archiveFolders = GetFilteredArchiveFolders();
             activeArchiveFolder = archiveFolders.Length == 0 ? -1 : 0;
+            activeArchiveEntry = 0;
             hoveredArchiveFolder = -1;
+            hoveredArchiveEntry = -1;
+            archiveFolderScroll = 0;
+            archiveEntryScroll = 0;
+            archiveEntryFocus = false;
             hoveredArchiveEntry = -1;
             archiveFolderScroll = 0;
             archiveEntryScroll = 0;
@@ -673,8 +698,28 @@ namespace BBC
             DrawRendererText(title, panel.X + 12, panel.Y + 10, 235, 235, 235);
             DrawRendererText($"Drive {archiveDrive}", panel.X + panel.W - 72, panel.Y + 10, 170, 170, 170);
 
-            int listY = panel.Y + 34;
-            int listHeight = panel.H - 46;
+            SdlRect search = new SdlRect(panel.X + 12, panel.Y + 32, panel.W - 24, ArchiveSearchHeight);
+            _ = SDL_SetRenderDrawColor(renderer, 8, 8, 8, 255);
+            _ = SDL_RenderFillRect(renderer, ref search);
+            _ = SDL_SetRenderDrawColor(renderer, 160, 160, 120, 255);
+            DrawRectOutline(search);
+            int searchColumns = Math.Max(1, (search.W - 10) / MenuTextCellWidth);
+            string searchText = archiveSearchText.Length == 0 ? "Type to search" : archiveSearchText;
+            string visibleSearchText = TrimRendererText(searchText, searchColumns);
+            int searchTextX = archiveSearchText.Length == 0 ? search.X + 17 : search.X + 5;
+            DrawRendererText(visibleSearchText, searchTextX, search.Y + 4,
+                archiveSearchText.Length == 0 ? (byte)95 : (byte)220,
+                archiveSearchText.Length == 0 ? (byte)95 : (byte)220,
+                archiveSearchText.Length == 0 ? (byte)95 : (byte)220);
+            int caretX = archiveSearchText.Length == 0
+                ? search.X + 6
+                : Math.Min(search.X + search.W - 5, search.X + 5 + GetRendererTextWidth(visibleSearchText));
+            SdlRect caret = new SdlRect(caretX, search.Y + 4, 1, MenuTextCellHeight);
+            _ = SDL_SetRenderDrawColor(renderer, 230, 230, 170, 255);
+            _ = SDL_RenderFillRect(renderer, ref caret);
+
+            int listY = panel.Y + 58;
+            int listHeight = panel.H - 70;
             int folderWidth = 150;
             int visibleRows = GetArchiveVisibleRows();
             SdlRect divider = new SdlRect(panel.X + folderWidth, listY, 1, listHeight);
@@ -691,7 +736,8 @@ namespace BBC
                 if (i == activeArchiveFolder || i == hoveredArchiveFolder)
                 {
                     SdlRect row = new SdlRect(panel.X + 6, rowY - 1, folderWidth - 12, MenuItemHeight - 1);
-                    _ = SDL_SetRenderDrawColor(renderer, i == activeArchiveFolder ? (byte)58 : (byte)42, 58, 58, 255);
+                    bool focused = !archiveEntryFocus && i == activeArchiveFolder;
+                    _ = SDL_SetRenderDrawColor(renderer, focused ? (byte)78 : i == activeArchiveFolder ? (byte)58 : (byte)42, 58, 58, 255);
                     _ = SDL_RenderFillRect(renderer, ref row);
                 }
 
@@ -704,6 +750,9 @@ namespace BBC
             List<ArchiveDiscEntry> discs = GetArchiveFolderEntries(folder);
             int discX = panel.X + folderWidth + 12;
             int discColumns = Math.Max(8, (panel.X + panel.W - 12 - discX) / MenuTextCellWidth);
+            if (archiveFolders.Length == 0)
+                DrawRendererText("No matches", discX, listY + 4, 140, 140, 140);
+
             for (int rowIndex = 0; rowIndex < visibleRows; rowIndex++)
             {
                 int i = archiveEntryScroll + rowIndex;
@@ -711,10 +760,11 @@ namespace BBC
                     break;
 
                 int rowY = listY + (rowIndex * MenuItemHeight);
-                if (i == hoveredArchiveEntry)
+                if (i == activeArchiveEntry || i == hoveredArchiveEntry)
                 {
                     SdlRect row = new SdlRect(discX - 6, rowY - 1, panel.X + panel.W - discX - 6, MenuItemHeight - 1);
-                    _ = SDL_SetRenderDrawColor(renderer, 54, 54, 54, 255);
+                    bool focused = archiveEntryFocus && i == activeArchiveEntry;
+                    _ = SDL_SetRenderDrawColor(renderer, focused ? (byte)78 : i == activeArchiveEntry ? (byte)58 : (byte)54, 54, 54, 255);
                     _ = SDL_RenderFillRect(renderer, ref row);
                 }
 
@@ -1013,14 +1063,18 @@ namespace BBC
             if (folderIndex >= 0)
             {
                 activeArchiveFolder = folderIndex;
+                activeArchiveEntry = 0;
                 hoveredArchiveEntry = -1;
                 archiveEntryScroll = 0;
+                archiveEntryFocus = false;
                 return true;
             }
 
             int entryIndex = GetArchiveEntryIndexAt(x, y);
             if (entryIndex >= 0)
             {
+                archiveEntryFocus = true;
+                activeArchiveEntry = entryIndex;
                 string folder = archiveFolders[activeArchiveFolder];
                 ArchiveDiscEntry entry = GetArchiveFolderEntries(folder)[entryIndex];
                 pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.MountArchiveEntry, archivePath, archiveDrive, entry.EntryPath));
@@ -1062,6 +1116,75 @@ namespace BBC
             return true;
         }
 
+        private bool HandleArchiveTextInput(byte[] textBytes)
+        {
+            if (archiveEntries.Count == 0)
+                return false;
+
+            string text = DecodeSdlText(textBytes);
+            if (text.Length == 0)
+                return true;
+
+            foreach (char ch in text)
+            {
+                if (!char.IsControl(ch))
+                    archiveSearchText += ch;
+            }
+
+            UpdateArchiveFilter();
+            return true;
+        }
+
+        private bool HandleArchiveKeyDown(int keySym)
+        {
+            if (archiveEntries.Count == 0)
+                return false;
+
+            switch (keySym)
+            {
+                case SDLK_ESCAPE:
+                    CloseArchiveBrowser();
+                    return true;
+
+                case SDLK_BACKSPACE:
+                case SDLK_DELETE:
+                    if (archiveSearchText.Length > 0)
+                    {
+                        archiveSearchText = archiveSearchText[..^1];
+                        UpdateArchiveFilter();
+                    }
+                    return true;
+
+                case SDLK_LEFT:
+                    archiveEntryFocus = false;
+                    EnsureArchiveSelectionVisible();
+                    return true;
+
+                case SDLK_RIGHT:
+                    if (GetActiveArchiveFolderEntries().Count > 0)
+                        archiveEntryFocus = true;
+                    EnsureArchiveSelectionVisible();
+                    return true;
+
+                case SDLK_UP:
+                    MoveArchiveSelection(-1);
+                    return true;
+
+                case SDLK_DOWN:
+                    MoveArchiveSelection(1);
+                    return true;
+
+                case SDLK_RETURN:
+                case SDLK_RETURN2:
+                case SDLK_KP_ENTER:
+                    ActivateArchiveSelection();
+                    return true;
+
+                default:
+                    return true;
+            }
+        }
+
         private bool IsMenuArea(int x, int y)
         {
             if (y >= 0 && y < TopMenuHeight)
@@ -1090,7 +1213,7 @@ namespace BBC
         private int GetArchiveFolderIndexAt(int x, int y)
         {
             SdlRect panel = GetArchivePanelRect();
-            int listY = panel.Y + 34;
+            int listY = GetArchiveListY(panel);
             int folderWidth = 150;
             if (x < panel.X || x >= panel.X + folderWidth || y < listY || y >= panel.Y + panel.H - 6)
                 return -1;
@@ -1105,7 +1228,7 @@ namespace BBC
                 return -1;
 
             SdlRect panel = GetArchivePanelRect();
-            int listY = panel.Y + 34;
+            int listY = GetArchiveListY(panel);
             int discX = panel.X + 162;
             if (x < discX || x >= panel.X + panel.W || y < listY || y >= panel.Y + panel.H - 6)
                 return -1;
@@ -1118,7 +1241,12 @@ namespace BBC
         private int GetArchiveVisibleRows()
         {
             SdlRect panel = GetArchivePanelRect();
-            return Math.Max(1, (panel.H - 46) / MenuItemHeight);
+            return Math.Max(1, (panel.H - 70) / MenuItemHeight);
+        }
+
+        private static int GetArchiveListY(SdlRect panel)
+        {
+            return panel.Y + 58;
         }
 
         private static int ClampScroll(int scroll, int itemCount, int visibleRows)
@@ -1129,10 +1257,139 @@ namespace BBC
 
         private List<ArchiveDiscEntry> GetArchiveFolderEntries(string folder)
         {
+            string filter = archiveSearchText.Trim();
             return archiveEntries
                 .Where(entry => string.Equals(entry.Folder, folder, StringComparison.OrdinalIgnoreCase))
+                .Where(entry => filter.Length == 0
+                    || entry.FileName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                    || entry.Folder.Contains(filter, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(entry => entry.FileName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+        }
+
+        private string[] GetFilteredArchiveFolders()
+        {
+            string filter = archiveSearchText.Trim();
+            IEnumerable<string> folders = archiveEntries
+                .Select(entry => entry.Folder)
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+
+            if (filter.Length > 0)
+            {
+                folders = folders.Where(folder =>
+                    folder.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                    || archiveEntries.Any(entry =>
+                        string.Equals(entry.Folder, folder, StringComparison.OrdinalIgnoreCase)
+                        && entry.FileName.Contains(filter, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            return folders
+                .OrderBy(folder => folder, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private List<ArchiveDiscEntry> GetActiveArchiveFolderEntries()
+        {
+            string folder = activeArchiveFolder >= 0 && activeArchiveFolder < archiveFolders.Length
+                ? archiveFolders[activeArchiveFolder]
+                : string.Empty;
+            return GetArchiveFolderEntries(folder);
+        }
+
+        private void UpdateArchiveFilter()
+        {
+            string previousFolder = activeArchiveFolder >= 0 && activeArchiveFolder < archiveFolders.Length
+                ? archiveFolders[activeArchiveFolder]
+                : string.Empty;
+
+            archiveFolders = GetFilteredArchiveFolders();
+            activeArchiveFolder = Array.FindIndex(archiveFolders, folder => string.Equals(folder, previousFolder, StringComparison.OrdinalIgnoreCase));
+            if (activeArchiveFolder < 0)
+                activeArchiveFolder = archiveFolders.Length == 0 ? -1 : 0;
+
+            activeArchiveEntry = Math.Min(Math.Max(activeArchiveEntry, 0), Math.Max(0, GetActiveArchiveFolderEntries().Count - 1));
+            if (GetActiveArchiveFolderEntries().Count == 0)
+            {
+                activeArchiveEntry = -1;
+                archiveEntryFocus = false;
+            }
+
+            archiveFolderScroll = ClampScroll(archiveFolderScroll, archiveFolders.Length, GetArchiveVisibleRows());
+            archiveEntryScroll = ClampScroll(archiveEntryScroll, GetActiveArchiveFolderEntries().Count, GetArchiveVisibleRows());
+            hoveredArchiveFolder = -1;
+            hoveredArchiveEntry = -1;
+            EnsureArchiveSelectionVisible();
+        }
+
+        private void MoveArchiveSelection(int delta)
+        {
+            if (archiveEntryFocus)
+            {
+                List<ArchiveDiscEntry> discs = GetActiveArchiveFolderEntries();
+                if (discs.Count == 0)
+                    return;
+
+                activeArchiveEntry = Math.Clamp(activeArchiveEntry + delta, 0, discs.Count - 1);
+            }
+            else if (archiveFolders.Length > 0)
+            {
+                activeArchiveFolder = Math.Clamp(activeArchiveFolder + delta, 0, archiveFolders.Length - 1);
+                activeArchiveEntry = GetActiveArchiveFolderEntries().Count == 0 ? -1 : 0;
+                archiveEntryScroll = 0;
+            }
+
+            EnsureArchiveSelectionVisible();
+        }
+
+        private void ActivateArchiveSelection()
+        {
+            if (!archiveEntryFocus)
+            {
+                if (GetActiveArchiveFolderEntries().Count > 0)
+                    archiveEntryFocus = true;
+                return;
+            }
+
+            List<ArchiveDiscEntry> discs = GetActiveArchiveFolderEntries();
+            if (activeArchiveEntry < 0 || activeArchiveEntry >= discs.Count)
+                return;
+
+            ArchiveDiscEntry entry = discs[activeArchiveEntry];
+            pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.MountArchiveEntry, archivePath, archiveDrive, entry.EntryPath));
+            CloseArchiveBrowser();
+        }
+
+        private void EnsureArchiveSelectionVisible()
+        {
+            int rows = GetArchiveVisibleRows();
+            archiveFolderScroll = ClampScroll(archiveFolderScroll, archiveFolders.Length, rows);
+            archiveEntryScroll = ClampScroll(archiveEntryScroll, GetActiveArchiveFolderEntries().Count, rows);
+
+            if (!archiveEntryFocus && activeArchiveFolder >= 0)
+                archiveFolderScroll = ScrollToItem(archiveFolderScroll, activeArchiveFolder, rows, archiveFolders.Length);
+
+            if (archiveEntryFocus && activeArchiveEntry >= 0)
+                archiveEntryScroll = ScrollToItem(archiveEntryScroll, activeArchiveEntry, rows, GetActiveArchiveFolderEntries().Count);
+        }
+
+        private static int ScrollToItem(int scroll, int index, int visibleRows, int itemCount)
+        {
+            if (index < scroll)
+                return ClampScroll(index, itemCount, visibleRows);
+
+            if (index >= scroll + visibleRows)
+                return ClampScroll(index - visibleRows + 1, itemCount, visibleRows);
+
+            return ClampScroll(scroll, itemCount, visibleRows);
+        }
+
+        private static string DecodeSdlText(byte[] textBytes)
+        {
+            int length = Array.IndexOf(textBytes, (byte)0);
+            if (length < 0)
+                length = textBytes.Length;
+
+            return length == 0 ? string.Empty : Encoding.UTF8.GetString(textBytes, 0, length);
         }
 
         private void CloseArchiveBrowser()
@@ -1143,8 +1400,11 @@ namespace BBC
             activeArchiveFolder = -1;
             hoveredArchiveFolder = -1;
             hoveredArchiveEntry = -1;
+            activeArchiveEntry = -1;
             archiveFolderScroll = 0;
             archiveEntryScroll = 0;
+            archiveEntryFocus = false;
+            archiveSearchText = string.Empty;
         }
 
         private int GetMenuIndexAt(int x, int y)
@@ -1648,6 +1908,13 @@ namespace BBC
                 case MenuCommand.LoadState:
                     EnqueueLoadState();
                     break;
+                case MenuCommand.LoadRecentState1:
+                case MenuCommand.LoadRecentState2:
+                case MenuCommand.LoadRecentState3:
+                case MenuCommand.LoadRecentState4:
+                case MenuCommand.LoadRecentState5:
+                    EnqueueRecentState(command);
+                    break;
                 case MenuCommand.Quit:
                     QuitRequested = true;
                     break;
@@ -1746,6 +2013,44 @@ namespace BBC
                 : EnsureInputProfileExtension(activeInputProfileName);
         }
 
+        private void LoadRecentStatePaths()
+        {
+            recentStatePaths.Clear();
+            string path = GetRecentStatePath();
+            if (!File.Exists(path))
+                return;
+
+            try
+            {
+                foreach (string line in File.ReadLines(path))
+                {
+                    string statePath = line.Trim();
+                    if (statePath.Length == 0 || recentStatePaths.Contains(statePath, StringComparer.OrdinalIgnoreCase))
+                        continue;
+
+                    recentStatePaths.Add(statePath);
+                    if (recentStatePaths.Count == MaxRecentStateFiles)
+                        break;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"Recent save states ignored: {ex.Message}");
+            }
+        }
+
+        private void SaveRecentStatePaths()
+        {
+            try
+            {
+                File.WriteAllLines(GetRecentStatePath(), recentStatePaths);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"Recent save states not saved: {ex.Message}");
+            }
+        }
+
         private bool IsMenuItemChecked(MenuCommand command)
         {
             return command switch
@@ -1768,6 +2073,11 @@ namespace BBC
                 MenuCommand.CreateBlankSsd => !Drive0Mounted || !Drive1Mounted,
                 MenuCommand.EjectDrive0 => Drive0Mounted,
                 MenuCommand.EjectDrive1 => Drive1Mounted,
+                MenuCommand.LoadRecentState1
+                    or MenuCommand.LoadRecentState2
+                    or MenuCommand.LoadRecentState3
+                    or MenuCommand.LoadRecentState4
+                    or MenuCommand.LoadRecentState5 => IsRecentStateAvailable(item.Command),
                 _ => true
             };
         }
@@ -2497,9 +2807,9 @@ namespace BBC
                 return;
             }
 
-            if (archiveEntries.Count > 0 && keySym == SDLK_ESCAPE)
+            if (archiveEntries.Count > 0)
             {
-                CloseArchiveBrowser();
+                HandleArchiveKeyDown(keySym);
                 return;
             }
 
@@ -2981,6 +3291,11 @@ namespace BBC
             SaveScreenshot,
             SaveState,
             LoadState,
+            LoadRecentState1,
+            LoadRecentState2,
+            LoadRecentState3,
+            LoadRecentState4,
+            LoadRecentState5,
             Quit,
             Break,
             ShiftBreak,
@@ -2997,18 +3312,12 @@ namespace BBC
             ResetInputMap
         }
 
-        private static MenuDefinition[] CreateMenus()
+        private MenuDefinition[] CreateMenus()
         {
             return
             [
                 new MenuDefinition("File",
-                [
-                    new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
-                    new MenuItem("Save state...", "", MenuCommand.SaveState),
-                    new MenuItem("Load state...", "", MenuCommand.LoadState),
-                    MenuSeparator(),
-                    new MenuItem("Quit", "", MenuCommand.Quit)
-                ]),
+                    CreateFileMenuItems()),
                 new MenuDefinition("Disc",
                 [
                     new MenuItem("Mount drive 0...", "D0", MenuCommand.MountDrive0),
@@ -3046,6 +3355,62 @@ namespace BBC
                     new MenuItem("Shift Lock", "L Ctrl+L Shift", MenuCommand.ToggleShiftLock)
                 ])
             ];
+        }
+
+        private MenuItem[] CreateFileMenuItems()
+        {
+            List<MenuItem> items =
+            [
+                new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
+                new MenuItem("Save state...", "", MenuCommand.SaveState),
+                new MenuItem("Load state...", "", MenuCommand.LoadState)
+            ];
+
+            if (recentStatePaths.Count > 0)
+            {
+                items.Add(MenuSeparator());
+                for (int i = 0; i < recentStatePaths.Count && i < MaxRecentStateFiles; i++)
+                {
+                    string label = $"{i + 1}. {Path.GetFileName(recentStatePaths[i])}";
+                    items.Add(new MenuItem(TrimRendererText(label, 34), "", GetRecentStateCommand(i)));
+                }
+            }
+
+            items.Add(MenuSeparator());
+            items.Add(new MenuItem("Quit", "", MenuCommand.Quit));
+            return items.ToArray();
+        }
+
+        private bool IsRecentStateAvailable(MenuCommand command)
+        {
+            int index = GetRecentStateIndex(command);
+            return index >= 0 && index < recentStatePaths.Count && File.Exists(recentStatePaths[index]);
+        }
+
+        private static MenuCommand GetRecentStateCommand(int index)
+        {
+            return index switch
+            {
+                0 => MenuCommand.LoadRecentState1,
+                1 => MenuCommand.LoadRecentState2,
+                2 => MenuCommand.LoadRecentState3,
+                3 => MenuCommand.LoadRecentState4,
+                4 => MenuCommand.LoadRecentState5,
+                _ => throw new ArgumentOutOfRangeException(nameof(index))
+            };
+        }
+
+        private static int GetRecentStateIndex(MenuCommand command)
+        {
+            return command switch
+            {
+                MenuCommand.LoadRecentState1 => 0,
+                MenuCommand.LoadRecentState2 => 1,
+                MenuCommand.LoadRecentState3 => 2,
+                MenuCommand.LoadRecentState4 => 3,
+                MenuCommand.LoadRecentState5 => 4,
+                _ => -1
+            };
         }
 
         private static MenuItem MenuSeparator()
@@ -3118,6 +3483,13 @@ namespace BBC
             string? path = SelectNativeLoadStateFile();
             if (!string.IsNullOrWhiteSpace(path))
                 pendingStateActions.Enqueue(new HostStateAction(HostStateActionKind.Load, path));
+        }
+
+        private void EnqueueRecentState(MenuCommand command)
+        {
+            int index = GetRecentStateIndex(command);
+            if (index >= 0 && index < recentStatePaths.Count)
+                pendingStateActions.Enqueue(new HostStateAction(HostStateActionKind.Load, recentStatePaths[index]));
         }
 
         private int GetFirstEmptyPhysicalDrive()
@@ -3318,6 +3690,11 @@ namespace BBC
         private static string EnsureInputProfileExtension(string path)
         {
             return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".json");
+        }
+
+        private static string GetRecentStatePath()
+        {
+            return Path.Combine(Environment.CurrentDirectory, "RecentSaveStates.txt");
         }
 
         private static string? RunProcessForSingleLine(string fileName, params string[] arguments)
@@ -3521,6 +3898,7 @@ namespace BBC
         private const uint SDL_QUIT = 0x100;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_KEYUP = 0x301;
+        private const uint SDL_TEXTINPUT = 0x303;
         private const uint SDL_MOUSEMOTION = 0x400;
         private const uint SDL_MOUSEBUTTONDOWN = 0x401;
         private const uint SDL_MOUSEBUTTONUP = 0x402;
