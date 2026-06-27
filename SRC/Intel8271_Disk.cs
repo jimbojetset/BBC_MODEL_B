@@ -329,6 +329,19 @@ namespace BBC
             busy = false;
         }
 
+        public void PowerOff()
+        {
+            bool stopped = motorSpinning.Any(spinning => spinning);
+            Array.Clear(motorSpinning);
+            Array.Clear(motorStartedAtCycle);
+            motorIdleCycles = 0;
+
+            if (stopped)
+                DriveMotorStopped?.Invoke(selectedDrive);
+
+            Reset();
+        }
+
         public void SaveState(BinaryWriter writer)
         {
             writer.Write(drives.Length);

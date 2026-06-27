@@ -118,6 +118,7 @@ namespace BBC
         private int pendingPauseToggleRequests;
         private int pendingFrameAdvanceRequests;
         private int pendingTube6502ToggleRequests;
+        private int pendingPowerResetRequests;
         private HostMouseState mouseState;
         private bool relativeMouseMode;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
@@ -529,6 +530,13 @@ namespace BBC
         {
             int count = pendingTube6502ToggleRequests;
             pendingTube6502ToggleRequests = 0;
+            return count;
+        }
+
+        public int DrainPowerResetRequests()
+        {
+            int count = pendingPowerResetRequests;
+            pendingPowerResetRequests = 0;
             return count;
         }
 
@@ -2031,6 +2039,9 @@ namespace BBC
                 case MenuCommand.ControlBreak:
                     pendingBreaks.Enqueue(new BreakKeyPress(false, true));
                     break;
+                case MenuCommand.PowerReset:
+                    pendingPowerResetRequests++;
+                    break;
                 case MenuCommand.TogglePause:
                     pendingPauseToggleRequests++;
                     break;
@@ -3433,6 +3444,7 @@ namespace BBC
             Break,
             ShiftBreak,
             ControlBreak,
+            PowerReset,
             TogglePause,
             ToggleTube6502,
             ToggleScanlines,
@@ -3466,6 +3478,7 @@ namespace BBC
                     new MenuItem("BREAK", "F12", MenuCommand.Break),
                     new MenuItem("Shift-BREAK", "Shift+F12", MenuCommand.ShiftBreak),
                     new MenuItem("Ctrl-BREAK", "Ctrl+F12", MenuCommand.ControlBreak),
+                    new MenuItem("Power reset", "", MenuCommand.PowerReset),
                     MenuSeparator(),
                     new MenuItem("6502 Co-Processor", "", MenuCommand.ToggleTube6502),
                     MenuSeparator(),

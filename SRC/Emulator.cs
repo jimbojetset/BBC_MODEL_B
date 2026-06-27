@@ -625,6 +625,7 @@ namespace BBC
                 SynchronizeInputMapperPause(Display);
                 DrainHostPauseRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
+                DrainHostPowerResetRequests(Display);
                 DrainHostBreakInput(Display);
                 DrainHostDiscLoads(Display);
                 DrainHostStateActions(Display);
@@ -991,6 +992,14 @@ namespace BBC
             int count = display.DrainTube6502ToggleRequests();
             for (int i = 0; i < count; i++)
                 SetTube6502Enabled(tube6502 is null);
+        }
+
+        private void DrainHostPowerResetRequests(Display display)
+        {
+            if (display.DrainPowerResetRequests() == 0)
+                return;
+
+            PowerReset(display);
         }
 
         private void SynchronizeRomManagerPause(Display display)
@@ -2325,6 +2334,35 @@ namespace BBC
             tube6502?.SetPaused(romManagerPreviousPaused);
             Sound.SetHostOutputPaused(romManagerPreviousPaused);
             display.ShowNotification("ROM pattern changed", "BBC reset", 2000);
+        }
+
+        private void PowerReset(Display display)
+        {
+            StopCpu();
+            try
+            {
+                Array.Clear(Memory.Memory);
+                Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
+                pendingBreak = default;
+                pendingBootExecScript = null;
+                pendingBootScriptLines.Clear();
+                pendingKeyboardInput.Clear();
+                breakContinuationQueued = false;
+                selectedSidewaysRom = BasicRomBank;
+                Cpu.SpeedScale = 1.0;
+                Sound.ThrottleToPlayback = true;
+                startupSpeedScaleApplied = requestedStartupSpeedScale == 1.0;
+                discController.PowerOff();
+                Array.Fill(display.FrameBuffer, DisplayBlack);
+                display.Present();
+                Cpu.ResetNow();
+                Sound.QueuePowerOnBeep();
+                display.ShowNotification("Power reset", "BBC power cycled", 2000);
+            }
+            finally
+            {
+                StartCpu();
+            }
         }
 
         private void SetTube6502Enabled(bool enabled)
