@@ -204,7 +204,9 @@ BBC_SERIAL_TRACE=1 BBC_SERIAL_LOOPBACK=1 dotnet run -- --no-autoboot --drive0 As
 BBC_SERIAL_TRACE=1 BBC_HAYES_MODEM=1 dotnet run -- --no-autoboot --drive0 Assets/scratchDisc.ssd
 ```
 
-Loopback returns each transmitted byte. The Hayes modem currently handles basic `AT`, `ATE0`, `ATE1`, `ATI`, `ATZ`, `ATH`, and `ATD` commands.
+Loopback returns each transmitted byte. The Hayes modem handles command mode and TCP-backed connected mode. `ATDhost port` or `ATDhost:port` opens a host TCP connection and returns `CONNECT` when the socket is available; `ATH` drops it, `ATO` returns to online mode after escaping, and `+++` escapes from connected mode back to command mode. DCD is currently held ready in command mode so terminal software can issue `AT` commands before a TCP session exists.
+
+Incoming modem data is buffered by the Hayes modem and metered back through the ACIA at a fixed 2400 baud.
 
 ### Joysticks
 

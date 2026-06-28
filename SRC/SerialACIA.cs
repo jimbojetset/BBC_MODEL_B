@@ -29,13 +29,12 @@ namespace BBC
         private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
         private static readonly bool LoopbackEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_LOOPBACK") == "1";
 
+        private readonly object sync = new object();
         private readonly Queue<byte> receiveBytes = new Queue<byte>();
         private readonly Queue<byte> transmitBytes = new Queue<byte>();
+        private readonly Dictionary<ushort, byte> lastTracedReads = new Dictionary<ushort, byte>();
         private byte aciaControl;
         private byte serialUlaControl;
-        private ushort lastTracedReadAddress;
-        private byte lastTracedReadValue;
-        private bool lastTracedReadValid;
 
         public bool MotorRunning { get; private set; }
 
@@ -88,7 +87,11 @@ namespace BBC
 
         public void QueueReceivedByte(byte value)
         {
-            receiveBytes.Enqueue(value);
+            lock (sync)
+            {
+                receiveBytes.Enqueue(value);
+            }
+
             Trace($"rx <= ${value:X2}");
         }
 
@@ -100,24 +103,36 @@ namespace BBC
 
         public bool TryDequeueTransmittedByte(out byte value)
         {
-            return transmitBytes.TryDequeue(out value);
+            lock (sync)
+                return transmitBytes.TryDequeue(out value);
         }
 
         public bool TryDequeueReceivedByte(out byte value)
         {
-            return receiveBytes.TryDequeue(out value);
+            lock (sync)
+            {
+                return receiveBytes.TryDequeue(out value);
+            }
         }
 
         public void Reset()
         {
-            receiveBytes.Clear();
-            transmitBytes.Clear();
-            aciaControl = 0;
-            serialUlaControl = 0;
-            lastTracedReadValid = false;
+            lock (sync)
+            {
+                receiveBytes.Clear();
+                transmitBytes.Clear();
+                aciaControl = 0;
+                serialUlaControl = 0;
+                lastTracedReads.Clear();
+            }
+
             MotorRunning = false;
             TapePlaying = false;
-            CarrierPresent = true;
+        }
+
+        public void SetCarrierPresent(bool present)
+        {
+            CarrierPresent = present;
         }
 
         public void StopTape()
@@ -128,37 +143,46 @@ namespace BBC
 
         public void SaveState(BinaryWriter writer)
         {
-            writer.Write(aciaControl);
-            writer.Write(serialUlaControl);
-            writer.Write(MotorRunning);
-            writer.Write(TapePlaying);
-            writer.Write(CarrierPresent);
-            WriteQueue(writer, receiveBytes);
-            WriteQueue(writer, transmitBytes);
+            lock (sync)
+            {
+                writer.Write(aciaControl);
+                writer.Write(serialUlaControl);
+                writer.Write(MotorRunning);
+                writer.Write(TapePlaying);
+                writer.Write(CarrierPresent);
+                WriteQueue(writer, receiveBytes);
+                WriteQueue(writer, transmitBytes);
+            }
         }
 
         public void LoadState(BinaryReader reader)
         {
-            aciaControl = reader.ReadByte();
-            serialUlaControl = reader.ReadByte();
-            MotorRunning = reader.ReadBoolean();
-            TapePlaying = reader.ReadBoolean();
-            CarrierPresent = reader.ReadBoolean();
-            ReadQueue(reader, receiveBytes);
-            ReadQueue(reader, transmitBytes);
+            lock (sync)
+            {
+                aciaControl = reader.ReadByte();
+                serialUlaControl = reader.ReadByte();
+                MotorRunning = reader.ReadBoolean();
+                TapePlaying = reader.ReadBoolean();
+                CarrierPresent = reader.ReadBoolean();
+                ReadQueue(reader, receiveBytes);
+                ReadQueue(reader, transmitBytes);
+            }
         }
 
         private byte ReadAciaStatus()
         {
             byte status = AciaStatusTransmitDataEmpty | AciaStatusClearToSend;
 
-            if (receiveBytes.Count > 0)
-                status |= AciaStatusReceiveDataFull;
+            lock (sync)
+            {
+                if (receiveBytes.Count > 0)
+                    status |= AciaStatusReceiveDataFull;
+            }
 
             if (!CarrierPresent)
                 status |= AciaStatusDataCarrierDetect;
 
-            if (ReceiveInterruptEnabled() && receiveBytes.Count > 0)
+            if (ReceiveInterruptEnabled() && (status & AciaStatusReceiveDataFull) != 0)
                 status |= AciaStatusInterruptRequest;
 
             return status;
@@ -166,22 +190,29 @@ namespace BBC
 
         private byte ReadAciaData()
         {
-            if (receiveBytes.TryDequeue(out byte value))
-                return value;
+            lock (sync)
+            {
+                if (receiveBytes.TryDequeue(out byte value))
+                    return value;
+            }
 
             return 0x00;
         }
 
         private void WriteAciaControl(byte value)
         {
-            byte previousControl = aciaControl;
-            aciaControl = value;
-
-            // On a 6850, control bits 0 and 1 both set request a master reset.
-            if ((value & 0x03) == 0x03)
+            byte previousControl;
+            lock (sync)
             {
-                receiveBytes.Clear();
-                transmitBytes.Clear();
+                previousControl = aciaControl;
+                aciaControl = value;
+
+                // On a 6850, control bits 0 and 1 both set request a master reset.
+                if ((value & 0x03) == 0x03)
+                {
+                    receiveBytes.Clear();
+                    transmitBytes.Clear();
+                }
             }
 
             if (value != previousControl)
@@ -190,7 +221,9 @@ namespace BBC
 
         private void WriteAciaData(byte value)
         {
-            transmitBytes.Enqueue(value);
+            lock (sync)
+                transmitBytes.Enqueue(value);
+
             Trace($"tx <= ${value:X2}");
 
             ByteTransmitted?.Invoke(value);
@@ -230,12 +263,10 @@ namespace BBC
             if (!TraceEnabled)
                 return;
 
-            if (lastTracedReadValid && address == lastTracedReadAddress && value == lastTracedReadValue)
+            if (lastTracedReads.TryGetValue(address, out byte previous) && previous == value)
                 return;
 
-            lastTracedReadAddress = address;
-            lastTracedReadValue = value;
-            lastTracedReadValid = true;
+            lastTracedReads[address] = value;
             Console.WriteLine($"[serial] read ${address:X4} => ${value:X2}");
         }
     }
