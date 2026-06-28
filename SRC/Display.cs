@@ -1168,20 +1168,8 @@ namespace BBC
                     continue;
                 }
 
-                EnqueueBbcCharacter(ch);
+                EnqueueHostText(ch.ToString());
             }
-        }
-
-        private void EnqueueBbcCharacter(char ch)
-        {
-            if (!BbcKeyboard.TryMapCharacter(ch, out BbcKeyBinding key))
-                return;
-
-            bool hostShiftDown = (SDL_GetModState() & KMOD_SHIFT) != 0;
-            bool shiftAdjusted = ApplyShiftAdjustment(key.ShiftAdjustment, hostShiftDown);
-            PressBbcMatrixKey(key.MatrixKey);
-            ReleaseBbcMatrixKey(key.MatrixKey);
-            RestoreAdjustedShift(new ActiveHostKey(key.MatrixKey, key.ShiftAdjustment, shiftAdjusted), hostShiftDown);
         }
 
         private bool HandleArchiveKeyDown(int keySym)

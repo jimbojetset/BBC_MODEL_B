@@ -10,6 +10,8 @@
 //              This emulator is for educational purposes only.
 // ============================================================================
 
+using System.Diagnostics;
+
 namespace BBC
 {
 
@@ -23,9 +25,10 @@ namespace BBC
         private const byte AciaStatusReceiveDataFull = 0x01;
         private const byte AciaStatusTransmitDataEmpty = 0x02;
         private const byte AciaStatusDataCarrierDetect = 0x04;
-        private const byte AciaStatusClearToSend = 0x08;
+        private const byte AciaStatusClearToSendInactive = 0x08;
         private const byte AciaStatusInterruptRequest = 0x80;
 
+        private static readonly int[] SerialUlaBaudRates = { 19200, 1200, 4800, 150, 9600, 300, 2400, 75 };
         private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
         private static readonly bool LoopbackEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_LOOPBACK") == "1";
 
@@ -35,6 +38,8 @@ namespace BBC
         private readonly Dictionary<ushort, byte> lastTracedReads = new Dictionary<ushort, byte>();
         private byte aciaControl;
         private byte serialUlaControl;
+        private long transmitReadyAtTicks;
+        private bool transmitInterruptEnabled;
 
         public bool MotorRunning { get; private set; }
 
@@ -42,7 +47,38 @@ namespace BBC
 
         public bool CarrierPresent { get; private set; } = true;
 
+        public bool ClearToSend { get; private set; } = true;
+
+        public bool RequestToSend { get; private set; } = true;
+
+        public bool TransmitBreak { get; private set; }
+
+        public int ReceiveBaudRate { get; private set; } = 2400;
+
+        public int TransmitBaudRate { get; private set; } = 2400;
+
+        public int DataBits { get; private set; } = 8;
+
+        public int StopBits { get; private set; } = 1;
+
+        public string Parity { get; private set; } = "None";
+
+        public string FormatName => $"{DataBits}{Parity[0]}{StopBits}";
+
+        public bool IrqAsserted { get; private set; }
+
+        public bool CanReceiveByte
+        {
+            get
+            {
+                lock (sync)
+                    return receiveBytes.Count == 0;
+            }
+        }
+
         public event Action<byte>? ByteTransmitted;
+
+        public event Action<bool>? IrqChanged;
 
         public static bool IsAddress(ushort address)
         {
@@ -78,21 +114,24 @@ namespace BBC
             }
 
             serialUlaControl = value;
+            DecodeSerialUla(value);
 
             // The BBC Serial ULA also handles cassette routing and motor state.
             // Bit 7 is the observable motor control used by the front-panel LED.
             MotorRunning = (value & 0x80) != 0;
-            Trace($"serial ULA <= ${value:X2}");
+            Trace($"serial ULA <= ${value:X2} RX {ReceiveBaudRate} TX {TransmitBaudRate}");
         }
 
         public void QueueReceivedByte(byte value)
         {
+            byte received = MaskDataBits(value);
             lock (sync)
             {
-                receiveBytes.Enqueue(value);
+                receiveBytes.Enqueue(received);
             }
 
-            Trace($"rx <= ${value:X2}");
+            UpdateInterruptLine();
+            Trace($"rx <= ${received:X2}");
         }
 
         public void QueueReceivedText(string text)
@@ -123,16 +162,25 @@ namespace BBC
                 transmitBytes.Clear();
                 aciaControl = 0;
                 serialUlaControl = 0;
+                transmitReadyAtTicks = 0;
                 lastTracedReads.Clear();
             }
 
             MotorRunning = false;
             TapePlaying = false;
+            SetInterruptLine(false);
         }
 
         public void SetCarrierPresent(bool present)
         {
             CarrierPresent = present;
+            UpdateInterruptLine();
+        }
+
+        public void SetClearToSend(bool clear)
+        {
+            ClearToSend = clear;
+            UpdateInterruptLine();
         }
 
         public void StopTape()
@@ -150,6 +198,7 @@ namespace BBC
                 writer.Write(MotorRunning);
                 writer.Write(TapePlaying);
                 writer.Write(CarrierPresent);
+                writer.Write(ClearToSend);
                 WriteQueue(writer, receiveBytes);
                 WriteQueue(writer, transmitBytes);
             }
@@ -164,14 +213,34 @@ namespace BBC
                 MotorRunning = reader.ReadBoolean();
                 TapePlaying = reader.ReadBoolean();
                 CarrierPresent = reader.ReadBoolean();
+                ClearToSend = reader.ReadBoolean();
                 ReadQueue(reader, receiveBytes);
                 ReadQueue(reader, transmitBytes);
+                DecodeAciaControl(aciaControl);
+                DecodeSerialUla(serialUlaControl);
             }
+
+            UpdateInterruptLine();
         }
 
         private byte ReadAciaStatus()
         {
-            byte status = AciaStatusTransmitDataEmpty | AciaStatusClearToSend;
+            byte status = BuildAciaStatus();
+            SetInterruptLine((status & AciaStatusInterruptRequest) != 0);
+            return status;
+        }
+
+        private byte BuildAciaStatus()
+        {
+            byte status = 0;
+
+            if (TransmitDataEmpty())
+                status |= AciaStatusTransmitDataEmpty;
+
+            // The 6850 status bit is /CTS: set means the external device is
+            // not clear to receive data.
+            if (!ClearToSend)
+                status |= AciaStatusClearToSendInactive;
 
             lock (sync)
             {
@@ -185,6 +254,9 @@ namespace BBC
             if (ReceiveInterruptEnabled() && (status & AciaStatusReceiveDataFull) != 0)
                 status |= AciaStatusInterruptRequest;
 
+            if (transmitInterruptEnabled && (status & AciaStatusTransmitDataEmpty) != 0)
+                status |= AciaStatusInterruptRequest;
+
             return status;
         }
 
@@ -193,7 +265,10 @@ namespace BBC
             lock (sync)
             {
                 if (receiveBytes.TryDequeue(out byte value))
+                {
+                    UpdateInterruptLine();
                     return value;
+                }
             }
 
             return 0x00;
@@ -206,35 +281,143 @@ namespace BBC
             {
                 previousControl = aciaControl;
                 aciaControl = value;
+                DecodeAciaControl(value);
 
                 // On a 6850, control bits 0 and 1 both set request a master reset.
                 if ((value & 0x03) == 0x03)
                 {
                     receiveBytes.Clear();
                     transmitBytes.Clear();
+                    transmitReadyAtTicks = 0;
                 }
             }
 
             if (value != previousControl)
-                Trace($"control <= ${value:X2}");
+                Trace($"control <= ${value:X2} {FormatName} RTS={(RequestToSend ? 1 : 0)} break={(TransmitBreak ? 1 : 0)}");
+
+            UpdateInterruptLine();
         }
 
         private void WriteAciaData(byte value)
         {
+            byte transmitted = MaskDataBits(value);
+            bool send;
             lock (sync)
-                transmitBytes.Enqueue(value);
+            {
+                transmitBytes.Enqueue(transmitted);
+                transmitReadyAtTicks = Stopwatch.GetTimestamp() + CharacterTicks(TransmitBaudRate);
+                send = ClearToSend && !TransmitBreak;
+            }
 
-            Trace($"tx <= ${value:X2}");
+            Trace($"tx <= ${transmitted:X2}");
 
-            ByteTransmitted?.Invoke(value);
+            if (send)
+                ByteTransmitted?.Invoke(transmitted);
 
-            if (LoopbackEnabled && value != 0x00)
-                QueueReceivedByte(value);
+            if (send && LoopbackEnabled && transmitted != 0x00)
+                QueueReceivedByte(transmitted);
+
+            UpdateInterruptLine();
         }
 
         private bool ReceiveInterruptEnabled()
         {
             return (aciaControl & 0x80) != 0;
+        }
+
+        private void UpdateInterruptLine()
+        {
+            SetInterruptLine((BuildAciaStatus() & AciaStatusInterruptRequest) != 0);
+        }
+
+        private void SetInterruptLine(bool asserted)
+        {
+            if (IrqAsserted == asserted)
+                return;
+
+            IrqAsserted = asserted;
+            IrqChanged?.Invoke(asserted);
+        }
+
+        private bool TransmitDataEmpty()
+        {
+            return ClearToSend
+                && !TransmitBreak
+                && Stopwatch.GetTimestamp() >= transmitReadyAtTicks;
+        }
+
+        private long CharacterTicks(int baudRate)
+        {
+            int bits = 1 + DataBits + (Parity == "None" ? 0 : 1) + StopBits;
+            return Math.Max(1, Stopwatch.Frequency * bits / baudRate);
+        }
+
+        private void DecodeAciaControl(byte control)
+        {
+            switch ((control >> 2) & 0x07)
+            {
+                case 0:
+                    DataBits = 7;
+                    Parity = "Even";
+                    StopBits = 2;
+                    break;
+                case 1:
+                    DataBits = 7;
+                    Parity = "Odd";
+                    StopBits = 2;
+                    break;
+                case 2:
+                    DataBits = 7;
+                    Parity = "Even";
+                    StopBits = 1;
+                    break;
+                case 3:
+                    DataBits = 7;
+                    Parity = "Odd";
+                    StopBits = 1;
+                    break;
+                case 4:
+                    DataBits = 8;
+                    Parity = "None";
+                    StopBits = 2;
+                    break;
+                case 5:
+                    DataBits = 8;
+                    Parity = "None";
+                    StopBits = 1;
+                    break;
+                case 6:
+                    DataBits = 8;
+                    Parity = "Even";
+                    StopBits = 1;
+                    break;
+                case 7:
+                    DataBits = 8;
+                    Parity = "Odd";
+                    StopBits = 1;
+                    break;
+            }
+
+            int transmitControl = (control >> 5) & 0x03;
+            transmitInterruptEnabled = transmitControl == 1;
+            RequestToSend = transmitControl != 2;
+            TransmitBreak = transmitControl == 3;
+        }
+
+        private void DecodeSerialUla(byte value)
+        {
+            TransmitBaudRate = DecodeBaud(value & 0x07);
+            ReceiveBaudRate = DecodeBaud((value >> 3) & 0x07);
+        }
+
+        private static int DecodeBaud(int code)
+        {
+            return SerialUlaBaudRates[code & 0x07];
+        }
+
+        private byte MaskDataBits(byte value)
+        {
+            return DataBits == 7 ? (byte)(value & 0x7F) : value;
         }
 
         private static void WriteQueue(BinaryWriter writer, Queue<byte> queue)

@@ -23,7 +23,15 @@ namespace BBC
         private const int ConnectTimeoutMilliseconds = 5000;
         private const int EscapeGuardMilliseconds = 1000;
         private const int SerialBaud = 2400;
-        private const int BitsPerSerialCharacter = 10;
+        private const int RequiredDataBits = 8;
+        private const string RequiredParity = "None";
+        private const byte TelnetIac = 255;
+        private const byte TelnetDont = 254;
+        private const byte TelnetDo = 253;
+        private const byte TelnetWont = 252;
+        private const byte TelnetWill = 251;
+        private const byte TelnetSubnegotiation = 250;
+        private const byte TelnetSubnegotiationEnd = 240;
 
         private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
 
@@ -32,7 +40,6 @@ namespace BBC
         private readonly byte[] networkReadBuffer = new byte[1024];
         private readonly object serialOutputSync = new object();
         private readonly Queue<byte> serialOutputBytes = new Queue<byte>();
-        private readonly long serialByteTicks = Stopwatch.Frequency * BitsPerSerialCharacter / SerialBaud;
         private TcpClient? tcpClient;
         private NetworkStream? networkStream;
         private Thread? receiveThread;
@@ -41,7 +48,9 @@ namespace BBC
         private long lastTransmitTicks;
         private long escapeFirstPlusTicks;
         private int escapePlusCount;
-        private bool commandEcho = true;
+        private int telnetState;
+        private byte telnetCommand;
+        private bool commandEcho;
 
         public HayesModem(SerialACIA serialAcia)
         {
@@ -64,13 +73,19 @@ namespace BBC
             if (value == 0x00)
                 return;
 
+            if (!SerialConfigMatches())
+            {
+                Trace($"ignored ${value:X2}; BBC serial is {serialAcia.TransmitBaudRate}/{serialAcia.ReceiveBaudRate} {serialAcia.FormatName}");
+                return;
+            }
+
             if (Online)
             {
                 HandleOnlineByte(value);
                 return;
             }
 
-            if (commandEcho)
+            if (commandEcho && IsCommandEchoByte(value))
                 QueueSerialByte(value);
 
             if (value is 0x0D or 0x0A)
@@ -91,6 +106,12 @@ namespace BBC
 
             if (value is >= 0x20 and <= 0x7E && commandLine.Length < 240)
                 commandLine.Append((char)value);
+        }
+
+        private static bool IsCommandEchoByte(byte value)
+        {
+            return value is 0x0D or 0x0A or 0x08 or 0x7F
+                || value is >= 0x20 and <= 0x7E;
         }
 
         private void HandleCommandLine(string line)
@@ -124,7 +145,7 @@ namespace BBC
             if (upper is "Z" or "H" or "H0")
             {
                 if (upper == "Z")
-                    commandEcho = true;
+                    commandEcho = false;
                 Disconnect(reportNoCarrier: false);
                 Respond("OK");
                 return;
@@ -291,7 +312,7 @@ namespace BBC
                         break;
 
                     for (int i = 0; i < read; i++)
-                        QueueSerialByte(networkReadBuffer[i]);
+                        HandleNetworkByte(networkReadBuffer[i]);
                 }
             }
             catch (Exception ex) when (ex is IOException or ObjectDisposedException)
@@ -321,6 +342,92 @@ namespace BBC
 
             if (reportNoCarrier && wasOnline)
                 Respond("NO CARRIER");
+        }
+
+        private void HandleNetworkByte(byte value)
+        {
+            switch (telnetState)
+            {
+                case 0:
+                    if (value == TelnetIac)
+                    {
+                        telnetState = 1;
+                        return;
+                    }
+
+                    QueueSerialByte(value);
+                    return;
+
+                case 1:
+                    if (value == TelnetIac)
+                    {
+                        QueueSerialByte(TelnetIac);
+                        telnetState = 0;
+                        return;
+                    }
+
+                    if (value is TelnetDo or TelnetDont or TelnetWill or TelnetWont)
+                    {
+                        telnetCommand = value;
+                        telnetState = 2;
+                        return;
+                    }
+
+                    if (value == TelnetSubnegotiation)
+                    {
+                        telnetState = 3;
+                        return;
+                    }
+
+                    telnetState = 0;
+                    return;
+
+                case 2:
+                    ReplyToTelnetOption(telnetCommand, value);
+                    telnetState = 0;
+                    return;
+
+                case 3:
+                    if (value == TelnetIac)
+                        telnetState = 4;
+                    return;
+
+                case 4:
+                    telnetState = value == TelnetSubnegotiationEnd ? 0 : 3;
+                    return;
+            }
+        }
+
+        private void ReplyToTelnetOption(byte command, byte option)
+        {
+            byte reply = command switch
+            {
+                TelnetDo => TelnetWont,
+                TelnetWill => TelnetDont,
+                TelnetDont => TelnetWont,
+                TelnetWont => TelnetDont,
+                _ => 0
+            };
+
+            if (reply == 0)
+                return;
+
+            try
+            {
+                NetworkStream? stream = networkStream;
+                if (stream is not null)
+                {
+                    stream.WriteByte(TelnetIac);
+                    stream.WriteByte(reply);
+                    stream.WriteByte(option);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+            {
+                Disconnect(reportNoCarrier: true);
+            }
+
+            Trace($"telnet {(char)command} option {option} -> {(char)reply}");
         }
 
         private static bool TryParseDialTarget(string target, out string host, out int port)
@@ -399,9 +506,31 @@ namespace BBC
                 }
 
                 WaitUntil(nextByteTicks);
+                WaitForReadyToSend();
                 serialAcia.QueueReceivedByte(value);
-                nextByteTicks = Stopwatch.GetTimestamp() + serialByteTicks;
+                nextByteTicks = Stopwatch.GetTimestamp() + ModemToBbcCharacterTicks();
             }
+        }
+
+        private void WaitForReadyToSend()
+        {
+            while (!serialAcia.RequestToSend || !serialAcia.CanReceiveByte || !SerialConfigMatches())
+                Thread.Sleep(1);
+        }
+
+        private bool SerialConfigMatches()
+        {
+            return serialAcia.TransmitBaudRate == SerialBaud
+                && serialAcia.ReceiveBaudRate == SerialBaud
+                && serialAcia.DataBits == RequiredDataBits
+                && serialAcia.StopBits is 1 or 2
+                && serialAcia.Parity == RequiredParity;
+        }
+
+        private long ModemToBbcCharacterTicks()
+        {
+            int bits = 1 + RequiredDataBits + serialAcia.StopBits;
+            return Math.Max(1, Stopwatch.Frequency * bits / SerialBaud);
         }
 
         private static void WaitUntil(long targetTicks)

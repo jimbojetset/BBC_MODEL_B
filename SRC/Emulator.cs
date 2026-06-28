@@ -398,6 +398,9 @@ namespace BBC
         private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
         private static readonly bool TubeDebugEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1";
         private static readonly bool HayesModemEnabled = Environment.GetEnvironmentVariable("BBC_HAYES_MODEM") == "1";
+        private static readonly bool SerialPcTraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE") == "1";
+        private static readonly bool SerialPcTraceAutoEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
+        private static readonly string? SerialPcTracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE_FILE");
         private const string OsRomMarker = "BBC Computer";
         private const string AmxMouseRomMarker = "AMX Mouse Support";
         private const int TargetFramesPerSecond = 50;
@@ -484,8 +487,10 @@ namespace BBC
         private string? runtimeTracePath;
         private long runtimeTraceInstructionCount;
         private int runtimeTraceFrame;
+        private StreamWriter? serialPcTraceWriter;
+        private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 7;
+        private const int SaveStateVersion = 8;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -534,7 +539,6 @@ namespace BBC
                 HayesModem hayesModem = new HayesModem(serialAcia);
                 serialAcia.ByteTransmitted += hayesModem.Receive;
             }
-
             tubeUla.HostIrqChanged += asserted =>
             {
                 tubeHostIrqAsserted = asserted;
@@ -1236,6 +1240,9 @@ namespace BBC
                 if (title.Length == 0 || !MatchesSidewaysRomCommand(commandName, title))
                     continue;
 
+                if (TryEnterSidewaysRomServiceCommand(bank, commandAddress))
+                    return true;
+
                 selectedSidewaysRom = bank;
                 Cpu.registers.A = 1;
                 Cpu.registers.X = (byte)bank;
@@ -1243,6 +1250,46 @@ namespace BBC
                 return true;
             }
             return false;
+        }
+
+        private bool TryEnterSidewaysRomServiceCommand(int bank, ushort commandAddress)
+        {
+            if (!TryGetSidewaysRomServiceEntry(bank, out ushort serviceEntry))
+                return false;
+
+            ushort commandPointer = SkipStarCommandPrefix(commandAddress);
+            Memory.Memory[0x00F2] = (byte)commandPointer;
+            Memory.Memory[0x00F3] = (byte)(commandPointer >> 8);
+            SetMosSelectedRomBank(bank);
+            selectedSidewaysRom = bank;
+            Cpu.registers.A = 4;
+            Cpu.registers.X = (byte)bank;
+            Cpu.registers.Y = 0;
+            Cpu.registers.PC = serviceEntry;
+            return true;
+        }
+
+        private bool TryGetSidewaysRomServiceEntry(int bank, out ushort serviceEntry)
+        {
+            serviceEntry = 0;
+            if (bank < 0 || bank >= SidewaysRomBanks)
+                return false;
+
+            int bankOffset = bank * RomSize;
+            byte type = sidewaysRoms[bankOffset + 6];
+            bool serviceRom = (type & 0x80) != 0;
+            if (!serviceRom || sidewaysRoms[bankOffset + 3] != 0x4C)
+                return false;
+
+            serviceEntry = (ushort)(sidewaysRoms[bankOffset + 4] | (sidewaysRoms[bankOffset + 5] << 8));
+            return serviceEntry >= SidewaysRomStart && serviceEntry <= SidewaysRomEnd;
+        }
+
+        private void SetMosSelectedRomBank(int bank)
+        {
+            byte bankByte = (byte)bank;
+            Memory.Memory[0x00F4] = bankByte;
+            Memory.Memory[0x028C] = bankByte;
         }
 
         private bool IsLanguageRom(int bank)
@@ -1292,6 +1339,15 @@ namespace BBC
             if (Cpu.registers.A == 0x8C)
             {
                 ReturnFromFirmwareSubroutine();
+                return true;
+            }
+
+            if (Cpu.registers.A == 0x8E)
+            {
+                selectedSidewaysRom = Cpu.registers.X & 0x0F;
+                Cpu.registers.A = 1;
+                Cpu.registers.X = (byte)selectedSidewaysRom;
+                Cpu.registers.PC = SidewaysRomStart;
                 return true;
             }
 
@@ -1517,6 +1573,19 @@ namespace BBC
             }
 
             return builder.ToString();
+        }
+
+        private ushort SkipStarCommandPrefix(ushort address)
+        {
+            ushort pointer = address;
+
+            if (Memory.Memory[pointer] == (byte)'*')
+                pointer++;
+
+            while (Memory.Memory[pointer] is (byte)' ' or (byte)'\t')
+                pointer++;
+
+            return pointer;
         }
 
         private void DrainHostDiscLoads(Display display)
@@ -3007,7 +3076,11 @@ namespace BBC
                 return discController.Read(address);
 
             if (SerialACIA.IsAddress(address))
-                return serialAcia.Read(address);
+            {
+                byte value = serialAcia.Read(address);
+                TraceSerialPc("read", address, value);
+                return value;
+            }
 
             if (uPD7002_ADC.IsAddress(address))
                 return adc.Read(address);
@@ -3052,6 +3125,7 @@ namespace BBC
 
             if (SerialACIA.IsAddress(address))
             {
+                TraceSerialPc("write", address, value);
                 serialAcia.Write(address, value);
                 return;
             }
@@ -3081,6 +3155,48 @@ namespace BBC
             string extension = Path.GetExtension(path);
             return string.Equals(extension, ".ssd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void TraceSerialPc(string operation, ushort address, byte value)
+        {
+            bool highSignal = address == 0xFE09
+                || (address == 0xFE08 && operation == "read" && (value & 0x81) != 0);
+
+            if (!SerialPcTraceEnabled && !(SerialPcTraceAutoEnabled && highSignal))
+                return;
+
+            string line = $"[serial-pc] PC ${Cpu.registers.PC & 0xFFFF:X4} {operation} ${address:X4} = ${value:X2} I={(Cpu.registers.Flags.I ? 1 : 0)}";
+            if (line == lastSerialPcTraceLine)
+                return;
+
+            lastSerialPcTraceLine = line;
+            if (string.IsNullOrWhiteSpace(SerialPcTracePath))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+
+            serialPcTraceWriter ??= new StreamWriter(SerialPcTracePath, append: false) { AutoFlush = true };
+            serialPcTraceWriter.WriteLine(line);
+        }
+
+        private void TraceSerialPcMessage(string line)
+        {
+            if (!SerialPcTraceEnabled && !SerialPcTraceAutoEnabled)
+                return;
+
+            if (line == lastSerialPcTraceLine)
+                return;
+
+            lastSerialPcTraceLine = line;
+            if (string.IsNullOrWhiteSpace(SerialPcTracePath))
+            {
+                Console.WriteLine(line);
+                return;
+            }
+
+            serialPcTraceWriter ??= new StreamWriter(SerialPcTracePath, append: false) { AutoFlush = true };
+            serialPcTraceWriter.WriteLine(line);
         }
 
         private static bool IsZipArchivePath(string path)

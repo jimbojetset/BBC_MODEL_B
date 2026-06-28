@@ -204,9 +204,9 @@ BBC_SERIAL_TRACE=1 BBC_SERIAL_LOOPBACK=1 dotnet run -- --no-autoboot --drive0 As
 BBC_SERIAL_TRACE=1 BBC_HAYES_MODEM=1 dotnet run -- --no-autoboot --drive0 Assets/scratchDisc.ssd
 ```
 
-Loopback returns each transmitted byte. The Hayes modem handles command mode and TCP-backed connected mode. `ATDhost port` or `ATDhost:port` opens a host TCP connection and returns `CONNECT` when the socket is available; `ATH` drops it, `ATO` returns to online mode after escaping, and `+++` escapes from connected mode back to command mode. DCD is currently held ready in command mode so terminal software can issue `AT` commands before a TCP session exists.
+Loopback returns each transmitted byte. The ACIA decodes the BBC-side baud, data bits, parity, stop bits, RTS, CTS, and break state from the 6850 control register and Serial ULA. The Hayes modem handles command mode and TCP-backed connected mode. `ATDhost port` or `ATDhost:port` opens a host TCP connection and returns `CONNECT` when the socket is available; `ATH` drops it, `ATO` returns to online mode after escaping, and `+++` escapes from connected mode back to command mode. DCD is currently held ready in command mode so terminal software can issue `AT` commands before a TCP session exists.
 
-Incoming modem data is buffered by the Hayes modem and metered back through the ACIA at a fixed 2400 baud.
+Incoming modem data is buffered by the Hayes modem and metered back through the ACIA at a fixed 2400 baud. The Hayes modem expects the BBC serial side to be configured for 2400 baud, 8 data bits, and no parity. One or two stop bits are accepted, and output pauses while BBC RTS is inactive.
 
 ### Joysticks
 
