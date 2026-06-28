@@ -18,3 +18,4 @@ Properties/
 .vscode/settings.json
 Assets/*.sav
 RecentSaveStates.txt
+Assets/*.json

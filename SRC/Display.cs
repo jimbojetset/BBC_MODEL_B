@@ -3855,7 +3855,7 @@ namespace BBC
                         "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Import BBC ROM layout'; $dialog.Filter = 'BBC ROM layout (*.json)|*.json|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file of type {\"json\"} with prompt \"Import BBC ROM layout\")");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Import BBC ROM layout\")");
 
                 if (OperatingSystem.IsLinux())
                     return RunProcessForSingleLine("zenity", "--file-selection", "--title=Import BBC ROM layout", "--file-filter=BBC ROM layout (*.json) | *.json");
