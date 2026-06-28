@@ -397,6 +397,7 @@ namespace BBC
         private const string Tube6502RomMarker = "6502 TUBE";
         private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
         private static readonly bool TubeDebugEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1";
+        private static readonly bool HayesModemEnabled = Environment.GetEnvironmentVariable("BBC_HAYES_MODEM") == "1";
         private const string OsRomMarker = "BBC Computer";
         private const string AmxMouseRomMarker = "AMX Mouse Support";
         private const int TargetFramesPerSecond = 50;
@@ -450,7 +451,7 @@ namespace BBC
         private long nextBootScriptLineAtTicks;
         private readonly System6522Via systemVia;
         private readonly User6522Via userVia = new User6522Via();
-        private readonly TapeACIAStub tapeAciaStub = new TapeACIAStub();
+        private readonly SerialACIA serialAcia = new SerialACIA();
         private readonly uPD7002_ADC adc = new uPD7002_ADC();
         private readonly HostFilingSystem hostFilingSystem;
         private readonly Intel8271_Disk discController;
@@ -484,7 +485,7 @@ namespace BBC
         private long runtimeTraceInstructionCount;
         private int runtimeTraceFrame;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 6;
+        private const int SaveStateVersion = 7;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -528,6 +529,12 @@ namespace BBC
             discController.DriveMotorStarted += _ => discDriveSound?.MotorStarted();
             discController.DriveMotorStopped += _ => discDriveSound?.MotorStopped();
             discController.DriveSeek += (_, trackDelta) => discDriveSound?.Seek(trackDelta);
+            if (HayesModemEnabled)
+            {
+                HayesModem hayesModem = new HayesModem(serialAcia);
+                serialAcia.ByteTransmitted += hayesModem.Receive;
+            }
+
             tubeUla.HostIrqChanged += asserted =>
             {
                 tubeHostIrqAsserted = asserted;
@@ -584,9 +591,17 @@ namespace BBC
                 Display = new Display();
             }
 
+            QueueStartupSerialText();
             pendingBreak = default;
             Cpu.ResetNow();
             initialised = true;
+        }
+
+        private void QueueStartupSerialText()
+        {
+            string? text = Environment.GetEnvironmentVariable("BBC_SERIAL_RX_TEXT");
+            if (!string.IsNullOrEmpty(text))
+                serialAcia.QueueReceivedText(text);
         }
 
         public void Run()
@@ -649,7 +664,7 @@ namespace BBC
                 Display.Drive0ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(0)
                     || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
                 Display.Drive1ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(1);
-                Display.CassetteMotorLedActive = tapeAciaStub.MotorRunning;
+                Display.CassetteMotorLedActive = serialAcia.MotorRunning;
                 Display.CapsLockLedActive = bbcCapsLockState;
                 Display.EmulationPaused = emulationPaused;
                 Display.Tube6502Enabled = tube6502 is not null;
@@ -1647,7 +1662,7 @@ namespace BBC
                 SaveJoystickState(writer);
                 systemVia.SaveState(writer);
                 userVia.SaveState(writer);
-                tapeAciaStub.SaveState(writer);
+                serialAcia.SaveState(writer);
                 adc.SaveState(writer);
                 discController.SaveState(writer);
                 Sound.SaveState(writer);
@@ -1706,7 +1721,7 @@ namespace BBC
                 LoadJoystickState(reader);
                 systemVia.LoadState(reader);
                 userVia.LoadState(reader);
-                tapeAciaStub.LoadState(reader);
+                serialAcia.LoadState(reader);
                 adc.LoadState(reader);
                 discController.LoadState(reader);
                 Sound.LoadState(reader);
@@ -2327,6 +2342,7 @@ namespace BBC
             pendingBootExecScript = null;
             pendingBootScriptLines.Clear();
             selectedSidewaysRom = BasicRomBank;
+            serialAcia.Reset();
             tubeUla.Reset();
             tube6502?.Reset();
             Cpu.RequestReset();
@@ -2352,6 +2368,7 @@ namespace BBC
                 Cpu.SpeedScale = 1.0;
                 Sound.ThrottleToPlayback = true;
                 startupSpeedScaleApplied = requestedStartupSpeedScale == 1.0;
+                serialAcia.Reset();
                 discController.PowerOff();
                 Array.Fill(display.FrameBuffer, DisplayBlack);
                 display.Present();
@@ -2989,8 +3006,8 @@ namespace BBC
             if (Intel8271_Disk.IsAddress(address))
                 return discController.Read(address);
 
-            if (TapeACIAStub.IsAddress(address))
-                return tapeAciaStub.Read(address);
+            if (SerialACIA.IsAddress(address))
+                return serialAcia.Read(address);
 
             if (uPD7002_ADC.IsAddress(address))
                 return adc.Read(address);
@@ -3033,9 +3050,9 @@ namespace BBC
                 return;
             }
 
-            if (TapeACIAStub.IsAddress(address))
+            if (SerialACIA.IsAddress(address))
             {
-                tapeAciaStub.Write(address, value);
+                serialAcia.Write(address, value);
                 return;
             }
 

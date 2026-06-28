@@ -195,6 +195,17 @@ The `Input` menu includes a visual keyboard mapper. Open `Input > Keyboard Mappe
 
 The bottom border includes small status LEDs for cassette motor, caps lock, shift lock, and drive activity. The cassette/caps/shift indicators sit at the bottom left; the drive glyphs, drive numbers, and drive LEDs sit at the bottom right.
 
+### Serial / RS423
+
+`SerialACIA` models the BBC's cassette/RS423 ACIA and Serial ULA registers. The functional Hayes modem sits behind this path and can be tested with a BBC terminal program:
+
+```bash
+BBC_SERIAL_TRACE=1 BBC_SERIAL_LOOPBACK=1 dotnet run -- --no-autoboot --drive0 Assets/scratchDisc.ssd
+BBC_SERIAL_TRACE=1 BBC_HAYES_MODEM=1 dotnet run -- --no-autoboot --drive0 Assets/scratchDisc.ssd
+```
+
+Loopback returns each transmitted byte. The Hayes modem currently handles basic `AT`, `ATE0`, `ATE1`, `ATI`, `ATZ`, `ATH`, and `ATD` commands.
+
 ### Joysticks
 
 SDL game controllers and raw joysticks are opened automatically. The keyboard fallback is deliberately simple:
@@ -335,7 +346,7 @@ ROMS/                 OS, BASIC, DFS, and optional AMX ROMs
 Games/                DFS disc images used for testing and play
 Screenshots/          Runtime screenshot output
 SRC/uPD7002_ADC.cs        Analogue joystick/paddle converter at &FEC0-&FEC3
-SRC/TapeACIAStub.cs       Cassette/RS423 ACIA response for software probes
+SRC/SerialACIA.cs         Cassette/RS423 ACIA and Serial ULA state
 SRC/Intel8271_Disk.cs     Acorn 8271 DFS disc controller surface
 SRC/Display.cs            SDL window plus BBC keyboard, mouse, and joystick input
 SRC/HostFilingSystem.cs   MOS shortcuts for loading a raw host file
