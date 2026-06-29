@@ -76,7 +76,8 @@ namespace BBC
         private const int StatusLabelGlyphGap = 1;
         private const int StatusLabelLineGap = 1;
         private const int StatusLabelLedGap = 2;
-        private const int HayesPanelRightMargin = 10;
+        private const int HayesPanelPaddingX = 8;
+        private const int HayesPanelPaddingY = 5;
         private const int HayesPanelBrandGap = 10;
         private const int HayesPanelLedGap = 21;
         private const int HayesPanelLedCount = 7;
@@ -620,6 +621,8 @@ namespace BBC
             DrawTopBorderStatusMessage();
             DrawDriveGlyphs();
             DrawMenuBar();
+            if (activeMenuIndex == HayesMenuIndex)
+                DrawOpenMenu(activeMenuIndex);
             DrawArchiveBrowser();
             DrawInputMapper();
 
@@ -687,9 +690,7 @@ namespace BBC
                 x += width + MenuPaddingX;
             }
 
-            DrawHayesModemPanel(x);
-
-            if (activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex)
+            if (activeMenuIndex >= 0)
                 DrawOpenMenu(activeMenuIndex);
 
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -704,10 +705,14 @@ namespace BBC
                 return;
             }
 
-            int menuX = GetTopMenuX(menuIndex) - 4;
-            int menuY = TopMenuHeight;
             int menuWidth = GetDropDownWidth(menu);
             int menuHeight = GetDropDownHeight(menu);
+            int menuX = menuIndex == HayesMenuIndex
+                ? GetHayesDropDownX(menuWidth)
+                : GetTopMenuX(menuIndex) - 4;
+            int menuY = menuIndex == HayesMenuIndex
+                ? GetHayesPanelRect().Y - menuHeight
+                : TopMenuHeight;
 
             SdlRect panel = new SdlRect(menuX, menuY, menuWidth, menuHeight);
             _ = SDL_SetRenderDrawColor(renderer, 24, 24, 24, 235);
@@ -1278,6 +1283,9 @@ namespace BBC
             if (y >= 0 && y < TopMenuHeight)
                 return true;
 
+            if (IsInHayesMenuLabel(x, y))
+                return true;
+
             if (IsRomManagerMenu(activeMenuIndex) && IsInRomManagerPanel(x, y))
                 return true;
 
@@ -1498,11 +1506,11 @@ namespace BBC
 
         private int GetMenuIndexAt(int x, int y)
         {
-            if (y < 0 || y >= TopMenuHeight)
-                return -1;
-
             if (IsInHayesMenuLabel(x, y))
                 return HayesMenuIndex;
+
+            if (y < 0 || y >= TopMenuHeight)
+                return -1;
 
             int menuX = MenuPaddingX;
             for (int i = 0; i < menus.Length; i++)
@@ -1525,9 +1533,14 @@ namespace BBC
                 return -1;
 
             MenuDefinition menu = GetMenuDefinition(menuIndex);
-            int menuX = GetTopMenuX(menuIndex) - 4;
-            int menuY = TopMenuHeight;
             int menuWidth = GetDropDownWidth(menu);
+            int menuHeight = GetDropDownHeight(menu);
+            int menuX = menuIndex == HayesMenuIndex
+                ? GetHayesDropDownX(menuWidth)
+                : GetTopMenuX(menuIndex) - 4;
+            int menuY = menuIndex == HayesMenuIndex
+                ? GetHayesPanelRect().Y - menuHeight
+                : TopMenuHeight;
             int itemY = y - menuY - MenuDropDownPadding;
 
             if (x < menuX || x >= menuX + menuWidth || itemY < 0)
@@ -1549,7 +1562,7 @@ namespace BBC
         private int GetTopMenuX(int menuIndex)
         {
             if (menuIndex == HayesMenuIndex)
-                return GetHayesMenuLabelRect().X + 4;
+                return GetHayesMenuLabelRect().X;
 
             int x = MenuPaddingX;
             for (int i = 0; i < menuIndex; i++)
@@ -1560,43 +1573,52 @@ namespace BBC
 
         private bool IsInHayesMenuLabel(int x, int y)
         {
-            if (!HayesModemEnabled || y < 0 || y >= TopMenuHeight)
-                return false;
-
-            if (GetHayesPanelX() <= GetLeftMenuEndX() + MenuPaddingX)
+            if (!HayesModemEnabled)
                 return false;
 
             SdlRect rect = GetHayesMenuLabelRect();
-            return x >= rect.X && x < rect.X + rect.W;
+            return x >= rect.X && x < rect.X + rect.W && y >= rect.Y && y < rect.Y + rect.H;
         }
 
         private SdlRect GetHayesMenuLabelRect()
         {
-            int width = GetRendererTextWidth(HayesMenuTitle) + 8;
-            int x = GetHayesPanelX() - 4;
-            return new SdlRect(x, 3, width, TopMenuHeight - 6);
+            SdlRect panel = GetHayesPanelRect();
+            int brandWidth = GetRendererTextWidth(HayesMenuTitle);
+            return new SdlRect(
+                panel.X + HayesPanelPaddingX - 2,
+                panel.Y + HayesPanelPaddingY,
+                brandWidth + 4,
+                panel.H - (HayesPanelPaddingY * 2));
         }
 
-        private int GetHayesPanelX()
+        private SdlRect GetHayesPanelRect()
         {
             int panelWidth = GetHayesPanelWidth();
-            return logicalWidth - HayesPanelRightMargin - panelWidth;
+            int panelHeight = GetHayesPanelHeight();
+            int bottomOverlayY = logicalHeight - GetBottomOverlayHeight();
+            int x = (logicalWidth - panelWidth) / 2;
+            int y = bottomOverlayY + ((GetBottomOverlayHeight() - panelHeight) / 2);
+            return new SdlRect(x, y, panelWidth, panelHeight);
         }
 
-        private int GetLeftMenuEndX()
+        private int GetHayesDropDownX(int menuWidth)
         {
-            int x = MenuPaddingX;
-            for (int i = 0; i < menus.Length; i++)
-                x += GetTopMenuWidth(menus[i].Title) + MenuPaddingX;
-
-            return x;
+            SdlRect panel = GetHayesPanelRect();
+            int centerX = panel.X + (panel.W / 2);
+            return Math.Clamp(centerX - (menuWidth / 2), 0, logicalWidth - menuWidth);
         }
 
         private static int GetHayesPanelWidth()
         {
             int brandWidth = GetRendererTextWidth(HayesMenuTitle);
             int ledGroupWidth = ((HayesPanelLedCount - 1) * HayesPanelLedGap) + StatusLedDiameter;
-            return brandWidth + HayesPanelBrandGap + ledGroupWidth;
+            return (HayesPanelPaddingX * 2) + brandWidth + HayesPanelBrandGap + ledGroupWidth;
+        }
+
+        private static int GetHayesPanelHeight()
+        {
+            int contentHeight = StatusLedDiameter + StatusLabelLedGap + StatusLabelGlyphHeight;
+            return contentHeight + (HayesPanelPaddingY * 2);
         }
 
         private MenuDefinition GetMenuDefinition(int menuIndex)
@@ -2384,6 +2406,7 @@ namespace BBC
             _ = SDL_RenderFillRect(renderer, ref bottomOverlay);
 
             DrawStatusLeds(bottomOverlayY);
+            DrawHayesModemPanel();
             DrawDriveGlyph(drive0X, glyphY, Drive0Mounted, Drive0ActivityLedActive);
             DrawDriveGlyph(drive1X, glyphY, Drive1Mounted, Drive1ActivityLedActive);
             DrawDriveNumber(drive0X, glyphY, 0);
@@ -2391,14 +2414,15 @@ namespace BBC
             DrawHoveredDriveLabel(drive0X, drive1X, glyphY);
         }
 
-        private static int GetBottomOverlayHeight()
+        private int GetBottomOverlayHeight()
         {
             int statusBlockHeight = (StatusLabelGlyphHeight * 2)
                 + StatusLabelLineGap
                 + StatusLabelLedGap
                 + StatusLedDiameter;
 
-            return Math.Max(GetDriveBlockHeight(), statusBlockHeight) + (BottomOverlayPadding * 2);
+            int contentHeight = Math.Max(Math.Max(GetDriveBlockHeight(), statusBlockHeight), GetHayesPanelHeight());
+            return contentHeight + (BottomOverlayPadding * 2);
         }
 
         private static int GetDriveBlockHeight()
@@ -2428,32 +2452,35 @@ namespace BBC
             DrawRoundLed(centerX, centerY, StatusLedDiameter / 2, active ? (byte)220 : (byte)38, 0, 0);
         }
 
-        private void DrawHayesModemPanel(int menuEndX)
+        private void DrawHayesModemPanel()
         {
             if (!HayesModemEnabled)
                 return;
 
+            SdlRect panel = GetHayesPanelRect();
             int brandWidth = GetRendererTextWidth(HayesMenuTitle);
-            int panelX = GetHayesPanelX();
-            if (panelX <= menuEndX + MenuPaddingX)
-                return;
+
+            _ = SDL_SetRenderDrawColor(renderer, 12, 12, 12, 240);
+            _ = SDL_RenderFillRect(renderer, ref panel);
+            _ = SDL_SetRenderDrawColor(renderer, 130, 130, 130, 255);
+            DrawRectOutline(panel);
 
             if (activeMenuIndex == HayesMenuIndex || hoveredMenuIndex == HayesMenuIndex)
             {
                 SdlRect hover = GetHayesMenuLabelRect();
-                _ = SDL_SetRenderDrawColor(renderer, 42, 42, 42, 255);
+                _ = SDL_SetRenderDrawColor(renderer, 42, 42, 42, 235);
                 _ = SDL_RenderFillRect(renderer, ref hover);
                 _ = SDL_SetRenderDrawColor(renderer, 96, 96, 96, 255);
                 DrawRectOutline(hover);
             }
 
-            int brandY = 8;
-            int ledCenterY = 8;
-            int labelY = 16;
-            int firstLedCenterX = panelX + brandWidth + HayesPanelBrandGap + (StatusLedDiameter / 2);
+            int brandY = panel.Y + HayesPanelPaddingY + 3;
+            int ledCenterY = panel.Y + HayesPanelPaddingY + (StatusLedDiameter / 2);
+            int labelY = ledCenterY + (StatusLedDiameter / 2) + StatusLabelLedGap;
+            int firstLedCenterX = panel.X + HayesPanelPaddingX + brandWidth + HayesPanelBrandGap + (StatusLedDiameter / 2);
 
             byte brandColour = activeMenuIndex == HayesMenuIndex || hoveredMenuIndex == HayesMenuIndex ? (byte)245 : (byte)190;
-            DrawRendererText(HayesMenuTitle, panelX, brandY, brandColour, brandColour, brandColour);
+            DrawRendererText(HayesMenuTitle, panel.X + HayesPanelPaddingX, brandY, brandColour, brandColour, brandColour);
             DrawHayesLed(firstLedCenterX, ledCenterY, labelY, "AA", HayesAutoAnswerLedActive);
             DrawHayesLed(firstLedCenterX + HayesPanelLedGap, ledCenterY, labelY, "CD", HayesCarrierDetectLedActive);
             DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 2), ledCenterY, labelY, "OH", HayesOffHookLedActive);
