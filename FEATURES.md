@@ -148,7 +148,7 @@ A short feature index for the emulator. The README contains the detailed guide.
 - TCP dial-out with `ATDThost:port`
 - Command mode, online mode, hang-up, reset, echo, identity, and escape handling
 - Common terminal init-string compatibility commands and S-registers
-- Fixed 2400 baud modem-to-BBC data pacing
+- Fixed 9600 baud modem-to-BBC data pacing
 - Hayes top-panel LEDs for AA, CD, OH, RD, SD, TR, and MR
 - Menu loopback and modem reset controls
 - Serial trace and ACIA loopback environment options for testing

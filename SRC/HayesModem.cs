@@ -24,7 +24,7 @@ namespace BBC
         private const int DefaultEscapeCharacter = '+';
         private const int DefaultEscapeGuardFiftieths = 50;
         private const int ActivityLedMilliseconds = 120;
-        private const int SerialBaud = 2400;
+        private const int SerialBaud = 9600;
         private const int RequiredDataBits = 8;
         private const string RequiredParity = "None";
         private const byte TelnetIac = 255;
@@ -930,13 +930,23 @@ namespace BBC
 
         private bool WaitForReadyToSend()
         {
-            while (Volatile.Read(ref disposed) == 0
-                && (!serialAcia.RequestToSend || !serialAcia.CanReceiveByte || !SerialConfigMatches()))
+            int spins = 0;
+            while (Volatile.Read(ref disposed) == 0)
             {
-                Thread.Sleep(1);
+                if (serialAcia.RequestToSend
+                    && serialAcia.CanReceiveByte
+                    && SerialConfigMatches())
+                {
+                    return true;
+                }
+
+                if (++spins % 256 == 0)
+                    Thread.Yield();
+                else
+                    Thread.SpinWait(64);
             }
 
-            return Volatile.Read(ref disposed) == 0;
+            return false;
         }
 
         private bool SerialConfigMatches()

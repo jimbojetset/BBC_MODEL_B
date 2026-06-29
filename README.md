@@ -212,7 +212,7 @@ The Hayes modem handles command mode and TCP-backed connected mode. `ATDThost:po
 
 The parser accepts common setup strings used by terminal software without trying to emulate every analogue modem feature. `ATE0/1`, `ATQ0/1`, `ATV0/1`, and `ATM0/1/2` set echo, result-code quiet mode, numeric/verbose result codes, and speaker mode. `ATI` prints the modem identity. `AT&F` restores defaults, `AT&V` prints the active configuration, `AT&C0/1` controls whether carrier is forced on or follows the TCP connection, and `AT&D`, `AT&K`, `AT&Q`, and `AT&S` are accepted as stored compatibility settings. `ATS0`, `ATS2`, and `ATS12` can be queried or assigned; S0 stores auto-answer rings, S2 controls the escape character, and S12 controls the escape guard time in fiftieths of a second. Commands that are not implemented return `ERROR`.
 
-Incoming modem data is buffered by the Hayes modem and metered back through the ACIA at a fixed 2400 baud. The Hayes modem expects the BBC serial side to be configured for 2400 baud, 8 data bits, and no parity. One or two stop bits are accepted, and output pauses while BBC RTS is inactive.
+Incoming modem data is buffered by the Hayes modem and metered back through the ACIA at a fixed 9600 baud. The Hayes modem expects the BBC serial side to be configured for 9600 baud, 8 data bits, and no parity. One or two stop bits are accepted, and output pauses while BBC RTS is inactive.
 
 ### Joysticks
 

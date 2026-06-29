@@ -83,7 +83,7 @@ namespace BBC
         private const int HayesPanelLedGap = 21;
         private const int HayesPanelLedCount = 7;
         private const int HayesMenuIndex = -2;
-        private const string HayesMenuTitle = "Hayes";
+        private const string HayesMenuTitle = "MODEM";
         private const int BottomOverlayPadding = 4;
         private const byte OverlayTextGrey = 80;
         private const int NotificationDurationMilliseconds = 15000;

@@ -53,9 +53,9 @@ namespace BBC
 
         public bool TransmitBreak { get; private set; }
 
-        public int ReceiveBaudRate { get; private set; } = 2400;
+        public int ReceiveBaudRate { get; private set; } = 9600;
 
-        public int TransmitBaudRate { get; private set; } = 2400;
+        public int TransmitBaudRate { get; private set; } = 9600;
 
         public int DataBits { get; private set; } = 8;
 
@@ -124,7 +124,7 @@ namespace BBC
 
         public void QueueReceivedByte(byte value)
         {
-            byte received = MaskDataBits(value);
+            byte received = FormatReceivedByte(value);
             lock (sync)
             {
                 receiveBytes.Enqueue(received);
@@ -418,6 +418,32 @@ namespace BBC
         private byte MaskDataBits(byte value)
         {
             return DataBits == 7 ? (byte)(value & 0x7F) : value;
+        }
+
+        private byte FormatReceivedByte(byte value)
+        {
+            if (DataBits != 7 || Parity == "None")
+                return MaskDataBits(value);
+
+            byte received = (byte)(value & 0x7F);
+            int ones = CountLowBits(received, 7);
+            bool setParityBit = Parity == "Even"
+                ? (ones & 1) != 0
+                : (ones & 1) == 0;
+
+            return setParityBit ? (byte)(received | 0x80) : received;
+        }
+
+        private static int CountLowBits(byte value, int bits)
+        {
+            int count = 0;
+            for (int bit = 0; bit < bits; bit++)
+            {
+                if ((value & (1 << bit)) != 0)
+                    count++;
+            }
+
+            return count;
         }
 
         private static void WriteQueue(BinaryWriter writer, Queue<byte> queue)
