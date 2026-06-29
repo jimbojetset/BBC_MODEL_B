@@ -48,7 +48,7 @@ A short feature index for the emulator. The README contains the detailed guide.
 - `.sav` save states
 - Recent save-state menu entries
 - Command-line `--load-state`
-- Tube and sideways ROM state included in save states
+- Tube, sideways ROM, serial ACIA, and Hayes modem state included in save states
 
 ## 65C02 Tube
 

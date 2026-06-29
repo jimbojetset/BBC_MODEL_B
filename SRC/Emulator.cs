@@ -491,7 +491,7 @@ namespace BBC
         private StreamWriter? serialPcTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 8;
+        private const int SaveStateVersion = 9;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -1789,6 +1789,10 @@ namespace BBC
                 systemVia.SaveState(writer);
                 userVia.SaveState(writer);
                 serialAcia.SaveState(writer);
+                writer.Write(hayesModem is not null);
+                if (hayesModem is not null)
+                    WriteStateBlock(writer, hayesModem.SaveState);
+
                 adc.SaveState(writer);
                 discController.SaveState(writer);
                 Sound.SaveState(writer);
@@ -1848,6 +1852,19 @@ namespace BBC
                 systemVia.LoadState(reader);
                 userVia.LoadState(reader);
                 serialAcia.LoadState(reader);
+                bool saveHasHayesModem = reader.ReadBoolean();
+                if (saveHasHayesModem)
+                {
+                    SetHayesModemEnabled(true, notify: false);
+                    byte[] hayesState = ReadStateBlock(reader, "Hayes modem state");
+                    using BinaryReader hayesReader = new BinaryReader(new MemoryStream(hayesState), Encoding.UTF8);
+                    hayesModem?.LoadState(hayesReader);
+                }
+                else
+                {
+                    DisposeHayesModem();
+                }
+
                 adc.LoadState(reader);
                 discController.LoadState(reader);
                 Sound.LoadState(reader);

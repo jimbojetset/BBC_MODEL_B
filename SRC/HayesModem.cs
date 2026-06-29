@@ -648,6 +648,96 @@ namespace BBC
             Volatile.Write(ref sendDataLedUntilTicks, 0);
         }
 
+        public void SaveState(BinaryWriter writer)
+        {
+            writer.Write(LoopbackEnabled);
+            writer.Write(commandLine.ToString());
+            writer.Write(commandEcho);
+            writer.Write(resultCodesEnabled);
+            writer.Write(verboseResultCodes);
+            writer.Write(speakerMode);
+            writer.Write(carrierDetectMode);
+            writer.Write(dtrMode);
+            writer.Write(flowControlMode);
+            writer.Write(asyncMode);
+            writer.Write(dataSetReadyMode);
+            writer.Write(autoAnswerRings);
+            writer.Write(escapeCharacter);
+            writer.Write(escapeGuardFiftieths);
+
+            lock (serialOutputSync)
+            {
+                writer.Write(serialOutputBytes.Count);
+                foreach (byte value in serialOutputBytes)
+                    writer.Write(value);
+            }
+        }
+
+        public void LoadState(BinaryReader reader)
+        {
+            bool savedLoopback = reader.ReadBoolean();
+            string savedCommandLine = reader.ReadString();
+            bool savedCommandEcho = reader.ReadBoolean();
+            bool savedResultCodesEnabled = reader.ReadBoolean();
+            bool savedVerboseResultCodes = reader.ReadBoolean();
+            int savedSpeakerMode = reader.ReadInt32();
+            int savedCarrierDetectMode = reader.ReadInt32();
+            int savedDtrMode = reader.ReadInt32();
+            int savedFlowControlMode = reader.ReadInt32();
+            int savedAsyncMode = reader.ReadInt32();
+            int savedDataSetReadyMode = reader.ReadInt32();
+            int savedAutoAnswerRings = reader.ReadInt32();
+            int savedEscapeCharacter = reader.ReadInt32();
+            int savedEscapeGuardFiftieths = reader.ReadInt32();
+
+            int serialOutputCount = reader.ReadInt32();
+            if (serialOutputCount < 0)
+                throw new InvalidDataException("Save state has an invalid Hayes modem output queue.");
+
+            byte[] serialOutput = reader.ReadBytes(serialOutputCount);
+            if (serialOutput.Length != serialOutputCount)
+                throw new EndOfStreamException();
+
+            Disconnect(reportNoCarrier: false);
+
+            LoopbackEnabled = savedLoopback;
+            commandLine.Clear();
+            commandLine.Append(savedCommandLine);
+            commandEcho = savedCommandEcho;
+            resultCodesEnabled = savedResultCodesEnabled;
+            verboseResultCodes = savedVerboseResultCodes;
+            speakerMode = savedSpeakerMode;
+            carrierDetectMode = savedCarrierDetectMode;
+            dtrMode = savedDtrMode;
+            flowControlMode = savedFlowControlMode;
+            asyncMode = savedAsyncMode;
+            dataSetReadyMode = savedDataSetReadyMode;
+            autoAnswerRings = savedAutoAnswerRings;
+            escapeCharacter = savedEscapeCharacter;
+            escapeGuardFiftieths = savedEscapeGuardFiftieths;
+
+            Volatile.Write(ref online, 0);
+            Volatile.Write(ref closing, 0);
+            escapePlusCount = 0;
+            escapeFirstPlusTicks = 0;
+            telnetState = 0;
+            telnetCommand = 0;
+            lastTransmitTicks = 0;
+            Volatile.Write(ref receiveDataLedUntilTicks, 0);
+            Volatile.Write(ref sendDataLedUntilTicks, 0);
+
+            lock (serialOutputSync)
+            {
+                serialOutputBytes.Clear();
+                foreach (byte value in serialOutput)
+                    serialOutputBytes.Enqueue(value);
+
+                Monitor.Pulse(serialOutputSync);
+            }
+
+            UpdateCarrierPresent();
+        }
+
         private void ResetConfiguration()
         {
             commandEcho = false;
