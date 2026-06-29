@@ -397,7 +397,7 @@ namespace BBC
         private const string Tube6502RomMarker = "6502 TUBE";
         private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
         private static readonly bool TubeDebugEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1";
-        private static readonly bool HayesModemEnabled = Environment.GetEnvironmentVariable("BBC_HAYES_MODEM") == "1";
+        private static readonly bool InitialHayesModemEnabled = Environment.GetEnvironmentVariable("BBC_HAYES_MODEM") == "1";
         private static readonly bool SerialPcTraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE") == "1";
         private static readonly bool SerialPcTraceAutoEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
         private static readonly string? SerialPcTracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE_FILE");
@@ -460,6 +460,7 @@ namespace BBC
         private readonly Intel8271_Disk discController;
         private readonly TubeUla tubeUla = new TubeUla();
         private CoProcessor65C02? tube6502;
+        private HayesModem? hayesModem;
         private string? configuredTubeHostRomPath;
         private string? configuredTube6502RomPath;
         private bool tube6502Configured;
@@ -534,11 +535,9 @@ namespace BBC
             discController.DriveMotorStarted += _ => discDriveSound?.MotorStarted();
             discController.DriveMotorStopped += _ => discDriveSound?.MotorStopped();
             discController.DriveSeek += (_, trackDelta) => discDriveSound?.Seek(trackDelta);
-            if (HayesModemEnabled)
-            {
-                HayesModem hayesModem = new HayesModem(serialAcia);
-                serialAcia.ByteTransmitted += hayesModem.Receive;
-            }
+            if (InitialHayesModemEnabled)
+                SetHayesModemEnabled(true, notify: false);
+
             tubeUla.HostIrqChanged += asserted =>
             {
                 tubeHostIrqAsserted = asserted;
@@ -644,6 +643,9 @@ namespace BBC
                 SynchronizeInputMapperPause(Display);
                 DrainHostPauseRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
+                DrainHostHayesModemToggleRequests(Display);
+                DrainHostHayesLoopbackToggleRequests(Display);
+                DrainHostHayesResetRequests(Display);
                 DrainHostPowerResetRequests(Display);
                 DrainHostBreakInput(Display);
                 DrainHostDiscLoads(Display);
@@ -672,6 +674,9 @@ namespace BBC
                 Display.CapsLockLedActive = bbcCapsLockState;
                 Display.EmulationPaused = emulationPaused;
                 Display.Tube6502Enabled = tube6502 is not null;
+                Display.HayesModemEnabled = hayesModem is not null;
+                Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
+                UpdateHayesModemLeds(Display);
                 Display.DefaultSaveStateFileName = CreateSaveStateFileName();
                 Display.SetRomSlots(sidewaysRomSlots);
                 Display.Present();
@@ -877,6 +882,7 @@ namespace BBC
             }
             discController.StopTrace();
             StopRuntimeTrace();
+            DisposeHayesModem();
             tube6502?.Dispose();
             Sound.Dispose();
             Display?.Dispose();
@@ -1011,6 +1017,55 @@ namespace BBC
             int count = display.DrainTube6502ToggleRequests();
             for (int i = 0; i < count; i++)
                 SetTube6502Enabled(tube6502 is null);
+        }
+
+        private void DrainHostHayesModemToggleRequests(Display display)
+        {
+            int count = display.DrainHayesModemToggleRequests();
+            for (int i = 0; i < count; i++)
+                SetHayesModemEnabled(hayesModem is null);
+        }
+
+        private void DrainHostHayesLoopbackToggleRequests(Display display)
+        {
+            int count = display.DrainHayesLoopbackToggleRequests();
+            for (int i = 0; i < count; i++)
+                SetHayesLoopbackEnabled(hayesModem?.LoopbackEnabled != true);
+        }
+
+        private void DrainHostHayesResetRequests(Display display)
+        {
+            if (display.DrainHayesResetRequests() == 0)
+                return;
+
+            hayesModem?.Reset();
+            Display?.ShowNotification("Hayes Modem reset", "Power cycle reset", 3000);
+        }
+
+        private void UpdateHayesModemLeds(Display display)
+        {
+            HayesModem? modem = hayesModem;
+            if (modem is null)
+            {
+                display.HayesAutoAnswerLedActive = false;
+                display.HayesCarrierDetectLedActive = false;
+                display.HayesOffHookLedActive = false;
+                display.HayesReceiveDataLedActive = false;
+                display.HayesSendDataLedActive = false;
+                display.HayesTerminalReadyLedActive = false;
+                display.HayesModemReadyLedActive = false;
+                display.HayesLoopbackEnabled = false;
+                return;
+            }
+
+            HayesModem.HayesModemLedState ledState = modem.GetLedState(Stopwatch.GetTimestamp());
+            display.HayesAutoAnswerLedActive = ledState.AutoAnswer;
+            display.HayesCarrierDetectLedActive = ledState.CarrierDetect;
+            display.HayesOffHookLedActive = ledState.OffHook;
+            display.HayesReceiveDataLedActive = ledState.ReceiveData;
+            display.HayesSendDataLedActive = ledState.SendData;
+            display.HayesTerminalReadyLedActive = ledState.TerminalReady;
+            display.HayesModemReadyLedActive = ledState.ModemReady;
         }
 
         private void DrainHostPowerResetRequests(Display display)
@@ -2517,6 +2572,55 @@ namespace BBC
                 tube6502?.SetPaused(wasPaused);
                 Sound.SetHostOutputPaused(wasPaused);
             }
+        }
+
+        private void SetHayesModemEnabled(bool enabled, bool notify = true)
+        {
+            if (enabled == (hayesModem is not null))
+                return;
+
+            if (enabled)
+            {
+                HayesModem modem = new HayesModem(serialAcia);
+                serialAcia.ByteTransmitted += modem.Receive;
+                hayesModem = modem;
+            }
+            else
+            {
+                DisposeHayesModem();
+            }
+
+            if (notify)
+            {
+                Display?.ShowNotification(
+                    enabled ? "Hayes Modem enabled" : "Hayes Modem disabled",
+                    "BBC RS423 serial port",
+                    3000);
+            }
+        }
+
+        private void SetHayesLoopbackEnabled(bool enabled)
+        {
+            HayesModem? modem = hayesModem;
+            if (modem is null)
+                return;
+
+            modem.LoopbackEnabled = enabled;
+            Display?.ShowNotification(
+                enabled ? "Hayes loopback enabled" : "Hayes loopback disabled",
+                "BBC serial data is echoed by the modem",
+                3000);
+        }
+
+        private void DisposeHayesModem()
+        {
+            HayesModem? modem = hayesModem;
+            if (modem is null)
+                return;
+
+            hayesModem = null;
+            serialAcia.ByteTransmitted -= modem.Receive;
+            modem.Dispose();
         }
 
         private void EnsureTube6502ForLoadedState()

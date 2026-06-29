@@ -17,11 +17,12 @@ using System.Net.Sockets;
 namespace BBC
 {
 
-    public sealed class HayesModem
+    public sealed class HayesModem : IDisposable
     {
         private const int DefaultTelnetPort = 23;
         private const int ConnectTimeoutMilliseconds = 5000;
         private const int EscapeGuardMilliseconds = 1000;
+        private const int ActivityLedMilliseconds = 120;
         private const int SerialBaud = 2400;
         private const int RequiredDataBits = 8;
         private const string RequiredParity = "None";
@@ -40,12 +41,17 @@ namespace BBC
         private readonly byte[] networkReadBuffer = new byte[1024];
         private readonly object serialOutputSync = new object();
         private readonly Queue<byte> serialOutputBytes = new Queue<byte>();
+        private readonly Thread serialOutputThread;
         private TcpClient? tcpClient;
         private NetworkStream? networkStream;
         private Thread? receiveThread;
         private int online;
         private int closing;
+        private int disposed;
+        private int loopbackEnabled;
         private long lastTransmitTicks;
+        private long receiveDataLedUntilTicks;
+        private long sendDataLedUntilTicks;
         private long escapeFirstPlusTicks;
         private int escapePlusCount;
         private int telnetState;
@@ -56,7 +62,7 @@ namespace BBC
         {
             this.serialAcia = serialAcia;
             this.serialAcia.SetCarrierPresent(true);
-            Thread serialOutputThread = new Thread(DrainSerialOutput)
+            serialOutputThread = new Thread(DrainSerialOutput)
             {
                 IsBackground = true,
                 Name = "BBC Hayes modem serial output"
@@ -68,8 +74,37 @@ namespace BBC
 
         public bool Online => Volatile.Read(ref online) != 0;
 
+        public bool LoopbackEnabled
+        {
+            get => Volatile.Read(ref loopbackEnabled) != 0;
+            set => Volatile.Write(ref loopbackEnabled, value ? 1 : 0);
+        }
+
+        public HayesModemLedState GetLedState(long nowTicks)
+        {
+            bool connected = tcpClient is not null;
+            return new HayesModemLedState(
+                AutoAnswer: false,
+                CarrierDetect: connected,
+                OffHook: connected,
+                ReceiveData: nowTicks < Volatile.Read(ref receiveDataLedUntilTicks),
+                SendData: nowTicks < Volatile.Read(ref sendDataLedUntilTicks),
+                TerminalReady: serialAcia.RequestToSend,
+                ModemReady: Volatile.Read(ref disposed) == 0);
+        }
+
         public void Receive(byte value)
         {
+            if (Volatile.Read(ref disposed) != 0)
+                return;
+
+            if (LoopbackEnabled)
+            {
+                SetSendDataActive();
+                QueueSerialByte(value);
+                return;
+            }
+
             if (value == 0x00)
                 return;
 
@@ -78,6 +113,8 @@ namespace BBC
                 Trace($"ignored ${value:X2}; BBC serial is {serialAcia.TransmitBaudRate}/{serialAcia.ReceiveBaudRate} {serialAcia.FormatName}");
                 return;
             }
+
+            SetSendDataActive();
 
             if (Online)
             {
@@ -344,6 +381,37 @@ namespace BBC
                 Respond("NO CARRIER");
         }
 
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0)
+                return;
+
+            Disconnect(reportNoCarrier: false);
+
+            lock (serialOutputSync)
+                Monitor.PulseAll(serialOutputSync);
+
+            if (receiveThread is not null && receiveThread.IsAlive)
+                receiveThread.Join(TimeSpan.FromSeconds(2));
+
+            if (serialOutputThread.IsAlive)
+                serialOutputThread.Join(TimeSpan.FromSeconds(2));
+        }
+
+        public void Reset()
+        {
+            LoopbackEnabled = false;
+            Disconnect(reportNoCarrier: false);
+            commandLine.Clear();
+            commandEcho = false;
+            escapePlusCount = 0;
+            telnetState = 0;
+            telnetCommand = 0;
+            Volatile.Write(ref receiveDataLedUntilTicks, 0);
+            Volatile.Write(ref sendDataLedUntilTicks, 0);
+            serialAcia.SetCarrierPresent(true);
+        }
+
         private void HandleNetworkByte(byte value)
         {
             switch (telnetState)
@@ -477,6 +545,9 @@ namespace BBC
 
         private void QueueSerialByte(byte value)
         {
+            if (Volatile.Read(ref disposed) != 0)
+                return;
+
             lock (serialOutputSync)
             {
                 serialOutputBytes.Enqueue(value);
@@ -494,28 +565,39 @@ namespace BBC
         {
             long nextByteTicks = Stopwatch.GetTimestamp();
 
-            while (true)
+            while (Volatile.Read(ref disposed) == 0)
             {
                 byte value;
                 lock (serialOutputSync)
                 {
-                    while (serialOutputBytes.Count == 0)
+                    while (serialOutputBytes.Count == 0 && Volatile.Read(ref disposed) == 0)
                         Monitor.Wait(serialOutputSync);
+
+                    if (Volatile.Read(ref disposed) != 0)
+                        return;
 
                     value = serialOutputBytes.Dequeue();
                 }
 
                 WaitUntil(nextByteTicks);
-                WaitForReadyToSend();
+                if (!WaitForReadyToSend())
+                    return;
+
+                SetReceiveDataActive();
                 serialAcia.QueueReceivedByte(value);
                 nextByteTicks = Stopwatch.GetTimestamp() + ModemToBbcCharacterTicks();
             }
         }
 
-        private void WaitForReadyToSend()
+        private bool WaitForReadyToSend()
         {
-            while (!serialAcia.RequestToSend || !serialAcia.CanReceiveByte || !SerialConfigMatches())
+            while (Volatile.Read(ref disposed) == 0
+                && (!serialAcia.RequestToSend || !serialAcia.CanReceiveByte || !SerialConfigMatches()))
+            {
                 Thread.Sleep(1);
+            }
+
+            return Volatile.Read(ref disposed) == 0;
         }
 
         private bool SerialConfigMatches()
@@ -531,6 +613,20 @@ namespace BBC
         {
             int bits = 1 + RequiredDataBits + serialAcia.StopBits;
             return Math.Max(1, Stopwatch.Frequency * bits / SerialBaud);
+        }
+
+        private void SetReceiveDataActive()
+        {
+            Interlocked.Exchange(
+                ref receiveDataLedUntilTicks,
+                Stopwatch.GetTimestamp() + (ActivityLedMilliseconds * Stopwatch.Frequency / 1000));
+        }
+
+        private void SetSendDataActive()
+        {
+            Interlocked.Exchange(
+                ref sendDataLedUntilTicks,
+                Stopwatch.GetTimestamp() + (ActivityLedMilliseconds * Stopwatch.Frequency / 1000));
         }
 
         private static void WaitUntil(long targetTicks)
@@ -554,5 +650,14 @@ namespace BBC
             if (TraceEnabled)
                 Console.WriteLine($"[hayes] {message}");
         }
+
+        public readonly record struct HayesModemLedState(
+            bool AutoAnswer,
+            bool CarrierDetect,
+            bool OffHook,
+            bool ReceiveData,
+            bool SendData,
+            bool TerminalReady,
+            bool ModemReady);
     }
 }

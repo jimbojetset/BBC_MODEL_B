@@ -76,6 +76,12 @@ namespace BBC
         private const int StatusLabelGlyphGap = 1;
         private const int StatusLabelLineGap = 1;
         private const int StatusLabelLedGap = 2;
+        private const int HayesPanelRightMargin = 10;
+        private const int HayesPanelBrandGap = 10;
+        private const int HayesPanelLedGap = 21;
+        private const int HayesPanelLedCount = 7;
+        private const int HayesMenuIndex = -2;
+        private const string HayesMenuTitle = "Hayes";
         private const int BottomOverlayPadding = 4;
         private const byte OverlayTextGrey = 80;
         private const int NotificationDurationMilliseconds = 15000;
@@ -118,6 +124,9 @@ namespace BBC
         private int pendingPauseToggleRequests;
         private int pendingFrameAdvanceRequests;
         private int pendingTube6502ToggleRequests;
+        private int pendingHayesModemToggleRequests;
+        private int pendingHayesLoopbackToggleRequests;
+        private int pendingHayesResetRequests;
         private int pendingPowerResetRequests;
         private HostMouseState mouseState;
         private bool relativeMouseMode;
@@ -209,6 +218,24 @@ namespace BBC
         public bool EmulationPaused { get; set; }
 
         public bool Tube6502Enabled { get; set; }
+
+        public bool HayesModemEnabled { get; set; }
+
+        public bool HayesLoopbackEnabled { get; set; }
+
+        public bool HayesAutoAnswerLedActive { get; set; }
+
+        public bool HayesCarrierDetectLedActive { get; set; }
+
+        public bool HayesOffHookLedActive { get; set; }
+
+        public bool HayesReceiveDataLedActive { get; set; }
+
+        public bool HayesSendDataLedActive { get; set; }
+
+        public bool HayesTerminalReadyLedActive { get; set; }
+
+        public bool HayesModemReadyLedActive { get; set; }
 
         public string DefaultSaveStateFileName { get; set; } = "bbc-untitled.sav";
 
@@ -533,6 +560,27 @@ namespace BBC
             return count;
         }
 
+        public int DrainHayesModemToggleRequests()
+        {
+            int count = pendingHayesModemToggleRequests;
+            pendingHayesModemToggleRequests = 0;
+            return count;
+        }
+
+        public int DrainHayesLoopbackToggleRequests()
+        {
+            int count = pendingHayesLoopbackToggleRequests;
+            pendingHayesLoopbackToggleRequests = 0;
+            return count;
+        }
+
+        public int DrainHayesResetRequests()
+        {
+            int count = pendingHayesResetRequests;
+            pendingHayesResetRequests = 0;
+            return count;
+        }
+
         public int DrainPowerResetRequests()
         {
             int count = pendingPowerResetRequests;
@@ -639,7 +687,9 @@ namespace BBC
                 x += width + MenuPaddingX;
             }
 
-            if (activeMenuIndex >= 0)
+            DrawHayesModemPanel(x);
+
+            if (activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex)
                 DrawOpenMenu(activeMenuIndex);
 
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -647,7 +697,7 @@ namespace BBC
 
         private void DrawOpenMenu(int menuIndex)
         {
-            MenuDefinition menu = menus[menuIndex];
+            MenuDefinition menu = GetMenuDefinition(menuIndex);
             if (IsRomManagerMenu(menuIndex))
             {
                 DrawRomManagerPanel(menuIndex);
@@ -975,14 +1025,15 @@ namespace BBC
             uiMouseY = (int)Math.Round(logicalY);
 
             hoveredMenuIndex = GetMenuIndexAt((int)logicalX, (int)logicalY);
-            hoveredMenuItemIndex = activeMenuIndex >= 0
+            hoveredMenuItemIndex = activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex
                 ? GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY)
                 : -1;
             hoveredRomSlot = IsRomManagerMenu(activeMenuIndex)
                 ? GetRomSlotAt((int)logicalX, (int)logicalY)
                 : -1;
 
-            if (activeMenuIndex >= 0 && hoveredMenuIndex >= 0)
+            if ((activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex)
+                && (hoveredMenuIndex >= 0 || hoveredMenuIndex == HayesMenuIndex))
             {
                 activeMenuIndex = hoveredMenuIndex;
                 hoveredMenuItemIndex = GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY);
@@ -1020,7 +1071,7 @@ namespace BBC
                 return IsMenuArea(x, y);
 
             int menuIndex = GetMenuIndexAt(x, y);
-            if (menuIndex >= 0)
+            if (menuIndex >= 0 || menuIndex == HayesMenuIndex)
             {
                 activeMenuIndex = activeMenuIndex == menuIndex ? -1 : menuIndex;
                 hoveredMenuIndex = menuIndex;
@@ -1032,7 +1083,7 @@ namespace BBC
                 return true;
             }
 
-            if (activeMenuIndex >= 0)
+            if (activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex)
             {
                 if (IsRomManagerMenu(activeMenuIndex))
                 {
@@ -1050,7 +1101,7 @@ namespace BBC
                 int itemIndex = GetMenuItemIndexAt(activeMenuIndex, x, y);
                 if (itemIndex >= 0)
                 {
-                    MenuItem item = menus[activeMenuIndex].Items[itemIndex];
+                    MenuItem item = GetMenuDefinition(activeMenuIndex).Items[itemIndex];
                     if (IsMenuItemEnabled(item))
                         ExecuteMenuCommand(item.Command);
 
@@ -1230,7 +1281,8 @@ namespace BBC
             if (IsRomManagerMenu(activeMenuIndex) && IsInRomManagerPanel(x, y))
                 return true;
 
-            return activeMenuIndex >= 0 && GetMenuItemIndexAt(activeMenuIndex, x, y) >= 0;
+            return (activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex)
+                && GetMenuItemIndexAt(activeMenuIndex, x, y) >= 0;
         }
 
         private SdlRect GetArchivePanelRect()
@@ -1449,6 +1501,9 @@ namespace BBC
             if (y < 0 || y >= TopMenuHeight)
                 return -1;
 
+            if (IsInHayesMenuLabel(x, y))
+                return HayesMenuIndex;
+
             int menuX = MenuPaddingX;
             for (int i = 0; i < menus.Length; i++)
             {
@@ -1464,12 +1519,12 @@ namespace BBC
 
         private int GetMenuItemIndexAt(int menuIndex, int x, int y)
         {
-            if (menuIndex < 0 || menuIndex >= menus.Length)
+            if (menuIndex != HayesMenuIndex && (menuIndex < 0 || menuIndex >= menus.Length))
                 return -1;
             if (IsRomManagerMenu(menuIndex))
                 return -1;
 
-            MenuDefinition menu = menus[menuIndex];
+            MenuDefinition menu = GetMenuDefinition(menuIndex);
             int menuX = GetTopMenuX(menuIndex) - 4;
             int menuY = TopMenuHeight;
             int menuWidth = GetDropDownWidth(menu);
@@ -1493,11 +1548,60 @@ namespace BBC
 
         private int GetTopMenuX(int menuIndex)
         {
+            if (menuIndex == HayesMenuIndex)
+                return GetHayesMenuLabelRect().X + 4;
+
             int x = MenuPaddingX;
             for (int i = 0; i < menuIndex; i++)
                 x += GetTopMenuWidth(menus[i].Title) + MenuPaddingX;
 
             return x;
+        }
+
+        private bool IsInHayesMenuLabel(int x, int y)
+        {
+            if (!HayesModemEnabled || y < 0 || y >= TopMenuHeight)
+                return false;
+
+            if (GetHayesPanelX() <= GetLeftMenuEndX() + MenuPaddingX)
+                return false;
+
+            SdlRect rect = GetHayesMenuLabelRect();
+            return x >= rect.X && x < rect.X + rect.W;
+        }
+
+        private SdlRect GetHayesMenuLabelRect()
+        {
+            int width = GetRendererTextWidth(HayesMenuTitle) + 8;
+            int x = GetHayesPanelX() - 4;
+            return new SdlRect(x, 3, width, TopMenuHeight - 6);
+        }
+
+        private int GetHayesPanelX()
+        {
+            int panelWidth = GetHayesPanelWidth();
+            return logicalWidth - HayesPanelRightMargin - panelWidth;
+        }
+
+        private int GetLeftMenuEndX()
+        {
+            int x = MenuPaddingX;
+            for (int i = 0; i < menus.Length; i++)
+                x += GetTopMenuWidth(menus[i].Title) + MenuPaddingX;
+
+            return x;
+        }
+
+        private static int GetHayesPanelWidth()
+        {
+            int brandWidth = GetRendererTextWidth(HayesMenuTitle);
+            int ledGroupWidth = ((HayesPanelLedCount - 1) * HayesPanelLedGap) + StatusLedDiameter;
+            return brandWidth + HayesPanelBrandGap + ledGroupWidth;
+        }
+
+        private MenuDefinition GetMenuDefinition(int menuIndex)
+        {
+            return menuIndex == HayesMenuIndex ? HayesMenu : menus[menuIndex];
         }
 
         private static int GetTopMenuWidth(string text)
@@ -2036,6 +2140,15 @@ namespace BBC
                 case MenuCommand.ToggleTube6502:
                     pendingTube6502ToggleRequests++;
                     break;
+                case MenuCommand.ToggleHayesModem:
+                    pendingHayesModemToggleRequests++;
+                    break;
+                case MenuCommand.ToggleHayesLoopback:
+                    pendingHayesLoopbackToggleRequests++;
+                    break;
+                case MenuCommand.ResetHayesModem:
+                    pendingHayesResetRequests++;
+                    break;
                 case MenuCommand.ToggleScanlines:
                     scanlinesEnabled = !scanlinesEnabled;
                     break;
@@ -2163,6 +2276,8 @@ namespace BBC
                 MenuCommand.ToggleShiftLock => bbcShiftLockEnabled,
                 MenuCommand.TogglePause => EmulationPaused,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
+                MenuCommand.ToggleHayesModem => HayesModemEnabled,
+                MenuCommand.ToggleHayesLoopback => HayesLoopbackEnabled,
                 _ => false
             };
         }
@@ -2313,6 +2428,47 @@ namespace BBC
             DrawRoundLed(centerX, centerY, StatusLedDiameter / 2, active ? (byte)220 : (byte)38, 0, 0);
         }
 
+        private void DrawHayesModemPanel(int menuEndX)
+        {
+            if (!HayesModemEnabled)
+                return;
+
+            int brandWidth = GetRendererTextWidth(HayesMenuTitle);
+            int panelX = GetHayesPanelX();
+            if (panelX <= menuEndX + MenuPaddingX)
+                return;
+
+            if (activeMenuIndex == HayesMenuIndex || hoveredMenuIndex == HayesMenuIndex)
+            {
+                SdlRect hover = GetHayesMenuLabelRect();
+                _ = SDL_SetRenderDrawColor(renderer, 42, 42, 42, 255);
+                _ = SDL_RenderFillRect(renderer, ref hover);
+                _ = SDL_SetRenderDrawColor(renderer, 96, 96, 96, 255);
+                DrawRectOutline(hover);
+            }
+
+            int brandY = 8;
+            int ledCenterY = 8;
+            int labelY = 16;
+            int firstLedCenterX = panelX + brandWidth + HayesPanelBrandGap + (StatusLedDiameter / 2);
+
+            byte brandColour = activeMenuIndex == HayesMenuIndex || hoveredMenuIndex == HayesMenuIndex ? (byte)245 : (byte)190;
+            DrawRendererText(HayesMenuTitle, panelX, brandY, brandColour, brandColour, brandColour);
+            DrawHayesLed(firstLedCenterX, ledCenterY, labelY, "AA", HayesAutoAnswerLedActive);
+            DrawHayesLed(firstLedCenterX + HayesPanelLedGap, ledCenterY, labelY, "CD", HayesCarrierDetectLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 2), ledCenterY, labelY, "OH", HayesOffHookLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 3), ledCenterY, labelY, "RD", HayesReceiveDataLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 4), ledCenterY, labelY, "SD", HayesSendDataLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 5), ledCenterY, labelY, "TR", HayesTerminalReadyLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 6), ledCenterY, labelY, "MR", HayesModemReadyLedActive);
+        }
+
+        private void DrawHayesLed(int centerX, int centerY, int labelY, string label, bool active)
+        {
+            DrawRoundLed(centerX, centerY, StatusLedDiameter / 2, active ? (byte)220 : (byte)58, 0, 0);
+            DrawTinyLabel(label, centerX, labelY, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
+        }
+
         private void DrawDriveGlyph(int glyphX, int glyphY, bool mounted, bool activityLedActive)
         {
             SdlRect glyphRect = new SdlRect(glyphX, glyphY, DriveGlyphWidth, DriveGlyphHeight);
@@ -2409,11 +2565,23 @@ namespace BBC
 
         private void DrawTinyLabel(string text, int centerX, int y, byte red, byte green, byte blue)
         {
-            int width = (text.Length * StatusLabelGlyphWidth) + ((text.Length - 1) * StatusLabelGlyphGap);
+            int width = GetTinyTextWidth(text);
             int x = centerX - (width / 2);
 
+            DrawTinyText(text, x, y, red, green, blue);
+        }
+
+        private void DrawTinyText(string text, int x, int y, byte red, byte green, byte blue)
+        {
             for (int i = 0; i < text.Length; i++)
                 DrawTinyGlyph(text[i], x + (i * (StatusLabelGlyphWidth + StatusLabelGlyphGap)), y, red, green, blue);
+        }
+
+        private static int GetTinyTextWidth(string text)
+        {
+            return text.Length == 0
+                ? 0
+                : (text.Length * StatusLabelGlyphWidth) + ((text.Length - 1) * StatusLabelGlyphGap);
         }
 
         private void DrawTinyGlyph(char character, int x, int y, byte red, byte green, byte blue)
@@ -2446,6 +2614,7 @@ namespace BBC
                 ['1'] = [0b010, 0b110, 0b010, 0b010, 0b111],
                 ['A'] = [0b010, 0b101, 0b111, 0b101, 0b101],
                 ['C'] = [0b111, 0b100, 0b100, 0b100, 0b111],
+                ['D'] = [0b110, 0b101, 0b101, 0b101, 0b110],
                 ['E'] = [0b111, 0b100, 0b110, 0b100, 0b111],
                 ['F'] = [0b111, 0b100, 0b110, 0b100, 0b100],
                 ['H'] = [0b101, 0b101, 0b111, 0b101, 0b101],
@@ -2458,6 +2627,7 @@ namespace BBC
                 ['R'] = [0b110, 0b101, 0b110, 0b101, 0b101],
                 ['S'] = [0b111, 0b100, 0b111, 0b001, 0b111],
                 ['T'] = [0b111, 0b010, 0b010, 0b010, 0b010],
+                ['Y'] = [0b101, 0b101, 0b010, 0b010, 0b010],
             };
 
             public static byte[] GetRows(char character)
@@ -3413,6 +3583,12 @@ namespace BBC
 
         private readonly record struct MenuItem(string Text, string Shortcut, MenuCommand Command, bool Enabled = true, bool Separator = false);
 
+        private static readonly MenuDefinition HayesMenu = new MenuDefinition(HayesMenuTitle,
+        [
+            new MenuItem("Loopback", "", MenuCommand.ToggleHayesLoopback),
+            new MenuItem("Reset", "", MenuCommand.ResetHayesModem)
+        ]);
+
         private enum MenuCommand
         {
             MountDrive0,
@@ -3435,6 +3611,9 @@ namespace BBC
             PowerReset,
             TogglePause,
             ToggleTube6502,
+            ToggleHayesModem,
+            ToggleHayesLoopback,
+            ResetHayesModem,
             ToggleScanlines,
             ToggleFullScreen,
             PasteClipboard,
@@ -3469,6 +3648,7 @@ namespace BBC
                     new MenuItem("Power reset", "", MenuCommand.PowerReset),
                     MenuSeparator(),
                     new MenuItem("6502 Co-Processor", "", MenuCommand.ToggleTube6502),
+                    new MenuItem("Hayes Modem", "", MenuCommand.ToggleHayesModem),
                     MenuSeparator(),
                     new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause)
                 ]),
