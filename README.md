@@ -26,7 +26,7 @@ ROMS/6502tube_120.rom
 
 `HiBASIC.rom` is used as the bank 15 BASIC ROM when the 65C02 Tube co-processor is enabled. A normal non-Tube boot still uses `BASIC2.rom`.
 
-`AMXMSE331.rom` is optional for a normal BBC boot. I keep it listed because AMX software is a useful test of the mouse path, and especially useful with the Repton 3 editor.
+`AMXMSE331.rom` is optional for a normal BBC boot and is not loaded by default. I keep it listed because AMX software is a useful test of the mouse path, and especially useful with the Repton 3 editor.
 
 `DNFS302.rom` and `6502tube_120.rom` are only needed when the 65C02 Tube co-processor is enabled.
 
@@ -197,14 +197,20 @@ The bottom border includes small status LEDs for cassette motor, caps lock, shif
 
 ### Serial / RS423
 
-`SerialACIA` models the BBC's cassette/RS423 ACIA and Serial ULA registers. The functional Hayes modem sits behind this path and can be tested with a BBC terminal program:
+`SerialACIA` models the BBC's cassette/RS423 ACIA and Serial ULA registers. The functional Hayes modem sits behind this path and can be enabled from `Machine > Hayes Modem`, or at startup with `BBC_HAYES_MODEM=1`.
 
 ```bash
 BBC_SERIAL_TRACE=1 BBC_SERIAL_LOOPBACK=1 dotnet run -- --no-autoboot --drive0 Assets/scratchDisc.ssd
 BBC_SERIAL_TRACE=1 BBC_HAYES_MODEM=1 dotnet run -- --no-autoboot --drive0 Assets/scratchDisc.ssd
 ```
 
-Loopback returns each transmitted byte. The ACIA decodes the BBC-side baud, data bits, parity, stop bits, RTS, CTS, and break state from the 6850 control register and Serial ULA. The Hayes modem handles command mode and TCP-backed connected mode. `ATDhost port` or `ATDhost:port` opens a host TCP connection and returns `CONNECT` when the socket is available; `ATH` drops it, `ATO` returns to online mode after escaping, and `+++` escapes from connected mode back to command mode. DCD is currently held ready in command mode so terminal software can issue `AT` commands before a TCP session exists.
+Loopback returns each transmitted byte. The ACIA decodes the BBC-side baud, data bits, parity, stop bits, RTS, CTS, and break state from the 6850 control register and Serial ULA. `BBC_SERIAL_LOOPBACK=1` enables the low-level ACIA loopback path; the Hayes menu has its own `Loopback` item that echoes bytes through the modem layer.
+
+The Hayes panel appears at the right of the top menu while the modem is enabled. Its LEDs follow the familiar front-panel names: `AA`, `CD`, `OH`, `RD`, `SD`, `TR`, and `MR`. `CD` and `OH` light while a TCP connection is open, `RD` and `SD` flash for modem-to-BBC and BBC-to-modem data, `TR` follows BBC RTS, and `MR` shows that the modem object is active. The Hayes drop-down menu provides `Loopback` and `Reset`; reset drops any connection, clears loopback and command state, and returns the modem to command mode.
+
+The Hayes modem handles command mode and TCP-backed connected mode. `ATDThost:port` opens a host TCP connection, defaulting to port 23 when no port is supplied. `ATDPhost:port` is accepted as the pulse-dial equivalent. A successful dial returns `CONNECT host port`; connection failure returns `NO CARRIER`. `ATDhost:port`, `ATDT host:port`, and space-separated `ATDhost port` forms are rejected because the dial command must include the tone or pulse modifier immediately before the target. `ATH` hangs up, `ATZ` resets the command state and hangs up, `ATO` returns to online mode after escaping, and `+++` escapes from connected mode back to command mode.
+
+The parser accepts common setup strings used by terminal software without trying to emulate every analogue modem feature. `ATE0/1`, `ATQ0/1`, `ATV0/1`, and `ATM0/1/2` set echo, result-code quiet mode, numeric/verbose result codes, and speaker mode. `ATI` prints the modem identity. `AT&F` restores defaults, `AT&V` prints the active configuration, `AT&C0/1` controls whether carrier is forced on or follows the TCP connection, and `AT&D`, `AT&K`, `AT&Q`, and `AT&S` are accepted as stored compatibility settings. `ATS0`, `ATS2`, and `ATS12` can be queried or assigned; S0 stores auto-answer rings, S2 controls the escape character, and S12 controls the escape guard time in fiftieths of a second. Commands that are not implemented return `ERROR`.
 
 Incoming modem data is buffered by the Hayes modem and metered back through the ACIA at a fixed 2400 baud. The Hayes modem expects the BBC serial side to be configured for 2400 baud, 8 data bits, and no parity. One or two stop bits are accepted, and output pauses while BBC RTS is inactive.
 
@@ -259,7 +265,7 @@ Inside the BBC, the useful commands are:
 *POINTER OFF
 ```
 
-With `ROMS/AMXMSE331.rom` present, the ROM is loaded in sideways bank 13. `*MOUSE` and `*POINTER ON/OFF` update the host capture state, because AMX titles do not all enable the pointer in the same order.
+`ROMS/AMXMSE331.rom` is not loaded by default. Use `ROM Manager` to add it to sideways bank 13 when you want the AMX ROM active. `*MOUSE` and `*POINTER ON/OFF` still update the host capture state through the fallback path when the ROM is not loaded, because AMX titles do not all enable the pointer in the same order.
 
 `Games/Misc/AMXArt.ssd` can be launched directly:
 

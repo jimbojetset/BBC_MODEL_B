@@ -21,7 +21,8 @@ namespace BBC
     {
         private const int DefaultTelnetPort = 23;
         private const int ConnectTimeoutMilliseconds = 5000;
-        private const int EscapeGuardMilliseconds = 1000;
+        private const int DefaultEscapeCharacter = '+';
+        private const int DefaultEscapeGuardFiftieths = 50;
         private const int ActivityLedMilliseconds = 120;
         private const int SerialBaud = 2400;
         private const int RequiredDataBits = 8;
@@ -57,6 +58,17 @@ namespace BBC
         private int telnetState;
         private byte telnetCommand;
         private bool commandEcho;
+        private bool resultCodesEnabled = true;
+        private bool verboseResultCodes = true;
+        private int speakerMode = 1;
+        private int carrierDetectMode;
+        private int dtrMode;
+        private int flowControlMode;
+        private int asyncMode;
+        private int dataSetReadyMode;
+        private int autoAnswerRings;
+        private int escapeCharacter = DefaultEscapeCharacter;
+        private int escapeGuardFiftieths = DefaultEscapeGuardFiftieths;
 
         public HayesModem(SerialACIA serialAcia)
         {
@@ -73,6 +85,8 @@ namespace BBC
         public bool CommandEchoEnabled => commandEcho;
 
         public bool Online => Volatile.Read(ref online) != 0;
+
+        private int EscapeGuardMilliseconds => Math.Max(0, escapeGuardFiftieths * 20);
 
         public bool LoopbackEnabled
         {
@@ -177,60 +191,283 @@ namespace BBC
 
         private void HandleCommandBody(string body)
         {
-            string upper = body.ToUpperInvariant();
-
-            if (upper is "Z" or "H" or "H0")
+            int index = 0;
+            while (index < body.Length)
             {
-                if (upper == "Z")
-                    commandEcho = false;
-                Disconnect(reportNoCarrier: false);
-                Respond("OK");
-                return;
-            }
+                SkipWhiteSpace(body, ref index);
+                if (index >= body.Length)
+                    break;
 
-            if (upper is "O" or "O0")
-            {
-                if (tcpClient?.Connected == true)
+                char command = char.ToUpperInvariant(body[index]);
+                if (command == 'D')
                 {
-                    Volatile.Write(ref online, 1);
-                    Respond("CONNECT");
-                }
-                else
-                {
-                    Respond("NO CARRIER");
+                    if (!TryGetDialTarget(body[index..], out string target))
+                    {
+                        Respond("ERROR");
+                        return;
+                    }
+
+                    Dial(target);
+                    return;
                 }
 
-                return;
+                index++;
+                if (command == '&')
+                {
+                    if (!HandleAmpersandCommand(body, ref index))
+                    {
+                        Respond("ERROR");
+                        return;
+                    }
+
+                    continue;
+                }
+
+                if (command == 'S')
+                {
+                    if (!HandleSRegisterCommand(body, ref index))
+                    {
+                        Respond("ERROR");
+                        return;
+                    }
+
+                    continue;
+                }
+
+                if (!HandleBasicCommand(command, body, ref index))
+                {
+                    Respond("ERROR");
+                    return;
+                }
+
+                if (command == 'O')
+                    return;
             }
 
-            if (upper is "E0" or "E")
+            Respond("OK");
+        }
+
+        private bool HandleBasicCommand(char command, string body, ref int index)
+        {
+            switch (command)
             {
-                commandEcho = false;
-                Respond("OK");
-                return;
-            }
+                case 'Z':
+                    ResetConfiguration();
+                    Disconnect(reportNoCarrier: false);
+                    return true;
 
-            if (upper == "E1")
+                case 'H':
+                    if (!TryReadOptionalNumber(body, ref index, out int hookMode))
+                        return false;
+
+                    if (hookMode != 0)
+                        return false;
+
+                    Disconnect(reportNoCarrier: false);
+                    return true;
+
+                case 'O':
+                    if (!TryReadOptionalNumber(body, ref index, out int onlineMode))
+                        return false;
+
+                    if (onlineMode != 0)
+                        return false;
+
+                    if (tcpClient?.Connected == true)
+                    {
+                        Volatile.Write(ref online, 1);
+                        Respond("CONNECT");
+                    }
+                    else
+                    {
+                        Respond("NO CARRIER");
+                    }
+
+                    return true;
+
+                case 'E':
+                    if (!TryReadOptionalNumber(body, ref index, out int echoMode))
+                        return false;
+
+                    if (echoMode is not 0 and not 1)
+                        return false;
+
+                    commandEcho = echoMode == 1;
+                    return true;
+
+                case 'Q':
+                    if (!TryReadOptionalNumber(body, ref index, out int quietMode))
+                        return false;
+
+                    if (quietMode is not 0 and not 1)
+                        return false;
+
+                    resultCodesEnabled = quietMode == 0;
+                    return true;
+
+                case 'V':
+                    if (!TryReadOptionalNumber(body, ref index, out int verboseMode))
+                        return false;
+
+                    if (verboseMode is not 0 and not 1)
+                        return false;
+
+                    verboseResultCodes = verboseMode == 1;
+                    return true;
+
+                case 'M':
+                    if (!TryReadOptionalNumber(body, ref index, out int mode))
+                        return false;
+
+                    if (mode is < 0 or > 2)
+                        return false;
+
+                    speakerMode = mode;
+                    return true;
+
+                case 'I':
+                    if (!TryReadOptionalNumber(body, ref index, out int infoPage))
+                        return false;
+
+                    if (infoPage != 0)
+                        return false;
+
+                    RespondInfo("BBC MODEL B HAYES MODEM");
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        private bool HandleAmpersandCommand(string body, ref int index)
+        {
+            if (index >= body.Length)
+                return false;
+
+            char command = char.ToUpperInvariant(body[index++]);
+            switch (command)
             {
-                commandEcho = true;
-                Respond("OK");
-                return;
-            }
+                case 'F':
+                    if (!TryReadOptionalNumber(body, ref index, out int factoryProfile))
+                        return false;
 
-            if (upper == "I")
+                    if (factoryProfile != 0)
+                        return false;
+
+                    ResetConfiguration();
+                    return true;
+
+                case 'V':
+                    RespondInfo($"E{(commandEcho ? 1 : 0)} Q{(resultCodesEnabled ? 0 : 1)} V{(verboseResultCodes ? 1 : 0)} M{speakerMode}");
+                    RespondInfo($"S0={autoAnswerRings} S2={escapeCharacter} S12={escapeGuardFiftieths}");
+                    RespondInfo($"&C{carrierDetectMode} &D{dtrMode} &K{flowControlMode} &Q{asyncMode} &S{dataSetReadyMode}");
+                    return true;
+
+                case 'C':
+                    return TrySetAmpersandMode(body, ref index, 0, 1, value =>
+                    {
+                        carrierDetectMode = value;
+                        UpdateCarrierPresent();
+                    });
+
+                case 'D':
+                    return TrySetAmpersandMode(body, ref index, 0, 2, value => dtrMode = value);
+
+                case 'K':
+                    return TrySetAmpersandMode(body, ref index, 0, 3, value => flowControlMode = value);
+
+                case 'Q':
+                    return TrySetAmpersandMode(body, ref index, 0, 0, value => asyncMode = value);
+
+                case 'S':
+                    return TrySetAmpersandMode(body, ref index, 0, 1, value => dataSetReadyMode = value);
+
+                default:
+                    return false;
+            }
+        }
+
+        private bool HandleSRegisterCommand(string body, ref int index)
+        {
+            if (!TryReadRequiredNumber(body, ref index, out int register))
+                return false;
+
+            if (index < body.Length && body[index] == '?')
             {
-                Respond("BBC MODEL B HAYES MODEM");
-                Respond("OK");
-                return;
+                index++;
+                if (!TryGetSRegister(register, out int value))
+                    return false;
+
+                RespondInfo(value.ToString());
+                return true;
             }
 
-            if (upper.StartsWith("D", StringComparison.Ordinal))
+            if (index < body.Length && body[index] == '=')
             {
-                Dial(body[1..].Trim());
-                return;
+                index++;
+                if (!TryReadRequiredNumber(body, ref index, out int value))
+                    return false;
+
+                return TrySetSRegister(register, value);
             }
 
-            Respond("ERROR");
+            return false;
+        }
+
+        private bool TrySetSRegister(int register, int value)
+        {
+            switch (register)
+            {
+                case 0 when value is >= 0 and <= 255:
+                    autoAnswerRings = value;
+                    return true;
+
+                case 2 when value is >= 0 and <= 127:
+                    escapeCharacter = value;
+                    return true;
+
+                case 12 when value is >= 0 and <= 255:
+                    escapeGuardFiftieths = value;
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        private bool TryGetSRegister(int register, out int value)
+        {
+            switch (register)
+            {
+                case 0:
+                    value = autoAnswerRings;
+                    return true;
+
+                case 2:
+                    value = escapeCharacter;
+                    return true;
+
+                case 12:
+                    value = escapeGuardFiftieths;
+                    return true;
+
+                default:
+                    value = 0;
+                    return false;
+            }
+        }
+
+        private bool TrySetAmpersandMode(string body, ref int index, int minimum, int maximum, Action<int> apply)
+        {
+            if (!TryReadOptionalNumber(body, ref index, out int value))
+                return false;
+
+            if (value < minimum || value > maximum)
+                return false;
+
+            apply(value);
+            return true;
         }
 
         private void Dial(string target)
@@ -259,7 +496,7 @@ namespace BBC
                 networkStream = client.GetStream();
                 Volatile.Write(ref online, 1);
                 Volatile.Write(ref closing, 0);
-                serialAcia.SetCarrierPresent(true);
+                UpdateCarrierPresent();
                 receiveThread = new Thread(ReadNetwork)
                 {
                     IsBackground = true,
@@ -281,7 +518,7 @@ namespace BBC
         {
             long now = Environment.TickCount64;
 
-            if (value == (byte)'+')
+            if (value == (byte)escapeCharacter)
             {
                 if (escapePlusCount == 0)
                 {
@@ -369,13 +606,13 @@ namespace BBC
             Volatile.Write(ref closing, 1);
             escapePlusCount = 0;
             ClearSerialOutput();
-            serialAcia.SetCarrierPresent(true);
 
             networkStream?.Dispose();
             tcpClient?.Close();
 
             networkStream = null;
             tcpClient = null;
+            UpdateCarrierPresent();
 
             if (reportNoCarrier && wasOnline)
                 Respond("NO CARRIER");
@@ -403,13 +640,34 @@ namespace BBC
             LoopbackEnabled = false;
             Disconnect(reportNoCarrier: false);
             commandLine.Clear();
-            commandEcho = false;
+            ResetConfiguration();
             escapePlusCount = 0;
             telnetState = 0;
             telnetCommand = 0;
             Volatile.Write(ref receiveDataLedUntilTicks, 0);
             Volatile.Write(ref sendDataLedUntilTicks, 0);
-            serialAcia.SetCarrierPresent(true);
+        }
+
+        private void ResetConfiguration()
+        {
+            commandEcho = false;
+            resultCodesEnabled = true;
+            verboseResultCodes = true;
+            speakerMode = 1;
+            carrierDetectMode = 0;
+            dtrMode = 0;
+            flowControlMode = 0;
+            asyncMode = 0;
+            dataSetReadyMode = 0;
+            autoAnswerRings = 0;
+            escapeCharacter = DefaultEscapeCharacter;
+            escapeGuardFiftieths = DefaultEscapeGuardFiftieths;
+            UpdateCarrierPresent();
+        }
+
+        private void UpdateCarrierPresent()
+        {
+            serialAcia.SetCarrierPresent(carrierDetectMode == 0 || tcpClient is not null);
         }
 
         private void HandleNetworkByte(byte value)
@@ -498,6 +756,40 @@ namespace BBC
             Trace($"telnet {(char)command} option {option} -> {(char)reply}");
         }
 
+        private static void SkipWhiteSpace(string value, ref int index)
+        {
+            while (index < value.Length && char.IsWhiteSpace(value[index]))
+                index++;
+        }
+
+        private static bool TryReadOptionalNumber(string value, ref int index, out int number)
+        {
+            if (index >= value.Length || !char.IsDigit(value[index]))
+            {
+                number = 0;
+                return true;
+            }
+
+            return TryReadRequiredNumber(value, ref index, out number);
+        }
+
+        private static bool TryReadRequiredNumber(string value, ref int index, out int number)
+        {
+            number = 0;
+            int start = index;
+            while (index < value.Length && char.IsDigit(value[index]))
+            {
+                int digit = value[index] - '0';
+                if (number > (int.MaxValue - digit) / 10)
+                    return false;
+
+                number = (number * 10) + digit;
+                index++;
+            }
+
+            return index > start;
+        }
+
         private static bool TryParseDialTarget(string target, out string host, out int port)
         {
             host = string.Empty;
@@ -506,21 +798,11 @@ namespace BBC
             string value = target.Trim();
             if (value.Length == 0)
                 return false;
-
-            if (value[0] is 'T' or 't' or 'P' or 'p')
-                value = value[1..].TrimStart();
-
-            value = value.Replace(',', ' ');
-            string[] parts = value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (parts.Length == 2 && int.TryParse(parts[1], out int parsedPort))
-            {
-                host = parts[0];
-                port = parsedPort;
-                return !string.IsNullOrWhiteSpace(host) && port is > 0 and <= 65535;
-            }
+            if (ContainsWhiteSpace(value))
+                return false;
 
             int colon = value.LastIndexOf(':');
-            if (colon > 0 && colon < value.Length - 1 && int.TryParse(value[(colon + 1)..], out parsedPort))
+            if (colon > 0 && colon < value.Length - 1 && int.TryParse(value[(colon + 1)..], out int parsedPort))
             {
                 host = value[..colon];
                 port = parsedPort;
@@ -531,10 +813,67 @@ namespace BBC
             return !string.IsNullOrWhiteSpace(host);
         }
 
+        private static bool ContainsWhiteSpace(string value)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (char.IsWhiteSpace(value[i]))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryGetDialTarget(string body, out string target)
+        {
+            target = string.Empty;
+
+            if (body.Length < 2 || body[0] is not ('D' or 'd'))
+                return false;
+
+            if (body[1] is not ('T' or 't' or 'P' or 'p'))
+                return false;
+
+            target = body[2..];
+            return target.Length > 0;
+        }
+
         private void Respond(string text)
         {
-            QueueSerialText($"\r\n{text}\r\n");
+            if (!resultCodesEnabled)
+            {
+                Trace($"< suppressed {text}");
+                return;
+            }
+
+            string response = verboseResultCodes ? text : ToNumericResultCode(text);
+            QueueResponseLine(response);
+            Trace($"< {response}");
+        }
+
+        private void RespondInfo(string text)
+        {
+            QueueResponseLine(text);
             Trace($"< {text}");
+        }
+
+        private void QueueResponseLine(string text)
+        {
+            QueueSerialText($"\r\n{text}\r\n");
+        }
+
+        private static string ToNumericResultCode(string text)
+        {
+            if (string.Equals(text, "OK", StringComparison.OrdinalIgnoreCase))
+                return "0";
+            if (text.StartsWith("CONNECT", StringComparison.OrdinalIgnoreCase))
+                return "1";
+            if (string.Equals(text, "NO CARRIER", StringComparison.OrdinalIgnoreCase))
+                return "3";
+            if (string.Equals(text, "ERROR", StringComparison.OrdinalIgnoreCase))
+                return "4";
+
+            return text;
         }
 
         private void QueueSerialText(string text)

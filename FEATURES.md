@@ -141,6 +141,18 @@ A short feature index for the emulator. The README contains the detailed guide.
 - Host relative mouse capture
 - `*MOUSE` and `*POINTER` support path
 
+## Hayes Modem
+
+- Functional Hayes-compatible modem on the BBC RS423 serial path
+- Machine menu enablement plus `BBC_HAYES_MODEM=1` startup option
+- TCP dial-out with `ATDThost:port`
+- Command mode, online mode, hang-up, reset, echo, identity, and escape handling
+- Common terminal init-string compatibility commands and S-registers
+- Fixed 2400 baud modem-to-BBC data pacing
+- Hayes top-panel LEDs for AA, CD, OH, RD, SD, TR, and MR
+- Menu loopback and modem reset controls
+- Serial trace and ACIA loopback environment options for testing
+
 ## Command Line
 
 - Disc, drive, blank-disc, speed, Tube, and save-state options

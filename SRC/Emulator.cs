@@ -51,7 +51,7 @@ namespace BBC
             Console.WriteLine($"BASIC ROM:  bank {Emulator.BasicRomBank} ({Path.GetFileName(emulator.BasicRomPath)})");
             Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank} ({Path.GetFileName(emulator.DfsRomPath)})");
             if (emulator.AmxMouseRomPath is not null)
-                Console.WriteLine($"AMX ROM:    bank {Emulator.AmxMouseRomBank}");
+                Console.WriteLine($"AMX ROM:    available ({Path.GetFileName(emulator.AmxMouseRomPath)})");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
             if (emulator.tube6502 is not null)
                 Console.WriteLine($"Tube 6502:  reset PC ${emulator.tube6502.Cpu.registers.PC:X4} ({Path.GetFileName(emulator.Tube6502RomPath)})");
@@ -2897,8 +2897,6 @@ namespace BBC
         {
             SetSidewaysRomBank(BasicRomBank, BasicRomPath);
             SetSidewaysRomBank(DfsRomBank, DfsRomPath);
-            if (AmxMouseRomPath is not null)
-                SetSidewaysRomBank(AmxMouseRomBank, AmxMouseRomPath);
             RefreshSidewaysRomSlots();
         }
 
