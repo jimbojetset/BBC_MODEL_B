@@ -33,6 +33,8 @@ namespace BBC
         private const int MenuSeparatorHeight = 9;
         private const int MenuDropDownPadding = 5;
         private const int MenuShortcutGap = 18;
+        private const int TubeMenuStatusGap = 6;
+        private const string TubeMenuStatusLabel = "SECOND PROCESSOR";
         private const int RomSlotColumns = 8;
         private const int RomSlotRows = 2;
         private const int RomSlotWidth = 58;
@@ -59,12 +61,11 @@ namespace BBC
         private const byte BbcCapsLockKey = 0x40;
         private const uint Black = 0xFF000000;
         private const uint ScanlineColour = 0x40000000;
-        private const int DriveLedDiameter = 8;
-        private const int DriveLedInset = 2;
-        private const int DriveGlyphWidth = 34;
-        private const int DriveGlyphHeight = 12;
+        private const int DriveLedDiameter = 6;
+        private const int DriveGlyphWidth = 91;
+        private const int DriveGlyphHeight = 22;
         private const int DriveGlyphMargin = 8;
-        private const int DriveGlyphGap = 6;
+        private const int DriveGlyphGap = 5;
         private const int DriveNumberWidth = 3;
         private const int DriveNumberHeight = 5;
         private const int DriveNumberGap = 1;
@@ -205,6 +206,10 @@ namespace BBC
         public bool Drive0Mounted { get; set; }
 
         public bool Drive1Mounted { get; set; }
+
+        public bool Drive0DoubleSided { get; set; }
+
+        public bool Drive1DoubleSided { get; set; }
 
         public string? Drive0Label { get; set; }
 
@@ -690,10 +695,28 @@ namespace BBC
                 x += width + MenuPaddingX;
             }
 
+            DrawTubeMenuStatus();
+
             if (activeMenuIndex >= 0)
                 DrawOpenMenu(activeMenuIndex);
 
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        }
+
+        private void DrawTubeMenuStatus()
+        {
+            if (!Tube6502Enabled)
+                return;
+
+            int labelWidth = GetRendererTextWidth(TubeMenuStatusLabel);
+            int totalWidth = StatusLedDiameter + TubeMenuStatusGap + labelWidth;
+            int x = logicalWidth - MenuPaddingX - totalWidth;
+            int ledCenterX = x + (StatusLedDiameter / 2);
+            int ledCenterY = (TopMenuHeight / 2) - 1;
+            int labelX = x + StatusLedDiameter + TubeMenuStatusGap;
+
+            DrawRoundLed(ledCenterX, ledCenterY, StatusLedDiameter / 2, 220, 0, 0);
+            DrawRendererText(TubeMenuStatusLabel, labelX, 8, 190, 190, 190);
         }
 
         private void DrawOpenMenu(int menuIndex)
@@ -2407,8 +2430,8 @@ namespace BBC
 
             DrawStatusLeds(bottomOverlayY);
             DrawHayesModemPanel();
-            DrawDriveGlyph(drive0X, glyphY, Drive0Mounted, Drive0ActivityLedActive);
-            DrawDriveGlyph(drive1X, glyphY, Drive1Mounted, Drive1ActivityLedActive);
+            DrawDriveGlyph(drive0X, glyphY, Drive0Mounted, Drive0ActivityLedActive, Drive0DoubleSided);
+            DrawDriveGlyph(drive1X, glyphY, Drive1Mounted, Drive1ActivityLedActive, Drive1DoubleSided);
             DrawDriveNumber(drive0X, glyphY, 0);
             DrawDriveNumber(drive1X, glyphY, 1);
             DrawHoveredDriveLabel(drive0X, drive1X, glyphY);
@@ -2496,18 +2519,24 @@ namespace BBC
             DrawTinyLabel(label, centerX, labelY, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
         }
 
-        private void DrawDriveGlyph(int glyphX, int glyphY, bool mounted, bool activityLedActive)
+        private void DrawDriveGlyph(int glyphX, int glyphY, bool mounted, bool activityLedActive, bool doubleSided)
         {
             SdlRect glyphRect = new SdlRect(glyphX, glyphY, DriveGlyphWidth, DriveGlyphHeight);
-
-            IntPtr glyphTexture = mounted ? mountedDriveGlyphTexture : emptyDriveGlyphTexture;
-            if (glyphTexture != IntPtr.Zero)
-                _ = SDL_RenderCopy(renderer, glyphTexture, IntPtr.Zero, ref glyphRect);
-
-            if (activityLedActive)
-                DrawDriveLed(glyphX, glyphY);
-
+            _ = SDL_SetRenderDrawColor(renderer, 235, 226, 174, 255);
+            _ = SDL_RenderFillRect(renderer, ref glyphRect);
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            DrawRectOutline(glyphRect);
+
+            DrawDriveMediaSelector(glyphX, glyphY, doubleSided);
+
+            SdlRect slot = new SdlRect(glyphX + 5, glyphY + 11, DriveGlyphWidth - 10, 5);
+            _ = SDL_SetRenderDrawColor(renderer, 118, 93, 0, 255);
+            _ = SDL_RenderFillRect(renderer, ref slot);
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            DrawRectOutline(slot);
+
+            DrawDriveLever(glyphX, glyphY, mounted);
+            DrawDriveLed(glyphX, glyphY, activityLedActive);
         }
 
         private void DrawDriveNumber(int glyphX, int glyphY, int drive)
@@ -2518,13 +2547,63 @@ namespace BBC
             DrawTinyGlyph((char)('0' + drive), x, y, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
         }
 
-        private void DrawDriveLed(int glyphX, int glyphY)
+        private void DrawDriveMediaSelector(int glyphX, int glyphY, bool doubleSided)
+        {
+            DrawTinyText("40", glyphX + 57, glyphY + 4, 128, 96, 0);
+            DrawTinyText("80", glyphX + 82, glyphY + 4, 128, 96, 0);
+
+            SdlRect selector = new SdlRect(glyphX + 66, glyphY + 3, 15, 7);
+            _ = SDL_SetRenderDrawColor(renderer, 235, 226, 174, 255);
+            _ = SDL_RenderFillRect(renderer, ref selector);
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            DrawRectOutline(selector);
+
+            SdlRect selected = doubleSided
+                ? new SdlRect(selector.X + 8, selector.Y + 1, 6, selector.H - 2)
+                : new SdlRect(selector.X + 1, selector.Y + 1, 6, selector.H - 2);
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            _ = SDL_RenderFillRect(renderer, ref selected);
+        }
+
+        private void DrawDriveLever(int glyphX, int glyphY, bool mounted)
+        {
+            if (mounted)
+            {
+                SdlRect disc = new SdlRect(glyphX + 7, glyphY + 13, DriveGlyphWidth - 14, 1);
+                _ = SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                _ = SDL_RenderFillRect(renderer, ref disc);
+                _ = SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                DrawRectOutline(disc);
+
+
+                SdlRect stem = new SdlRect(glyphX + 22, glyphY + 5, 5, 15);
+                _ = SDL_SetRenderDrawColor(renderer, 190, 190, 190, 255);
+                _ = SDL_RenderFillRect(renderer, ref stem);
+                _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                DrawRectOutline(stem);
+                return;
+            }
+
+            SdlRect handle = new SdlRect(glyphX + 19, glyphY + 5, 20, 5);
+            _ = SDL_SetRenderDrawColor(renderer, 190, 190, 190, 255);
+            _ = SDL_RenderFillRect(renderer, ref handle);
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            DrawRectOutline(handle);
+        }
+
+        private void DrawDriveLed(int glyphX, int glyphY, bool active)
         {
             int radius = DriveLedDiameter / 2;
-            int centerX = glyphX + DriveGlyphWidth - DriveLedInset - radius;
-            int centerY = glyphY + DriveLedInset + radius;
+            int centerX = glyphX + 7;
+            int centerY = glyphY + 6;
 
-            DrawRoundLed(centerX, centerY, radius, 220, 0, 0);
+            if (active)
+            {
+                DrawRoundLed(centerX, centerY, radius, 238, 32, 42);
+                return;
+            }
+
+            DrawRoundLed(centerX, centerY, radius, 38, 0, 0);
         }
 
         private void DrawHoveredDriveLabel(int drive0X, int drive1X, int glyphY)
@@ -2639,6 +2718,8 @@ namespace BBC
             {
                 ['0'] = [0b111, 0b101, 0b101, 0b101, 0b111],
                 ['1'] = [0b010, 0b110, 0b010, 0b010, 0b111],
+                ['4'] = [0b101, 0b101, 0b111, 0b001, 0b001],
+                ['8'] = [0b111, 0b101, 0b111, 0b101, 0b111],
                 ['A'] = [0b010, 0b101, 0b111, 0b101, 0b101],
                 ['C'] = [0b111, 0b100, 0b100, 0b100, 0b111],
                 ['D'] = [0b110, 0b101, 0b101, 0b101, 0b110],

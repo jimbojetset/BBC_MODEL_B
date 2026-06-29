@@ -193,7 +193,7 @@ Host Caps Lock follows the BBC `CAPS LOCK` key. `Left Ctrl+Left Shift` toggles a
 
 The `Input` menu includes a visual keyboard mapper. Open `Input > Keyboard Mapper`, click a BBC key, then press the host key you want to bind to it. The mapper is file-based rather than disc-based: `Input > Save Map` prompts for a JSON profile name and location, `Input > Open Map` opens a chosen profile, and profiles are never loaded automatically when discs change. `Input > Reset Map` returns the current map to the emulator default. If `Assets/DefaultInputProfile.json` exists, it is loaded at startup and used as that default; otherwise the built-in BBC keyboard layout is used.
 
-The bottom border includes small status LEDs for cassette motor, caps lock, shift lock, and drive activity. The cassette/caps/shift indicators sit at the bottom left; the drive glyphs, drive numbers, and drive LEDs sit at the bottom right.
+The bottom border includes small status LEDs for cassette motor, caps lock, and shift lock at the bottom left. The disc drives sit at the bottom right as front-panel glyphs: the red LED follows 8271 activity, the grey lever shows whether media is inserted, and the `40`/`80` selector shows whether the mounted image is single- or double-sided. When the 65C02 Tube co-processor is active, the top menu bar shows a right-aligned `SECOND PROCESSOR` label with a red LED.
 
 ### Serial / RS423
 
@@ -206,7 +206,7 @@ BBC_SERIAL_TRACE=1 BBC_HAYES_MODEM=1 dotnet run -- --no-autoboot --drive0 Assets
 
 Loopback returns each transmitted byte. The ACIA decodes the BBC-side baud, data bits, parity, stop bits, RTS, CTS, and break state from the 6850 control register and Serial ULA. `BBC_SERIAL_LOOPBACK=1` enables the low-level ACIA loopback path; the Hayes menu has its own `Loopback` item that echoes bytes through the modem layer.
 
-The Hayes panel appears at the right of the top menu while the modem is enabled. Its LEDs follow the familiar front-panel names: `AA`, `CD`, `OH`, `RD`, `SD`, `TR`, and `MR`. `CD` and `OH` light while a TCP connection is open, `RD` and `SD` flash for modem-to-BBC and BBC-to-modem data, `TR` follows BBC RTS, and `MR` shows that the modem object is active. The Hayes drop-down menu provides `Loopback` and `Reset`; reset drops any connection, clears loopback and command state, and returns the modem to command mode.
+The Hayes panel appears in a boxed overlay at the bottom centre while the modem is enabled. Its LEDs follow the familiar front-panel names: `AA`, `CD`, `OH`, `RD`, `SD`, `TR`, and `MR`. `CD` and `OH` light while a TCP connection is open, `RD` and `SD` flash for modem-to-BBC and BBC-to-modem data, `TR` follows BBC RTS, and `MR` shows that the modem object is active. The Hayes drop-down menu opens above the panel and provides `Loopback` and `Reset`; reset drops any connection, clears loopback and command state, and returns the modem to command mode.
 
 The Hayes modem handles command mode and TCP-backed connected mode. `ATDThost:port` opens a host TCP connection, defaulting to port 23 when no port is supplied. `ATDPhost:port` is accepted as the pulse-dial equivalent. A successful dial returns `CONNECT host port`; connection failure returns `NO CARRIER`. `ATDhost:port`, `ATDT host:port`, and space-separated `ATDhost port` forms are rejected because the dial command must include the tone or pulse modifier immediately before the target. `ATH` hangs up, `ATZ` resets the command state and hangs up, `ATO` returns to online mode after escaping, and `+++` escapes from connected mode back to command mode.
 

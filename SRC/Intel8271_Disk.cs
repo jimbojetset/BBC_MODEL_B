@@ -113,6 +113,11 @@ namespace BBC
             return drive is >= 0 and <= 1 && driveActivityLedActive[drive];
         }
 
+        public bool IsPhysicalDriveDoubleSided(int drive)
+        {
+            return drive is >= 0 and <= 1 && driveMounted[drive] && driveMounted[drive + 2];
+        }
+
         public string? GetPhysicalDriveLabel(int drive)
         {
             if (drive is < 0 or > 1)
