@@ -40,6 +40,24 @@ namespace BBC
         private const double PowerOnBeepSaturationDrive = 6.0;
         private const double PowerOnBeepSaturationBias = -0.035;
         private const double PowerOnBeepSaturationLevel = 0.78;
+        private const int ModemDialToneLowHz = 350;
+        private const int ModemDialToneHighHz = 440;
+        private const int ModemDialToneDurationMilliseconds = 700;
+        private const int ModemDtmfToneMilliseconds = 100;
+        private const int ModemDtmfGapMilliseconds = 35;
+        private const int ModemToneEnvelopeMilliseconds = 4;
+        private const double ModemToneAmplitude = 0.18;
+        private const double ModemConnectionSequenceDurationScale = 0.5;
+        private const int ModemPostDialSilenceMilliseconds = 1000;
+        private const int ModemRingbackLowHz = 400;
+        private const int ModemRingbackHighHz = 450;
+        private const int ModemAnswerToneHz = 2100;
+        private const int ModemBell202MarkHz = 1200;
+        private const int ModemBell202SpaceHz = 2200;
+        private const int ModemOriginateLowHz = 1070;
+        private const int ModemOriginateHighHz = 1270;
+        private const int ModemAnswerLowHz = 2025;
+        private const int ModemAnswerHighHz = 2225;
         private const int PsgWriteEnableDelayCycles = 14;
         private const ushort AudioFormatS16 = 0x8010;
         private readonly object syncRoot = new object();
@@ -269,6 +287,65 @@ namespace BBC
             }
         }
 
+        public void PlayModemDialSequence(string digits)
+        {
+            int totalMilliseconds = ModemDialToneDurationMilliseconds
+                + (digits.Length * (ModemDtmfToneMilliseconds + ModemDtmfGapMilliseconds));
+
+            if (audioDevice == 0 || Volatile.Read(ref hostOutputPaused) || !Volatile.Read(ref running))
+            {
+                Thread.Sleep(totalMilliseconds);
+                return;
+            }
+
+            QueueModemTonePair(ModemDialToneLowHz, ModemDialToneHighHz, ModemDialToneDurationMilliseconds);
+
+            foreach (char digit in digits)
+            {
+                if (!TryGetDtmfFrequencies(digit, out int lowHz, out int highHz))
+                    continue;
+
+                QueueModemTonePair(lowHz, highHz, ModemDtmfToneMilliseconds);
+                QueueModemSilence(ModemDtmfGapMilliseconds);
+            }
+
+            WaitForGeneratedDrain();
+        }
+
+        public void PlayModemConnectionSequence()
+        {
+            int totalMilliseconds = ScaleModemConnectionDuration(
+                ModemPostDialSilenceMilliseconds
+                + 1000
+                + 3200
+                + 150
+                + 900
+                + 2600
+                + 2200
+                + 1800);
+
+            if (audioDevice == 0 || Volatile.Read(ref hostOutputPaused) || !Volatile.Read(ref running))
+            {
+                Thread.Sleep(totalMilliseconds);
+                return;
+            }
+
+            QueueModemSilence(ScaleModemConnectionDuration(ModemPostDialSilenceMilliseconds));
+
+            QueueModemTonePair(ModemRingbackLowHz, ModemRingbackHighHz, ScaleModemConnectionDuration(400));
+            QueueModemSilence(ScaleModemConnectionDuration(200));
+            QueueModemTonePair(ModemRingbackLowHz, ModemRingbackHighHz, ScaleModemConnectionDuration(400));
+
+            QueueModemAnswerTone(ScaleModemConnectionDuration(3200));
+            QueueModemSilence(ScaleModemConnectionDuration(150));
+            QueueModemCallingBursts(ScaleModemConnectionDuration(900));
+            QueueModemFskBurst(ModemBell202MarkHz, ModemBell202SpaceHz, ScaleModemConnectionDuration(2600), ScaleModemConnectionDuration(24), 0.16);
+            QueueModemFskBurst(ModemOriginateLowHz, ModemAnswerHighHz, ScaleModemConnectionDuration(2200), ScaleModemConnectionDuration(13), 0.14);
+            QueueModemFskBurst(ModemOriginateHighHz, ModemAnswerLowHz, ScaleModemConnectionDuration(1800), ScaleModemConnectionDuration(9), 0.12);
+
+            WaitForGeneratedDrain();
+        }
+
         public void SetHostOutputPaused(bool paused)
         {
             Volatile.Write(ref hostOutputPaused, paused);
@@ -312,6 +389,229 @@ namespace BBC
             double biased = signal + PowerOnBeepSaturationBias;
             double zero = Math.Tanh(PowerOnBeepSaturationBias * PowerOnBeepSaturationDrive);
             return PowerOnBeepSaturationLevel * (Math.Tanh(biased * PowerOnBeepSaturationDrive) - zero) / PowerOnBeepSaturationDrive;
+        }
+
+        private void QueueModemTonePair(int requestedLowHz, int requestedHighHz, int durationMilliseconds)
+        {
+            int sampleCount = SampleRate * durationMilliseconds / 1000;
+            double lowPhase = 0;
+            double highPhase = 0;
+            double lowStep = GetSn76489ApproximateFrequency(requestedLowHz) / SampleRate;
+            double highStep = GetSn76489ApproximateFrequency(requestedHighHz) / SampleRate;
+
+            for (int i = 0; i < sampleCount; i++)
+            {
+                double low = lowPhase < 0.5 ? 1.0 : -1.0;
+                double high = highPhase < 0.5 ? 1.0 : -1.0;
+                double envelope = GetModemToneEnvelope(i, sampleCount);
+                short sample = (short)(short.MaxValue * ModemToneAmplitude * envelope * (low + high) * 0.5);
+
+                if (!EnqueueGeneratedSampleBlocking(sample))
+                    return;
+
+                lowPhase += lowStep;
+                if (lowPhase >= 1.0)
+                    lowPhase -= 1.0;
+
+                highPhase += highStep;
+                if (highPhase >= 1.0)
+                    highPhase -= 1.0;
+            }
+        }
+
+        private void QueueModemSilence(int durationMilliseconds)
+        {
+            int sampleCount = SampleRate * durationMilliseconds / 1000;
+            for (int i = 0; i < sampleCount; i++)
+            {
+                if (!EnqueueGeneratedSampleBlocking(0))
+                    return;
+            }
+        }
+
+        private void QueueModemAnswerTone(int durationMilliseconds)
+        {
+            int sampleCount = SampleRate * durationMilliseconds / 1000;
+            double phase = 0;
+            double phaseStep = GetSn76489ApproximateFrequency(ModemAnswerToneHz) / SampleRate;
+
+            for (int i = 0; i < sampleCount; i++)
+            {
+                double seconds = i / (double)SampleRate;
+                double modulation = 0.76 + (0.24 * ((Math.Sin(Math.Tau * 15.0 * seconds) + 1.0) * 0.5));
+                double carrier = phase < 0.5 ? 1.0 : -1.0;
+                double envelope = GetModemToneEnvelope(i, sampleCount);
+                short sample = (short)(short.MaxValue * ModemToneAmplitude * 0.9 * envelope * modulation * carrier);
+
+                if (!EnqueueGeneratedSampleBlocking(sample))
+                    return;
+
+                phase += phaseStep;
+                if (phase >= 1.0)
+                    phase -= 1.0;
+            }
+        }
+
+        private void QueueModemCallingBursts(int durationMilliseconds)
+        {
+            int elapsed = 0;
+            while (elapsed < durationMilliseconds)
+            {
+                int toneMilliseconds = Math.Min(110, durationMilliseconds - elapsed);
+                QueueModemTonePair(ModemBell202MarkHz, ModemOriginateHighHz, toneMilliseconds);
+                elapsed += toneMilliseconds;
+
+                int silenceMilliseconds = Math.Min(70, durationMilliseconds - elapsed);
+                QueueModemSilence(silenceMilliseconds);
+                elapsed += silenceMilliseconds;
+            }
+        }
+
+        private void QueueModemFskBurst(int lowHz, int highHz, int durationMilliseconds, int symbolMilliseconds, double amplitude)
+        {
+            int sampleCount = SampleRate * durationMilliseconds / 1000;
+            double phase = 0;
+            int periodSamples = Math.Max(1, SampleRate * symbolMilliseconds / 1000);
+
+            for (int i = 0; i < sampleCount; i++)
+            {
+                int symbol = i / periodSamples;
+                bool high = ((symbol * 1103515245 + 12345) & 0x40000000) != 0;
+                int requestedHz = high ? highHz : lowHz;
+                double phaseStep = GetSn76489ApproximateFrequency(requestedHz) / SampleRate;
+                double carrier = phase < 0.5 ? 1.0 : -1.0;
+                double chatter = 0.84 + (0.16 * ((Math.Sin(Math.Tau * (7 + (symbol % 5)) * i / SampleRate) + 1.0) * 0.5));
+                double envelope = GetModemToneEnvelope(i, sampleCount);
+                short sample = (short)(short.MaxValue * amplitude * envelope * chatter * carrier);
+
+                if (!EnqueueGeneratedSampleBlocking(sample))
+                    return;
+
+                phase += phaseStep;
+                if (phase >= 1.0)
+                    phase -= 1.0;
+            }
+        }
+
+        private static int ScaleModemConnectionDuration(int milliseconds)
+        {
+            return Math.Max(1, (int)Math.Round(milliseconds * ModemConnectionSequenceDurationScale));
+        }
+
+        private bool EnqueueGeneratedSampleBlocking(short sample)
+        {
+            lock (syncRoot)
+            {
+                while (generatedCount >= generatedSamples.Length
+                    && !Volatile.Read(ref hostOutputPaused)
+                    && Volatile.Read(ref running)
+                    && !disposed)
+                {
+                    Monitor.Wait(syncRoot, 20);
+                }
+
+                if (Volatile.Read(ref hostOutputPaused) || !Volatile.Read(ref running) || disposed)
+                    return false;
+
+                EnqueueGeneratedSample(sample);
+                return true;
+            }
+        }
+
+        private void WaitForGeneratedDrain()
+        {
+            while (!Volatile.Read(ref hostOutputPaused) && Volatile.Read(ref running) && !disposed)
+            {
+                lock (syncRoot)
+                {
+                    if (generatedCount == 0)
+                        break;
+
+                    Monitor.Wait(syncRoot, 20);
+                }
+            }
+
+            if (audioDevice == 0)
+                return;
+
+            uint queuedBytes = SDL_GetQueuedAudioSize(audioDevice);
+            int queuedSamples = (int)(queuedBytes / sizeof(short));
+            if (queuedSamples > 0)
+                Thread.Sleep(Math.Min(1000, (queuedSamples * 1000 / SampleRate) + 10));
+        }
+
+        private static double GetModemToneEnvelope(int sampleIndex, int sampleCount)
+        {
+            int envelopeSamples = SampleRate * ModemToneEnvelopeMilliseconds / 1000;
+            if (envelopeSamples <= 0)
+                return 1.0;
+
+            double envelope = 1.0;
+            if (sampleIndex < envelopeSamples)
+                envelope = sampleIndex / (double)envelopeSamples;
+
+            int releaseStart = sampleCount - envelopeSamples;
+            if (sampleIndex >= releaseStart)
+                envelope = Math.Min(envelope, (sampleCount - sampleIndex) / (double)envelopeSamples);
+
+            return Math.Clamp(envelope, 0.0, 1.0);
+        }
+
+        private static double GetSn76489ApproximateFrequency(int requestedHz)
+        {
+            int period = Math.Clamp((int)Math.Round(ClockHz / (32.0 * requestedHz)), 1, 1023);
+            return ClockHz / (32.0 * period);
+        }
+
+        private static bool TryGetDtmfFrequencies(char digit, out int lowHz, out int highHz)
+        {
+            switch (digit)
+            {
+                case '1':
+                    lowHz = 697;
+                    highHz = 1209;
+                    return true;
+                case '2':
+                    lowHz = 697;
+                    highHz = 1336;
+                    return true;
+                case '3':
+                    lowHz = 697;
+                    highHz = 1477;
+                    return true;
+                case '4':
+                    lowHz = 770;
+                    highHz = 1209;
+                    return true;
+                case '5':
+                    lowHz = 770;
+                    highHz = 1336;
+                    return true;
+                case '6':
+                    lowHz = 770;
+                    highHz = 1477;
+                    return true;
+                case '7':
+                    lowHz = 852;
+                    highHz = 1209;
+                    return true;
+                case '8':
+                    lowHz = 852;
+                    highHz = 1336;
+                    return true;
+                case '9':
+                    lowHz = 852;
+                    highHz = 1477;
+                    return true;
+                case '0':
+                    lowHz = 941;
+                    highHz = 1336;
+                    return true;
+                default:
+                    lowHz = 0;
+                    highHz = 0;
+                    return false;
+            }
         }
 
         /// <summary>SN76489 writes are latched by WE after the VIA slow-bus delay, not at the CPU write edge.</summary>

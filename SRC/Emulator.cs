@@ -2600,7 +2600,7 @@ namespace BBC
 
             if (enabled)
             {
-                HayesModem modem = new HayesModem(serialAcia);
+                HayesModem modem = new HayesModem(serialAcia, Sound);
                 serialAcia.ByteTransmitted += modem.Receive;
                 hayesModem = modem;
             }
