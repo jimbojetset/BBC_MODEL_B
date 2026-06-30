@@ -523,6 +523,7 @@ namespace BBC
                 networkStream = client.GetStream();
                 Volatile.Write(ref online, 1);
                 Volatile.Write(ref closing, 0);
+                Volatile.Write(ref dialing, 0);
                 UpdateCarrierPresent();
                 receiveThread = new Thread(ReadNetwork)
                 {
@@ -535,6 +536,7 @@ namespace BBC
             }
             catch (Exception ex) when (ex is SocketException or IOException or ObjectDisposedException)
             {
+                Volatile.Write(ref dialing, 0);
                 Disconnect(reportNoCarrier: false);
                 Respond("NO CARRIER");
                 Trace($"connect failed {host}:{port}: {ex.Message}");
@@ -966,6 +968,62 @@ namespace BBC
 
             host = value;
             return !string.IsNullOrWhiteSpace(host);
+        }
+
+        private static bool TryResolveDialAddress(string host, out IPAddress address, out string dialDigits, out bool networkUnavailable)
+        {
+            address = IPAddress.None;
+            dialDigits = string.Empty;
+            networkUnavailable = false;
+
+            if (IPAddress.TryParse(host, out IPAddress? parsedAddress))
+            {
+                if (parsedAddress.AddressFamily != AddressFamily.InterNetwork)
+                    return false;
+
+                address = parsedAddress;
+                dialDigits = GetIpv4DialDigits(address);
+                return true;
+            }
+
+            try
+            {
+                IPAddress[] addresses = Dns.GetHostAddresses(host);
+                foreach (IPAddress candidate in addresses)
+                {
+                    if (candidate.AddressFamily != AddressFamily.InterNetwork)
+                        continue;
+
+                    address = candidate;
+                    dialDigits = GetIpv4DialDigits(address);
+                    return true;
+                }
+            }
+            catch (SocketException ex) when (IsNetworkUnavailable(ex.SocketErrorCode))
+            {
+                networkUnavailable = true;
+                return false;
+            }
+            catch (SocketException)
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        private static bool IsNetworkUnavailable(SocketError error)
+        {
+            return error is SocketError.NetworkDown
+                or SocketError.NetworkUnreachable
+                or SocketError.HostUnreachable
+                or SocketError.TryAgain;
+        }
+
+        private static string GetIpv4DialDigits(IPAddress address)
+        {
+            byte[] bytes = address.GetAddressBytes();
+            return string.Concat(bytes.Select(octet => octet.ToString()));
         }
 
         private static bool TryResolveDialAddress(string host, out IPAddress address, out string dialDigits, out bool networkUnavailable)
