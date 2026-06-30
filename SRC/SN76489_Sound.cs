@@ -46,18 +46,25 @@ namespace BBC
         private const int ModemDtmfToneMilliseconds = 100;
         private const int ModemDtmfGapMilliseconds = 35;
         private const int ModemToneEnvelopeMilliseconds = 4;
-        private const double ModemToneAmplitude = 0.18;
-        private const double ModemConnectionSequenceDurationScale = 0.5;
+        private const double ModemToneAmplitude = 0.04;
+        private const double ModemConnectionSequenceDurationScale = 1;
         private const int ModemPostDialSilenceMilliseconds = 1000;
         private const int ModemRingbackLowHz = 400;
         private const int ModemRingbackHighHz = 450;
-        private const int ModemAnswerToneHz = 2100;
-        private const int ModemBell202MarkHz = 1200;
-        private const int ModemBell202SpaceHz = 2200;
-        private const int ModemOriginateLowHz = 1070;
-        private const int ModemOriginateHighHz = 1270;
-        private const int ModemAnswerLowHz = 2025;
-        private const int ModemAnswerHighHz = 2225;
+        private const int ModemV25AnswerToneHz = 2100;
+        private const int ModemV25AnswerToneDurationMilliseconds = 3200;
+        private const int ModemV25AnswerToneReversalMilliseconds = 450;
+        private const int ModemV25PostAnswerSilenceMilliseconds = 75;
+        private const int V32BisCarrierHz = 1800;
+        private const int V32BisSymbolRate = 2400;
+        private const int V32BisAnswerAcMilliseconds = 120;
+        private const int V32BisAnswerCaMilliseconds = 50;
+        private const int V32BisSSequenceMilliseconds = 107;
+        private const int V32BisSBarSequenceMilliseconds = 7;
+        private const int V32BisTrainingMilliseconds = 650;
+        private const int V32BisRateSignalMilliseconds = 320;
+        private const int V32BisScrambledOnesMilliseconds = 180;
+        private const int ModemFinalNoiseMilliseconds = 1000;
         private const int PsgWriteEnableDelayCycles = 14;
         private const ushort AudioFormatS16 = 0x8010;
         private readonly object syncRoot = new object();
@@ -317,12 +324,21 @@ namespace BBC
             int totalMilliseconds = ScaleModemConnectionDuration(
                 ModemPostDialSilenceMilliseconds
                 + 1000
-                + 3200
-                + 150
-                + 900
-                + 2600
-                + 2200
-                + 1800);
+                + ModemV25AnswerToneDurationMilliseconds
+                + ModemV25PostAnswerSilenceMilliseconds
+                + V32BisAnswerAcMilliseconds
+                + V32BisAnswerCaMilliseconds
+                + V32BisAnswerAcMilliseconds
+                + V32BisSSequenceMilliseconds
+                + V32BisSBarSequenceMilliseconds
+                + V32BisTrainingMilliseconds
+                + V32BisRateSignalMilliseconds
+                + V32BisSSequenceMilliseconds
+                + V32BisSBarSequenceMilliseconds
+                + V32BisTrainingMilliseconds
+                + V32BisRateSignalMilliseconds
+                + V32BisScrambledOnesMilliseconds
+                + ModemFinalNoiseMilliseconds);
 
             if (audioDevice == 0 || Volatile.Read(ref hostOutputPaused) || !Volatile.Read(ref running))
             {
@@ -340,12 +356,17 @@ namespace BBC
             QueueModemSilence(ScaleModemConnectionDuration(200));
             QueueModemTonePair(ModemRingbackLowHz, ModemRingbackHighHz, ScaleModemConnectionDuration(400));
 
-            QueueModemAnswerTone(ScaleModemConnectionDuration(3200));
-            QueueModemSilence(ScaleModemConnectionDuration(150));
-            QueueModemCallingBursts(ScaleModemConnectionDuration(900));
-            QueueModemFskBurst(ModemBell202MarkHz, ModemBell202SpaceHz, ScaleModemConnectionDuration(2600), ScaleModemConnectionDuration(24), 0.16);
-            QueueModemFskBurst(ModemOriginateLowHz, ModemAnswerHighHz, ScaleModemConnectionDuration(2200), ScaleModemConnectionDuration(13), 0.14);
-            QueueModemFskBurst(ModemOriginateHighHz, ModemAnswerLowHz, ScaleModemConnectionDuration(1800), ScaleModemConnectionDuration(9), 0.12);
+            QueueModemV25AnswerTone(ScaleModemConnectionDuration(ModemV25AnswerToneDurationMilliseconds));
+            QueueModemSilence(ScaleModemConnectionDuration(ModemV25PostAnswerSilenceMilliseconds));
+            QueueV32BisStates(new[] { 0, 2 }, V32BisAnswerAcMilliseconds, ModemToneAmplitude * 0.75);
+            QueueV32BisStates(new[] { 2, 0 }, V32BisAnswerCaMilliseconds, ModemToneAmplitude * 0.75);
+            QueueV32BisStates(new[] { 0, 2 }, V32BisAnswerAcMilliseconds, ModemToneAmplitude * 0.75);
+            QueueV32BisReceiverConditioning(answerMode: true);
+            QueueV32BisRateSignal(V32BisRateSignalMilliseconds, ModemToneAmplitude * 0.75);
+            QueueV32BisReceiverConditioning(answerMode: true);
+            QueueV32BisRateSignal(V32BisRateSignalMilliseconds, ModemToneAmplitude * 0.8);
+            QueueV32BisTraining(V32BisScrambledOnesMilliseconds, ModemToneAmplitude * 0.7);
+            QueueModemNoise(ScaleModemConnectionDuration(ModemFinalNoiseMilliseconds), ModemToneAmplitude * 0.8);
 
             WaitForGeneratedDrain();
         }
@@ -433,19 +454,77 @@ namespace BBC
             }
         }
 
-        private void QueueModemAnswerTone(int durationMilliseconds)
+        private void QueueModemV25AnswerTone(int durationMilliseconds)
         {
             int sampleCount = SampleRate * durationMilliseconds / 1000;
+            int reversalSamples = Math.Max(1, SampleRate * ModemV25AnswerToneReversalMilliseconds / 1000);
             double phase = 0;
-            double phaseStep = GetSn76489ApproximateFrequency(ModemAnswerToneHz) / SampleRate;
+            double phaseStep = GetSn76489ApproximateFrequency(ModemV25AnswerToneHz) / SampleRate;
 
             for (int i = 0; i < sampleCount; i++)
             {
-                double seconds = i / (double)SampleRate;
-                double modulation = 0.76 + (0.24 * ((Math.Sin(Math.Tau * 15.0 * seconds) + 1.0) * 0.5));
                 double carrier = phase < 0.5 ? 1.0 : -1.0;
                 double envelope = GetModemToneEnvelope(i, sampleCount);
-                short sample = (short)(short.MaxValue * ModemToneAmplitude * 0.9 * envelope * modulation * carrier);
+                short sample = (short)(short.MaxValue * ModemToneAmplitude * 0.9 * envelope * carrier);
+
+                if (!EnqueueGeneratedSampleBlocking(sample))
+                    return;
+
+                phase += phaseStep;
+                if (i > 0 && i % reversalSamples == 0)
+                    phase += 0.5;
+
+                if (phase >= 1.0)
+                    phase -= 1.0;
+            }
+        }
+
+        private void QueueV32BisReceiverConditioning(bool answerMode)
+        {
+            QueueV32BisStates(new[] { 2, 3 }, V32BisSSequenceMilliseconds, amplitude: ModemToneAmplitude * 0.75);
+            QueueV32BisStates(new[] { 0, 1 }, V32BisSBarSequenceMilliseconds, amplitude: ModemToneAmplitude * 0.75);
+            QueueV32BisTraining(V32BisTrainingMilliseconds, answerMode ? ModemToneAmplitude * 0.78 : ModemToneAmplitude * 0.72);
+        }
+
+        private void QueueV32BisStates(int[] stateQuadrants, int durationMilliseconds, double amplitude)
+        {
+            QueueV32BisSymbols(durationMilliseconds, amplitude, symbol =>
+            {
+                return stateQuadrants[symbol % stateQuadrants.Length];
+            });
+        }
+
+        private void QueueV32BisTraining(int durationMilliseconds, double amplitude)
+        {
+            QueueV32BisSymbols(durationMilliseconds, amplitude, symbol =>
+            {
+                if (symbol < 256)
+                    return ((symbol * 1103515245 + 12345) & 0x40000000) == 0 ? 2 : 0;
+
+                return ((symbol * 1103515245 + 12345) >> 29) & 0x03;
+            });
+        }
+
+        private void QueueV32BisRateSignal(int durationMilliseconds, double amplitude)
+        {
+            int[] ratePattern = { 2, 0, 0, 3, 1, 2, 3, 0, 2, 1, 0, 3, 3, 1, 2, 0 };
+            QueueV32BisSymbols(durationMilliseconds, amplitude, symbol => ratePattern[symbol % ratePattern.Length]);
+        }
+
+        private void QueueV32BisSymbols(int durationMilliseconds, double amplitude, Func<int, int> getQuadrant)
+        {
+            int sampleCount = SampleRate * durationMilliseconds / 1000;
+            int symbolSamples = Math.Max(1, SampleRate / V32BisSymbolRate);
+            double phase = 0;
+            double phaseStep = GetSn76489ApproximateFrequency(V32BisCarrierHz) / SampleRate;
+
+            for (int i = 0; i < sampleCount; i++)
+            {
+                int symbol = i / symbolSamples;
+                double quadrantPhase = (getQuadrant(symbol) & 0x03) * 0.25;
+                double carrier = ((phase + quadrantPhase) % 1.0) < 0.5 ? 1.0 : -1.0;
+                double envelope = GetModemToneEnvelope(i, sampleCount);
+                short sample = (short)(short.MaxValue * amplitude * envelope * carrier);
 
                 if (!EnqueueGeneratedSampleBlocking(sample))
                     return;
@@ -456,44 +535,30 @@ namespace BBC
             }
         }
 
-        private void QueueModemCallingBursts(int durationMilliseconds)
-        {
-            int elapsed = 0;
-            while (elapsed < durationMilliseconds)
-            {
-                int toneMilliseconds = Math.Min(110, durationMilliseconds - elapsed);
-                QueueModemTonePair(ModemBell202MarkHz, ModemOriginateHighHz, toneMilliseconds);
-                elapsed += toneMilliseconds;
-
-                int silenceMilliseconds = Math.Min(70, durationMilliseconds - elapsed);
-                QueueModemSilence(silenceMilliseconds);
-                elapsed += silenceMilliseconds;
-            }
-        }
-
-        private void QueueModemFskBurst(int lowHz, int highHz, int durationMilliseconds, int symbolMilliseconds, double amplitude)
+        private void QueueModemNoise(int durationMilliseconds, double amplitude)
         {
             int sampleCount = SampleRate * durationMilliseconds / 1000;
-            double phase = 0;
-            int periodSamples = Math.Max(1, SampleRate * symbolMilliseconds / 1000);
+            ushort shiftRegister = 0x4000;
+            int samplesPerStep = Math.Max(1, SampleRate / 16000);
+            int polarity = 1;
 
             for (int i = 0; i < sampleCount; i++)
             {
-                int symbol = i / periodSamples;
-                bool high = ((symbol * 1103515245 + 12345) & 0x40000000) != 0;
-                int requestedHz = high ? highHz : lowHz;
-                double phaseStep = GetSn76489ApproximateFrequency(requestedHz) / SampleRate;
-                double carrier = phase < 0.5 ? 1.0 : -1.0;
-                double chatter = 0.84 + (0.16 * ((Math.Sin(Math.Tau * (7 + (symbol % 5)) * i / SampleRate) + 1.0) * 0.5));
+                if (i % samplesPerStep == 0)
+                {
+                    int feedback = (shiftRegister ^ (shiftRegister >> 1)) & 0x01;
+                    shiftRegister = (ushort)((shiftRegister >> 1) | (feedback << 14));
+                    if (shiftRegister == 0)
+                        shiftRegister = 0x4000;
+
+                    polarity = (shiftRegister & 0x01) == 0 ? -1 : 1;
+                }
+
                 double envelope = GetModemToneEnvelope(i, sampleCount);
-                short sample = (short)(short.MaxValue * amplitude * envelope * chatter * carrier);
+                short sample = (short)(short.MaxValue * amplitude * envelope * polarity);
 
                 if (!EnqueueGeneratedSampleBlocking(sample))
                     return;
-
-                phase += phaseStep;
-                if (phase >= 1.0)
-                    phase -= 1.0;
             }
         }
 
