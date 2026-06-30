@@ -12,6 +12,8 @@
 
 using System.Text;
 using System.Diagnostics;
+using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 
 namespace BBC
@@ -38,6 +40,7 @@ namespace BBC
         private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
 
         private readonly SerialACIA serialAcia;
+        private readonly SN76489_Sound sound;
         private readonly StringBuilder commandLine = new StringBuilder();
         private readonly byte[] networkReadBuffer = new byte[1024];
         private readonly object serialOutputSync = new object();
@@ -50,6 +53,7 @@ namespace BBC
         private int closing;
         private int disposed;
         private int loopbackEnabled;
+        private int dialing;
         private long lastTransmitTicks;
         private long receiveDataLedUntilTicks;
         private long sendDataLedUntilTicks;
@@ -70,9 +74,10 @@ namespace BBC
         private int escapeCharacter = DefaultEscapeCharacter;
         private int escapeGuardFiftieths = DefaultEscapeGuardFiftieths;
 
-        public HayesModem(SerialACIA serialAcia)
+        public HayesModem(SerialACIA serialAcia, SN76489_Sound sound)
         {
             this.serialAcia = serialAcia;
+            this.sound = sound;
             this.serialAcia.SetCarrierPresent(true);
             serialOutputThread = new Thread(DrainSerialOutput)
             {
@@ -97,10 +102,11 @@ namespace BBC
         public HayesModemLedState GetLedState(long nowTicks)
         {
             bool connected = tcpClient is not null;
+            bool activeDial = Volatile.Read(ref dialing) != 0;
             return new HayesModemLedState(
                 AutoAnswer: false,
-                CarrierDetect: connected,
-                OffHook: connected,
+                CarrierDetect: connected || activeDial,
+                OffHook: connected || activeDial,
                 ReceiveData: nowTicks < Volatile.Read(ref receiveDataLedUntilTicks),
                 SendData: nowTicks < Volatile.Read(ref sendDataLedUntilTicks),
                 TerminalReady: serialAcia.RequestToSend,
@@ -207,7 +213,7 @@ namespace BBC
                         return;
                     }
 
-                    Dial(target);
+                    Dial(target, body[index + 1] is 'T' or 't');
                     return;
                 }
 
@@ -470,7 +476,7 @@ namespace BBC
             return true;
         }
 
-        private void Dial(string target)
+        private void Dial(string target, bool toneDial)
         {
             Disconnect(reportNoCarrier: false);
 
@@ -480,22 +486,39 @@ namespace BBC
                 return;
             }
 
+            if (!NetworkInterface.GetIsNetworkAvailable())
+            {
+                Respond("NO DIALTONE");
+                return;
+            }
+
+            if (!TryResolveDialAddress(host, out IPAddress dialAddress, out string dialDigits, out bool networkUnavailable))
+            {
+                Respond(networkUnavailable ? "NO DIALTONE" : "NO CARRIER");
+                return;
+            }
+
             try
             {
-                TcpClient client = new TcpClient();
-                IAsyncResult connect = client.BeginConnect(host, port, null, null);
-                if (!connect.AsyncWaitHandle.WaitOne(ConnectTimeoutMilliseconds))
+                Volatile.Write(ref dialing, 1);
+                if (toneDial)
+                    sound.PlayModemDialSequence(dialDigits);
+
+                if (!ProbeTcpEndpoint(host, port))
                 {
-                    client.Close();
+                    Volatile.Write(ref dialing, 0);
                     Respond("NO CARRIER");
                     return;
                 }
 
-                client.EndConnect(connect);
+                sound.PlayModemConnectionSequence();
+
+                TcpClient client = ConnectTcpEndpoint(host, port);
                 tcpClient = client;
                 networkStream = client.GetStream();
                 Volatile.Write(ref online, 1);
                 Volatile.Write(ref closing, 0);
+                Volatile.Write(ref dialing, 0);
                 UpdateCarrierPresent();
                 receiveThread = new Thread(ReadNetwork)
                 {
@@ -504,14 +527,43 @@ namespace BBC
                 };
                 receiveThread.Start();
                 Respond($"CONNECT {host} {port}");
-                Trace($"connected {host}:{port}");
+                Trace($"connected {host}:{port}; dialled {dialAddress}");
             }
             catch (Exception ex) when (ex is SocketException or IOException or ObjectDisposedException)
             {
+                Volatile.Write(ref dialing, 0);
                 Disconnect(reportNoCarrier: false);
                 Respond("NO CARRIER");
                 Trace($"connect failed {host}:{port}: {ex.Message}");
             }
+        }
+
+        private static bool ProbeTcpEndpoint(string host, int port)
+        {
+            using TcpClient probe = new TcpClient();
+            IAsyncResult connect = probe.BeginConnect(host, port, null, null);
+            if (!connect.AsyncWaitHandle.WaitOne(ConnectTimeoutMilliseconds))
+            {
+                probe.Close();
+                return false;
+            }
+
+            probe.EndConnect(connect);
+            return true;
+        }
+
+        private static TcpClient ConnectTcpEndpoint(string host, int port)
+        {
+            TcpClient client = new TcpClient();
+            IAsyncResult connect = client.BeginConnect(host, port, null, null);
+            if (!connect.AsyncWaitHandle.WaitOne(ConnectTimeoutMilliseconds))
+            {
+                client.Close();
+                throw new SocketException((int)SocketError.TimedOut);
+            }
+
+            client.EndConnect(connect);
+            return client;
         }
 
         private void HandleOnlineByte(byte value)
@@ -903,6 +955,62 @@ namespace BBC
             return !string.IsNullOrWhiteSpace(host);
         }
 
+        private static bool TryResolveDialAddress(string host, out IPAddress address, out string dialDigits, out bool networkUnavailable)
+        {
+            address = IPAddress.None;
+            dialDigits = string.Empty;
+            networkUnavailable = false;
+
+            if (IPAddress.TryParse(host, out IPAddress? parsedAddress))
+            {
+                if (parsedAddress.AddressFamily != AddressFamily.InterNetwork)
+                    return false;
+
+                address = parsedAddress;
+                dialDigits = GetIpv4DialDigits(address);
+                return true;
+            }
+
+            try
+            {
+                IPAddress[] addresses = Dns.GetHostAddresses(host);
+                foreach (IPAddress candidate in addresses)
+                {
+                    if (candidate.AddressFamily != AddressFamily.InterNetwork)
+                        continue;
+
+                    address = candidate;
+                    dialDigits = GetIpv4DialDigits(address);
+                    return true;
+                }
+            }
+            catch (SocketException ex) when (IsNetworkUnavailable(ex.SocketErrorCode))
+            {
+                networkUnavailable = true;
+                return false;
+            }
+            catch (SocketException)
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        private static bool IsNetworkUnavailable(SocketError error)
+        {
+            return error is SocketError.NetworkDown
+                or SocketError.NetworkUnreachable
+                or SocketError.HostUnreachable
+                or SocketError.TryAgain;
+        }
+
+        private static string GetIpv4DialDigits(IPAddress address)
+        {
+            byte[] bytes = address.GetAddressBytes();
+            return string.Concat(bytes.Select(octet => octet.ToString()));
+        }
+
         private static bool ContainsWhiteSpace(string value)
         {
             for (int i = 0; i < value.Length; i++)
@@ -962,6 +1070,8 @@ namespace BBC
                 return "3";
             if (string.Equals(text, "ERROR", StringComparison.OrdinalIgnoreCase))
                 return "4";
+            if (string.Equals(text, "NO DIALTONE", StringComparison.OrdinalIgnoreCase))
+                return "6";
 
             return text;
         }
