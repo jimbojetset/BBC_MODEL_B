@@ -181,15 +181,15 @@ namespace BBC
             Name = name;
         }
 
-        public string GetPrimaryHostKeyName(byte internalKey)
+        public string GetPrimaryHostKeyName(byte internalKey, BbcShiftAdjustment shiftAdjustment = BbcShiftAdjustment.Preserve)
         {
-            foreach (KeyValuePair<int, BbcKeyBinding> pair in OrderPrimaryBindingsForDisplay(customKeys))
+            foreach (KeyValuePair<int, BbcKeyBinding> pair in OrderPrimaryBindingsForDisplay(customKeys, shiftAdjustment))
             {
                 if (pair.Value.InternalKey == internalKey)
                     return SdlKey.GetName(pair.Key);
             }
 
-            foreach (KeyValuePair<int, BbcKeyBinding> pair in OrderPrimaryBindingsForDisplay(unmodifiedKeys))
+            foreach (KeyValuePair<int, BbcKeyBinding> pair in OrderPrimaryBindingsForDisplay(unmodifiedKeys, shiftAdjustment))
             {
                 if (pair.Value.InternalKey == internalKey)
                     return SdlKey.GetName(pair.Key);
@@ -199,10 +199,11 @@ namespace BBC
         }
 
         private static IOrderedEnumerable<KeyValuePair<int, BbcKeyBinding>> OrderPrimaryBindingsForDisplay(
-            Dictionary<int, BbcKeyBinding> bindings)
+            Dictionary<int, BbcKeyBinding> bindings,
+            BbcShiftAdjustment shiftAdjustment)
         {
             return bindings
-                .Where(pair => pair.Value.ShiftAdjustment == BbcShiftAdjustment.Preserve)
+                .Where(pair => pair.Value.ShiftAdjustment == shiftAdjustment)
                 .OrderBy(pair => pair.Key);
         }
 

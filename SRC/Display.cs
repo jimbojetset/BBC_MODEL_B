@@ -42,6 +42,7 @@ namespace BBC
         private const int RomSlotGapX = 11;
         private const int RomSlotGapY = 24;
         private const int RomPanelPadding = 16;
+        private const int RomPanelTitleHeight = 24;
         private const int RomBankNumberHeight = 10;
         private const int RomLabelMaxCharacters = 14;
         private const int RomLayoutButtonWidth = 98;
@@ -56,6 +57,10 @@ namespace BBC
         private const int InputPanelWidth = 780;
         private const int InputPanelHeight = 390;
         private const bool InputKeyEllipsisEnabled = false;
+        private const int InputActionButtonWidth = 56;
+        private const int InputShiftLockButtonWidth = 82;
+        private const int InputActionButtonHeight = 20;
+        private const int InputActionButtonGap = 6;
         private const int MaxRecentStateFiles = 5;
         private const byte BbcShiftKey = 0x00;
         private const byte BbcCapsLockKey = 0x40;
@@ -83,6 +88,8 @@ namespace BBC
         private const int HayesPanelLedGap = 21;
         private const int HayesPanelLedCount = 7;
         private const int HayesMenuIndex = -2;
+        private const int Drive0MenuIndex = -3;
+        private const int Drive1MenuIndex = -4;
         private const string HayesMenuTitle = "MODEM";
         private const int BottomOverlayPadding = 4;
         private const byte OverlayTextGrey = 80;
@@ -162,7 +169,10 @@ namespace BBC
         private int infoRomSlot = -1;
         private int hoveredInputKey = -1;
         private int selectedInputKey = -1;
+        private BbcShiftAdjustment selectedInputShiftAdjustment = BbcShiftAdjustment.Preserve;
+        private string selectedInputLabel = string.Empty;
         private bool inputMapperOpen;
+        private bool romManagerOpen;
         private bool inputProfileDirty;
         private string activeInputProfileName = "Default";
         private int logicalWidth;
@@ -245,7 +255,7 @@ namespace BBC
 
         public string DefaultSaveStateFileName { get; set; } = "bbc-untitled.sav";
 
-        public bool RomManagerOpen => IsRomManagerMenu(activeMenuIndex);
+        public bool RomManagerOpen => romManagerOpen;
 
         public bool InputMapperOpen => inputMapperOpen;
 
@@ -349,6 +359,9 @@ namespace BBC
 
                 if (ev.Type == SDL_MOUSEMOTION)
                 {
+                    if (HandleRomManagerMouseMotion(ev.MouseX, ev.MouseY))
+                        continue;
+
                     if (HandleInputMapperMouseMotion(ev.MouseX, ev.MouseY))
                         continue;
 
@@ -363,6 +376,9 @@ namespace BBC
 
                 if (ev.Type is SDL_MOUSEBUTTONDOWN or SDL_MOUSEBUTTONUP)
                 {
+                    if (HandleRomManagerMouseButton(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY))
+                        continue;
+
                     if (HandleInputMapperMouseButton(ev.MouseButton, ev.Type == SDL_MOUSEBUTTONDOWN, ev.MouseX, ev.MouseY))
                         continue;
 
@@ -626,8 +642,9 @@ namespace BBC
             DrawTopBorderStatusMessage();
             DrawDriveGlyphs();
             DrawMenuBar();
-            if (activeMenuIndex == HayesMenuIndex)
+            if (IsBottomOverlayMenu(activeMenuIndex))
                 DrawOpenMenu(activeMenuIndex);
+            DrawRomManager();
             DrawArchiveBrowser();
             DrawInputMapper();
 
@@ -722,20 +739,10 @@ namespace BBC
         private void DrawOpenMenu(int menuIndex)
         {
             MenuDefinition menu = GetMenuDefinition(menuIndex);
-            if (IsRomManagerMenu(menuIndex))
-            {
-                DrawRomManagerPanel(menuIndex);
-                return;
-            }
-
             int menuWidth = GetDropDownWidth(menu);
             int menuHeight = GetDropDownHeight(menu);
-            int menuX = menuIndex == HayesMenuIndex
-                ? GetHayesDropDownX(menuWidth)
-                : GetTopMenuX(menuIndex) - 4;
-            int menuY = menuIndex == HayesMenuIndex
-                ? GetHayesPanelRect().Y - menuHeight
-                : TopMenuHeight;
+            int menuX = GetDropDownX(menuIndex, menuWidth);
+            int menuY = GetDropDownY(menuIndex, menuHeight);
 
             SdlRect panel = new SdlRect(menuX, menuY, menuWidth, menuHeight);
             _ = SDL_SetRenderDrawColor(renderer, 24, 24, 24, 235);
@@ -884,20 +891,45 @@ namespace BBC
             DrawRendererText(TrimRendererText(inputProfileDirty ? "Unsaved" : inputProfile.Name, 40), panel.X + 130, panel.Y + 12, 170, 170, 170);
 
             string prompt = selectedInputKey >= 0
-                ? $"Press host key for {BbcKeyLabel((byte)selectedInputKey)}"
+                ? $"Press host key for {GetSelectedInputLabel()}"
                 : "Click a BBC key to bind";
-            DrawRendererText(prompt, panel.X + 14, panel.Y + panel.H - 26, 220, 220, 160);
-            DrawRendererText("Open/Save from Input menu", panel.X + panel.W - 220, panel.Y + panel.H - 26, 150, 150, 150);
+            DrawRendererText(prompt, panel.X + 14, panel.Y + panel.H - 40, 220, 220, 160);
+            DrawRendererText("White = BBC Keys;", panel.X + 14, panel.Y + panel.H - 26, 235, 235, 235);
+            DrawRendererText(" Green =Locally mapped keys.", panel.X + 14 + GetRendererTextWidth("White = BBC Keys;"), panel.Y + panel.H - 26, 150, 190, 150);
+            DrawInputMapperActionButtons(panel);
 
             for (int i = 0; i < InputKeys.Length; i++)
                 DrawInputKey(panel, i, InputKeys[i]);
+        }
+
+        private void DrawInputMapperActionButtons(SdlRect panel)
+        {
+            DrawInputMapperActionButton(GetInputShiftLockButtonRect(panel), "SHIFT LOCK", bbcShiftLockEnabled);
+            DrawInputMapperActionButton(GetInputLoadMapButtonRect(panel), "Open");
+            DrawInputMapperActionButton(GetInputSaveMapButtonRect(panel), "Save");
+            DrawInputMapperActionButton(GetInputResetMapButtonRect(panel), "Reset");
+        }
+
+        private void DrawInputMapperActionButton(SdlRect rect, string label, bool active = false)
+        {
+            bool hovered = uiMouseX >= rect.X && uiMouseX < rect.X + rect.W && uiMouseY >= rect.Y && uiMouseY < rect.Y + rect.H;
+            byte fillR = active ? hovered ? (byte)72 : (byte)56 : hovered ? (byte)42 : (byte)24;
+            byte fillG = active ? hovered ? (byte)72 : (byte)56 : hovered ? (byte)42 : (byte)24;
+            byte fillB = active ? hovered ? (byte)36 : (byte)28 : hovered ? (byte)42 : (byte)24;
+            _ = SDL_SetRenderDrawColor(renderer, fillR, fillG, fillB, 255);
+            _ = SDL_RenderFillRect(renderer, ref rect);
+            _ = SDL_SetRenderDrawColor(renderer, active ? (byte)210 : (byte)125, active ? (byte)190 : (byte)125, active ? (byte)90 : (byte)125, 255);
+            DrawRectOutline(rect);
+            DrawRendererText(label, rect.X + 6, rect.Y + 5, 230, 230, active ? (byte)160 : (byte)230);
         }
 
         private void DrawInputKey(SdlRect panel, int index, BbcInputKey key)
         {
             SdlRect rect = GetInputKeyRect(panel, key);
             bool hovered = index == hoveredInputKey;
-            bool selected = selectedInputKey == key.InternalKey;
+            BbcKeyBinding binding = GetInputMapperBinding(key);
+            bool selected = selectedInputKey == binding.InternalKey
+                && selectedInputShiftAdjustment == binding.ShiftAdjustment;
             bool functionKey = IsFunctionInputKey(key);
             bool oliveKey = IsOliveInputKey(key);
             byte fillR = selected ? (byte)48 : hovered ? (byte)30 : (byte)0;
@@ -922,8 +954,8 @@ namespace BBC
             _ = SDL_SetRenderDrawColor(renderer, selected ? (byte)245 : (byte)125, selected ? (byte)220 : (byte)125, selected ? (byte)130 : (byte)125, 255);
             DrawRectOutline(rect);
 
-            DrawRendererText(FormatInputKeyText(key.Label, rect), rect.X + 4, rect.Y + 4, 235, 235, 235);
-            string hostKey = inputProfile.GetPrimaryHostKeyName(key.InternalKey);
+            DrawRendererText(FormatInputKeyText(GetInputMapperKeyLabel(key), rect), rect.X + 4, rect.Y + 4, 235, 235, 235);
+            string hostKey = inputProfile.GetPrimaryHostKeyName(binding.InternalKey, binding.ShiftAdjustment);
             if (hostKey.Length > 0)
                 DrawRendererText(FormatInputKeyText(hostKey, rect), rect.X + 4, rect.Y + 17, 150, 190, 150);
         }
@@ -957,6 +989,61 @@ namespace BBC
             };
         }
 
+        private string GetSelectedInputLabel()
+        {
+            return selectedInputLabel.Length > 0
+                ? selectedInputLabel
+                : BbcKeyLabel((byte)selectedInputKey);
+        }
+
+        private BbcKeyBinding GetInputMapperBinding(BbcInputKey key)
+        {
+            string label = GetInputMapperKeyLabel(key);
+            return bbcShiftLockEnabled
+                && label.Length == 1
+                && BbcKeyboard.TryMapCharacter(label[0], out BbcKeyBinding shifted)
+                ? shifted
+                : new BbcKeyBinding(key.InternalKey, BbcShiftAdjustment.Preserve);
+        }
+
+        private string GetInputMapperKeyLabel(BbcInputKey key)
+        {
+            return bbcShiftLockEnabled && TryGetShiftedInputKeyLabel(key.Label, out string shifted)
+                ? shifted
+                : key.Label;
+        }
+
+        private static bool TryGetShiftedInputKeyLabel(string label, out string shifted)
+        {
+            shifted = label switch
+            {
+                "1" => "!",
+                "2" => "\"",
+                "3" => "#",
+                "4" => "$",
+                "5" => "%",
+                "6" => "^",
+                "7" => "&",
+                "8" => "*",
+                "9" => "(",
+                "0" => ")",
+                "-" => "_",
+                "^" => "~",
+                "@" => "`",
+                "[" => "{",
+                "]" => "}",
+                ":" => "*",
+                ";" => ":",
+                "," => "<",
+                "." => ">",
+                "/" => "?",
+                "\\" => "|",
+                _ => string.Empty
+            };
+
+            return shifted.Length > 0;
+        }
+
         private static bool IsFunctionInputKey(BbcInputKey key)
         {
             return key.InternalKey is 0x14 or 0x16 or 0x20 or >= 0x71 and <= 0x77;
@@ -978,7 +1065,9 @@ namespace BBC
             if (uiMouseY < TopMenuHeight)
                 return false;
 
-            hoveredInputKey = GetInputKeyIndexAt(uiMouseX, uiMouseY);
+            hoveredInputKey = GetInputMapperActionAt(uiMouseX, uiMouseY) == InputMapperAction.None
+                ? GetInputKeyIndexAt(uiMouseX, uiMouseY)
+                : -1;
             return IsInInputPanel(uiMouseX, uiMouseY);
         }
 
@@ -996,27 +1085,66 @@ namespace BBC
             if (!pressed)
                 return IsInInputPanel(x, y);
 
+            InputMapperAction action = GetInputMapperActionAt(x, y);
+            if (action != InputMapperAction.None)
+            {
+                ExecuteInputMapperAction(action);
+                return true;
+            }
+
             int keyIndex = GetInputKeyIndexAt(x, y);
             if (keyIndex >= 0)
             {
-                byte clickedKey = InputKeys[keyIndex].InternalKey;
-                selectedInputKey = selectedInputKey == clickedKey ? -1 : clickedKey;
+                BbcInputKey clickedKey = InputKeys[keyIndex];
+                BbcKeyBinding binding = GetInputMapperBinding(clickedKey);
+                bool alreadySelected = selectedInputKey == binding.InternalKey
+                    && selectedInputShiftAdjustment == binding.ShiftAdjustment;
+                selectedInputKey = alreadySelected ? -1 : binding.InternalKey;
+                selectedInputShiftAdjustment = alreadySelected ? BbcShiftAdjustment.Preserve : binding.ShiftAdjustment;
+                selectedInputLabel = alreadySelected ? string.Empty : GetInputMapperKeyLabel(clickedKey);
                 return true;
             }
 
             if (selectedInputKey >= 0)
             {
-                selectedInputKey = -1;
+                ClearInputMapperSelection();
                 return true;
             }
 
             if (!IsInInputPanel(x, y))
             {
                 inputMapperOpen = false;
-                selectedInputKey = -1;
+                ClearInputMapperSelection();
             }
 
             return true;
+        }
+
+        private void ExecuteInputMapperAction(InputMapperAction action)
+        {
+            ClearInputMapperSelection();
+            switch (action)
+            {
+                case InputMapperAction.ToggleShiftLock:
+                    ToggleBbcShiftLock();
+                    break;
+                case InputMapperAction.Load:
+                    LoadInputProfile();
+                    break;
+                case InputMapperAction.Save:
+                    SaveInputProfile();
+                    break;
+                case InputMapperAction.Reset:
+                    ResetInputProfile();
+                    break;
+            }
+        }
+
+        private void ClearInputMapperSelection()
+        {
+            selectedInputKey = -1;
+            selectedInputShiftAdjustment = BbcShiftAdjustment.Preserve;
+            selectedInputLabel = string.Empty;
         }
 
         private void HandleInputMapperKeyDown(int keySym, int modifiers)
@@ -1024,7 +1152,7 @@ namespace BBC
             if (keySym == SDLK_ESCAPE)
             {
                 inputMapperOpen = false;
-                selectedInputKey = -1;
+                ClearInputMapperSelection();
                 return;
             }
 
@@ -1037,13 +1165,13 @@ namespace BBC
             if (selectedInputKey < 0)
                 return;
 
-            inputProfile.BindHostKey(keySym, (byte)selectedInputKey);
+            inputProfile.BindHostKey(keySym, (byte)selectedInputKey, selectedInputShiftAdjustment);
             inputProfileDirty = true;
             ShowNotification(
                 "Input mapped",
-                $"{SdlKey.GetName(keySym)} -> {BbcKeyLabel((byte)selectedInputKey)}",
+                $"{SdlKey.GetName(keySym)} -> {GetSelectedInputLabel()}",
                 2000);
-            selectedInputKey = -1;
+            ClearInputMapperSelection();
         }
 
         private bool HandleMenuMouseMotion(int hostX, int hostY)
@@ -1053,21 +1181,14 @@ namespace BBC
             uiMouseY = (int)Math.Round(logicalY);
 
             hoveredMenuIndex = GetMenuIndexAt((int)logicalX, (int)logicalY);
-            hoveredMenuItemIndex = activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex
+            hoveredMenuItemIndex = IsOpenMenuIndex(activeMenuIndex)
                 ? GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY)
                 : -1;
-            hoveredRomSlot = IsRomManagerMenu(activeMenuIndex)
-                ? GetRomSlotAt((int)logicalX, (int)logicalY)
-                : -1;
 
-            if ((activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex)
-                && (hoveredMenuIndex >= 0 || hoveredMenuIndex == HayesMenuIndex))
+            if (IsOpenMenuIndex(activeMenuIndex) && IsOpenMenuIndex(hoveredMenuIndex))
             {
                 activeMenuIndex = hoveredMenuIndex;
                 hoveredMenuItemIndex = GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY);
-                hoveredRomSlot = IsRomManagerMenu(activeMenuIndex)
-                    ? GetRomSlotAt((int)logicalX, (int)logicalY)
-                    : -1;
             }
 
             return IsMenuArea((int)logicalX, (int)logicalY);
@@ -1099,9 +1220,10 @@ namespace BBC
                 return IsMenuArea(x, y);
 
             int menuIndex = GetMenuIndexAt(x, y);
-            if (menuIndex >= 0 || menuIndex == HayesMenuIndex)
+            if (IsDirectMenu(menuIndex))
             {
-                activeMenuIndex = activeMenuIndex == menuIndex ? -1 : menuIndex;
+                ExecuteMenuCommand(menus[menuIndex].DirectCommand!.Value);
+                activeMenuIndex = -1;
                 hoveredMenuIndex = menuIndex;
                 hoveredMenuItemIndex = -1;
                 activeRomSlot = -1;
@@ -1111,21 +1233,17 @@ namespace BBC
                 return true;
             }
 
-            if (activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex)
+            if (IsOpenMenuIndex(menuIndex))
             {
-                if (IsRomManagerMenu(activeMenuIndex))
-                {
-                    if (HandleRomManagerClick(x, y))
-                        return true;
+                CloseWindowPanels();
+                activeMenuIndex = activeMenuIndex == menuIndex ? -1 : menuIndex;
+                hoveredMenuIndex = menuIndex;
+                hoveredMenuItemIndex = -1;
+                return true;
+            }
 
-                    activeMenuIndex = -1;
-                    activeRomSlot = -1;
-                    movingRomSlot = -1;
-                    hoveredRomSlot = -1;
-                    infoRomSlot = -1;
-                    return true;
-                }
-
+            if (IsOpenMenuIndex(activeMenuIndex))
+            {
                 int itemIndex = GetMenuItemIndexAt(activeMenuIndex, x, y);
                 if (itemIndex >= 0)
                 {
@@ -1309,10 +1427,13 @@ namespace BBC
             if (IsInHayesMenuLabel(x, y))
                 return true;
 
-            if (IsRomManagerMenu(activeMenuIndex) && IsInRomManagerPanel(x, y))
+            if (IsInDriveMenuLabel(x, y))
                 return true;
 
-            return (activeMenuIndex >= 0 || activeMenuIndex == HayesMenuIndex)
+            if (romManagerOpen && IsInRomManagerPanel(x, y))
+                return true;
+
+            return IsOpenMenuIndex(activeMenuIndex)
                 && GetMenuItemIndexAt(activeMenuIndex, x, y) >= 0;
         }
 
@@ -1532,6 +1653,10 @@ namespace BBC
             if (IsInHayesMenuLabel(x, y))
                 return HayesMenuIndex;
 
+            int driveMenuIndex = GetDriveMenuIndexAt(x, y);
+            if (driveMenuIndex != -1)
+                return driveMenuIndex;
+
             if (y < 0 || y >= TopMenuHeight)
                 return -1;
 
@@ -1550,20 +1675,14 @@ namespace BBC
 
         private int GetMenuItemIndexAt(int menuIndex, int x, int y)
         {
-            if (menuIndex != HayesMenuIndex && (menuIndex < 0 || menuIndex >= menus.Length))
-                return -1;
-            if (IsRomManagerMenu(menuIndex))
+            if (!IsOpenMenuIndex(menuIndex))
                 return -1;
 
             MenuDefinition menu = GetMenuDefinition(menuIndex);
             int menuWidth = GetDropDownWidth(menu);
             int menuHeight = GetDropDownHeight(menu);
-            int menuX = menuIndex == HayesMenuIndex
-                ? GetHayesDropDownX(menuWidth)
-                : GetTopMenuX(menuIndex) - 4;
-            int menuY = menuIndex == HayesMenuIndex
-                ? GetHayesPanelRect().Y - menuHeight
-                : TopMenuHeight;
+            int menuX = GetDropDownX(menuIndex, menuWidth);
+            int menuY = GetDropDownY(menuIndex, menuHeight);
             int itemY = y - menuY - MenuDropDownPadding;
 
             if (x < menuX || x >= menuX + menuWidth || itemY < 0)
@@ -1586,6 +1705,8 @@ namespace BBC
         {
             if (menuIndex == HayesMenuIndex)
                 return GetHayesMenuLabelRect().X;
+            if (IsDriveMenu(menuIndex))
+                return GetDriveGlyphRect(GetDriveMenuDrive(menuIndex)).X;
 
             int x = MenuPaddingX;
             for (int i = 0; i < menuIndex; i++)
@@ -1631,6 +1752,33 @@ namespace BBC
             return Math.Clamp(centerX - (menuWidth / 2), 0, logicalWidth - menuWidth);
         }
 
+        private int GetDriveDropDownX(int menuWidth, int drive)
+        {
+            SdlRect glyph = GetDriveGlyphRect(drive);
+            int centerX = glyph.X + (glyph.W / 2);
+            return Math.Clamp(centerX - (menuWidth / 2), 0, logicalWidth - menuWidth);
+        }
+
+        private int GetDropDownX(int menuIndex, int menuWidth)
+        {
+            if (menuIndex == HayesMenuIndex)
+                return GetHayesDropDownX(menuWidth);
+            if (IsDriveMenu(menuIndex))
+                return GetDriveDropDownX(menuWidth, GetDriveMenuDrive(menuIndex));
+
+            return GetTopMenuX(menuIndex) - 4;
+        }
+
+        private int GetDropDownY(int menuIndex, int menuHeight)
+        {
+            if (menuIndex == HayesMenuIndex)
+                return GetHayesPanelRect().Y - menuHeight;
+            if (IsDriveMenu(menuIndex))
+                return GetDriveGlyphRect(GetDriveMenuDrive(menuIndex)).Y - menuHeight;
+
+            return TopMenuHeight;
+        }
+
         private static int GetHayesPanelWidth()
         {
             int brandWidth = GetRendererTextWidth(HayesMenuTitle);
@@ -1646,7 +1794,13 @@ namespace BBC
 
         private MenuDefinition GetMenuDefinition(int menuIndex)
         {
-            return menuIndex == HayesMenuIndex ? HayesMenu : menus[menuIndex];
+            return menuIndex switch
+            {
+                HayesMenuIndex => HayesMenu,
+                Drive0MenuIndex => Drive0Menu,
+                Drive1MenuIndex => Drive1Menu,
+                _ => menus[menuIndex]
+            };
         }
 
         private static int GetTopMenuWidth(string text)
@@ -1690,13 +1844,23 @@ namespace BBC
             return item.Separator ? MenuSeparatorHeight : MenuItemHeight;
         }
 
-        private void DrawRomManagerPanel(int menuIndex)
+        private void DrawRomManager()
         {
-            SdlRect panel = GetRomManagerPanelRect(menuIndex);
+            if (!romManagerOpen)
+                return;
+
+            DrawRomManagerPanel();
+        }
+
+        private void DrawRomManagerPanel()
+        {
+            SdlRect panel = GetRomManagerPanelRect();
             _ = SDL_SetRenderDrawColor(renderer, 18, 18, 18, 245);
             _ = SDL_RenderFillRect(renderer, ref panel);
             _ = SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
             DrawRectOutline(panel);
+
+            DrawRendererText("ROM Manager", panel.X + 14, panel.Y + 12, 240, 240, 240);
 
             for (int bank = 0; bank < romSlots.Length; bank++)
                 DrawRomSlot(bank, GetRomSlotRect(panel, bank));
@@ -1846,6 +2010,43 @@ namespace BBC
             DrawRendererText(TrimRendererText(fileName, columns), info.X + 9, y, 160, 160, 160);
         }
 
+        private bool HandleRomManagerMouseMotion(int hostX, int hostY)
+        {
+            if (!romManagerOpen)
+                return false;
+
+            RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+            uiMouseX = (int)Math.Round(logicalX);
+            uiMouseY = (int)Math.Round(logicalY);
+            hoveredRomSlot = -1;
+            if (uiMouseY < TopMenuHeight)
+                return false;
+
+            hoveredRomSlot = GetRomSlotAt(uiMouseX, uiMouseY);
+            return IsInRomManagerPanel(uiMouseX, uiMouseY);
+        }
+
+        private bool HandleRomManagerMouseButton(byte button, bool pressed, int hostX, int hostY)
+        {
+            if (!romManagerOpen || button != SDL_BUTTON_LEFT)
+                return false;
+
+            RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
+            int x = (int)logicalX;
+            int y = (int)logicalY;
+            if (y < TopMenuHeight)
+                return false;
+
+            if (!pressed)
+                return IsInRomManagerPanel(x, y);
+
+            if (HandleRomManagerClick(x, y))
+                return true;
+
+            CloseRomManager();
+            return true;
+        }
+
         private bool HandleRomManagerClick(int x, int y)
         {
             if (activeRomSlot >= 0 && movingRomSlot < 0)
@@ -1893,7 +2094,7 @@ namespace BBC
 
         private bool HandleRomLayoutButtonClick(int x, int y)
         {
-            SdlRect panel = GetRomManagerPanelRect(activeMenuIndex);
+            SdlRect panel = GetRomManagerPanelRect();
             SdlRect import = GetRomImportButtonRect(panel);
             if (x >= import.X && x < import.X + import.W && y >= import.Y && y < import.Y + import.H)
             {
@@ -1963,7 +2164,7 @@ namespace BBC
             if (activeRomSlot < 0)
                 return -1;
 
-            SdlRect panel = GetRomManagerPanelRect(activeMenuIndex);
+            SdlRect panel = GetRomManagerPanelRect();
             int actionRows = GetRomActionRowCount(activeRomSlot);
             SdlRect popup = GetRomActionRect(GetRomSlotRect(panel, activeRomSlot), actionRows);
             if (x < popup.X || x >= popup.X + popup.W || y < popup.Y || y >= popup.Y + popup.H)
@@ -1981,10 +2182,10 @@ namespace BBC
 
         private int GetRomSlotAt(int x, int y)
         {
-            if (!IsRomManagerMenu(activeMenuIndex))
+            if (!romManagerOpen)
                 return -1;
 
-            SdlRect panel = GetRomManagerPanelRect(activeMenuIndex);
+            SdlRect panel = GetRomManagerPanelRect();
             for (int bank = 0; bank < romSlots.Length; bank++)
             {
                 SdlRect slot = GetRomSlotRect(panel, bank);
@@ -1997,17 +2198,18 @@ namespace BBC
 
         private bool IsInRomManagerPanel(int x, int y)
         {
-            if (!IsRomManagerMenu(activeMenuIndex))
+            if (!romManagerOpen)
                 return false;
 
-            SdlRect panel = GetRomManagerPanelRect(activeMenuIndex);
+            SdlRect panel = GetRomManagerPanelRect();
             return x >= panel.X && x < panel.X + panel.W && y >= panel.Y && y < panel.Y + panel.H;
         }
 
-        private SdlRect GetRomManagerPanelRect(int menuIndex)
+        private SdlRect GetRomManagerPanelRect()
         {
-            int x = Math.Min(GetTopMenuX(menuIndex) - 4, Math.Max(0, logicalWidth - GetRomManagerPanelWidth() - 4));
-            return new SdlRect(x, TopMenuHeight, GetRomManagerPanelWidth(), GetRomManagerPanelHeight());
+            int x = Math.Max(0, (logicalWidth - GetRomManagerPanelWidth()) / 2);
+            int y = TopMenuHeight + 38;
+            return new SdlRect(x, y, GetRomManagerPanelWidth(), GetRomManagerPanelHeight());
         }
 
         private static SdlRect GetRomSlotRect(SdlRect panel, int bank)
@@ -2015,7 +2217,7 @@ namespace BBC
             int column = bank % RomSlotColumns;
             int row = bank / RomSlotColumns;
             int x = panel.X + RomPanelPadding + (column * (RomSlotWidth + RomSlotGapX));
-            int y = panel.Y + RomPanelPadding + RomBankNumberHeight + (row * (RomSlotHeight + RomSlotGapY + RomBankNumberHeight));
+            int y = panel.Y + RomPanelPadding + RomPanelTitleHeight + RomBankNumberHeight + (row * (RomSlotHeight + RomSlotGapY + RomBankNumberHeight));
             return new SdlRect(x, y, RomSlotWidth, RomSlotHeight);
         }
 
@@ -2068,6 +2270,7 @@ namespace BBC
         private static int GetRomManagerPanelHeight()
         {
             return (RomPanelPadding * 2)
+                + RomPanelTitleHeight
                 + (RomSlotRows * (RomSlotHeight + RomBankNumberHeight))
                 + ((RomSlotRows - 1) * RomSlotGapY)
                 + 34;
@@ -2087,6 +2290,57 @@ namespace BBC
             SdlRect panel = GetInputPanelRect();
             return x >= panel.X && x < panel.X + panel.W
                 && y >= panel.Y && y < panel.Y + panel.H;
+        }
+
+        private InputMapperAction GetInputMapperActionAt(int x, int y)
+        {
+            SdlRect panel = GetInputPanelRect();
+            if (IsInRect(x, y, GetInputShiftLockButtonRect(panel)))
+                return InputMapperAction.ToggleShiftLock;
+            if (IsInRect(x, y, GetInputLoadMapButtonRect(panel)))
+                return InputMapperAction.Load;
+            if (IsInRect(x, y, GetInputSaveMapButtonRect(panel)))
+                return InputMapperAction.Save;
+            if (IsInRect(x, y, GetInputResetMapButtonRect(panel)))
+                return InputMapperAction.Reset;
+
+            return InputMapperAction.None;
+        }
+
+        private static SdlRect GetInputShiftLockButtonRect(SdlRect panel)
+        {
+            int totalWidth = InputShiftLockButtonWidth
+                + InputActionButtonGap
+                + (InputActionButtonWidth * 3)
+                + (InputActionButtonGap * 2);
+            int x = panel.X + panel.W - 14 - totalWidth;
+            int y = panel.Y + panel.H - 31;
+            return new SdlRect(x, y, InputShiftLockButtonWidth, InputActionButtonHeight);
+        }
+
+        private static SdlRect GetInputLoadMapButtonRect(SdlRect panel)
+        {
+            SdlRect shiftLock = GetInputShiftLockButtonRect(panel);
+            int x = shiftLock.X + shiftLock.W + InputActionButtonGap;
+            int y = shiftLock.Y;
+            return new SdlRect(x, y, InputActionButtonWidth, InputActionButtonHeight);
+        }
+
+        private static SdlRect GetInputSaveMapButtonRect(SdlRect panel)
+        {
+            SdlRect open = GetInputLoadMapButtonRect(panel);
+            return new SdlRect(open.X + InputActionButtonWidth + InputActionButtonGap, open.Y, InputActionButtonWidth, InputActionButtonHeight);
+        }
+
+        private static SdlRect GetInputResetMapButtonRect(SdlRect panel)
+        {
+            SdlRect save = GetInputSaveMapButtonRect(panel);
+            return new SdlRect(save.X + InputActionButtonWidth + InputActionButtonGap, save.Y, InputActionButtonWidth, InputActionButtonHeight);
+        }
+
+        private static bool IsInRect(int x, int y, SdlRect rect)
+        {
+            return x >= rect.X && x < rect.X + rect.W && y >= rect.Y && y < rect.Y + rect.H;
         }
 
         private int GetInputKeyIndexAt(int x, int y)
@@ -2124,9 +2378,9 @@ namespace BBC
             return $"${internalKey:X2}";
         }
 
-        private bool IsRomManagerMenu(int menuIndex)
+        private bool IsDirectMenu(int menuIndex)
         {
-            return menuIndex >= 0 && menuIndex < menus.Length && menus[menuIndex].Title == "ROM Manager";
+            return menuIndex >= 0 && menuIndex < menus.Length && menus[menuIndex].DirectCommand.HasValue;
         }
 
         private void ExecuteMenuCommand(MenuCommand command)
@@ -2139,8 +2393,11 @@ namespace BBC
                 case MenuCommand.MountDrive1:
                     EnqueueSelectedFile(1);
                     break;
-                case MenuCommand.CreateBlankSsd:
-                    EnqueueBlankSsd();
+                case MenuCommand.CreateBlankSsdDrive0:
+                    EnqueueBlankSsd(0);
+                    break;
+                case MenuCommand.CreateBlankSsdDrive1:
+                    EnqueueBlankSsd(1);
                     break;
                 case MenuCommand.EjectDrive0:
                     pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Eject, string.Empty, 0));
@@ -2200,33 +2457,50 @@ namespace BBC
                 case MenuCommand.ToggleFullScreen:
                     SetFullScreen(!fullScreenEnabled);
                     break;
-                case MenuCommand.PasteClipboard:
-                    EnqueueClipboardText();
-                    break;
-                case MenuCommand.ToggleShiftLock:
-                    ToggleBbcShiftLock();
+                case MenuCommand.OpenRomManager:
+                    romManagerOpen = true;
+                    inputMapperOpen = false;
+                    activeMenuIndex = -1;
+                    activeRomSlot = -1;
+                    movingRomSlot = -1;
+                    hoveredRomSlot = -1;
+                    infoRomSlot = -1;
+                    ClearInputMapperSelection();
                     break;
                 case MenuCommand.OpenInputMapper:
                     inputMapperOpen = true;
-                    selectedInputKey = -1;
+                    romManagerOpen = false;
+                    ClearInputMapperSelection();
                     activeMenuIndex = -1;
                     break;
-                case MenuCommand.SaveInputMap:
-                    SaveInputProfile();
-                    break;
-                case MenuCommand.LoadInputMap:
-                    LoadInputProfile();
-                    break;
-                case MenuCommand.ResetInputMap:
-                    ResetInputProfile();
-                    break;
             }
+        }
+
+        private void CloseRomManager()
+        {
+            romManagerOpen = false;
+            activeRomSlot = -1;
+            movingRomSlot = -1;
+            hoveredRomSlot = -1;
+            infoRomSlot = -1;
+        }
+
+        private void CloseInputMapper()
+        {
+            inputMapperOpen = false;
+            ClearInputMapperSelection();
+        }
+
+        private void CloseWindowPanels()
+        {
+            CloseRomManager();
+            CloseInputMapper();
         }
 
         private void ResetInputProfile()
         {
             inputProfile.ResetToDefault();
-            selectedInputKey = -1;
+            ClearInputMapperSelection();
             inputProfileDirty = true;
             ShowNotification("Input map reset", "Unsaved", 2000);
         }
@@ -2240,7 +2514,7 @@ namespace BBC
             inputProfile = InputProfile.Load(path);
             activeInputProfileName = inputProfile.Name;
             inputProfileDirty = false;
-            selectedInputKey = -1;
+            ClearInputMapperSelection();
             activeHostKeys.Clear();
             activeMatrixKeys.Clear();
             ClearJoystickSource(HostJoystickSource.Keyboard);
@@ -2318,7 +2592,6 @@ namespace BBC
             {
                 MenuCommand.ToggleScanlines => scanlinesEnabled,
                 MenuCommand.ToggleFullScreen => fullScreenEnabled,
-                MenuCommand.ToggleShiftLock => bbcShiftLockEnabled,
                 MenuCommand.TogglePause => EmulationPaused,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
@@ -2333,7 +2606,8 @@ namespace BBC
             {
                 MenuCommand.MountDrive0 => !Drive0Mounted,
                 MenuCommand.MountDrive1 => !Drive1Mounted,
-                MenuCommand.CreateBlankSsd => !Drive0Mounted || !Drive1Mounted,
+                MenuCommand.CreateBlankSsdDrive0 => !Drive0Mounted,
+                MenuCommand.CreateBlankSsdDrive1 => !Drive1Mounted,
                 MenuCommand.EjectDrive0 => Drive0Mounted,
                 MenuCommand.EjectDrive1 => Drive1Mounted,
                 MenuCommand.LoadRecentState1
@@ -2430,11 +2704,12 @@ namespace BBC
 
             DrawStatusLeds(bottomOverlayY);
             DrawHayesModemPanel();
-            DrawDriveGlyph(drive0X, glyphY, Drive0Mounted, Drive0ActivityLedActive, Drive0DoubleSided);
-            DrawDriveGlyph(drive1X, glyphY, Drive1Mounted, Drive1ActivityLedActive, Drive1DoubleSided);
+            DrawDriveGlyph(drive0X, glyphY, 0, Drive0Mounted, Drive0ActivityLedActive, Drive0DoubleSided);
+            DrawDriveGlyph(drive1X, glyphY, 1, Drive1Mounted, Drive1ActivityLedActive, Drive1DoubleSided);
             DrawDriveNumber(drive0X, glyphY, 0);
             DrawDriveNumber(drive1X, glyphY, 1);
-            DrawHoveredDriveLabel(drive0X, drive1X, glyphY);
+            if (!IsDriveMenu(activeMenuIndex))
+                DrawHoveredDriveLabel(drive0X, drive1X, glyphY);
         }
 
         private int GetBottomOverlayHeight()
@@ -2519,13 +2794,22 @@ namespace BBC
             DrawTinyLabel(label, centerX, labelY, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
         }
 
-        private void DrawDriveGlyph(int glyphX, int glyphY, bool mounted, bool activityLedActive, bool doubleSided)
+        private void DrawDriveGlyph(int glyphX, int glyphY, int drive, bool mounted, bool activityLedActive, bool doubleSided)
         {
             SdlRect glyphRect = new SdlRect(glyphX, glyphY, DriveGlyphWidth, DriveGlyphHeight);
-            _ = SDL_SetRenderDrawColor(renderer, 235, 226, 174, 255);
+            int driveMenuIndex = GetDriveMenuIndex(drive);
+            bool active = activeMenuIndex == driveMenuIndex || hoveredMenuIndex == driveMenuIndex;
+            byte body = active ? (byte)245 : (byte)235;
+            byte bodyGreen = active ? (byte)236 : (byte)226;
+            _ = SDL_SetRenderDrawColor(renderer, body, bodyGreen, 174, 255);
             _ = SDL_RenderFillRect(renderer, ref glyphRect);
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             DrawRectOutline(glyphRect);
+            if (active)
+            {
+                _ = SDL_SetRenderDrawColor(renderer, 96, 96, 96, 255);
+                DrawRectOutline(new SdlRect(glyphX - 2, glyphY - 2, DriveGlyphWidth + 4, DriveGlyphHeight + 4));
+            }
 
             DrawDriveMediaSelector(glyphX, glyphY, doubleSided);
 
@@ -2648,6 +2932,60 @@ namespace BBC
                 && uiMouseX < glyphX + DriveGlyphWidth
                 && uiMouseY >= glyphY
                 && uiMouseY < glyphY + DriveGlyphHeight;
+        }
+
+        private SdlRect GetDriveGlyphRect(int drive)
+        {
+            int bottomOverlayHeight = GetBottomOverlayHeight();
+            int bottomOverlayY = logicalHeight - bottomOverlayHeight;
+            int driveBlockHeight = GetDriveBlockHeight();
+            int drive1X = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
+            int drive0X = drive1X - DriveGlyphGap - DriveGlyphWidth;
+            int glyphY = bottomOverlayY + ((bottomOverlayHeight - driveBlockHeight) / 2);
+
+            return new SdlRect(drive == 0 ? drive0X : drive1X, glyphY, DriveGlyphWidth, DriveGlyphHeight);
+        }
+
+        private bool IsInDriveMenuLabel(int x, int y)
+        {
+            return GetDriveMenuIndexAt(x, y) != -1;
+        }
+
+        private int GetDriveMenuIndexAt(int x, int y)
+        {
+            for (int drive = 0; drive <= 1; drive++)
+            {
+                SdlRect rect = GetDriveGlyphRect(drive);
+                if (x >= rect.X && x < rect.X + rect.W && y >= rect.Y && y < rect.Y + rect.H)
+                    return GetDriveMenuIndex(drive);
+            }
+
+            return -1;
+        }
+
+        private static bool IsDriveMenu(int menuIndex)
+        {
+            return menuIndex is Drive0MenuIndex or Drive1MenuIndex;
+        }
+
+        private static bool IsBottomOverlayMenu(int menuIndex)
+        {
+            return menuIndex == HayesMenuIndex || IsDriveMenu(menuIndex);
+        }
+
+        private bool IsOpenMenuIndex(int menuIndex)
+        {
+            return menuIndex >= 0 && !IsDirectMenu(menuIndex) || menuIndex == HayesMenuIndex || IsDriveMenu(menuIndex);
+        }
+
+        private static int GetDriveMenuIndex(int drive)
+        {
+            return drive == 0 ? Drive0MenuIndex : Drive1MenuIndex;
+        }
+
+        private static int GetDriveMenuDrive(int menuIndex)
+        {
+            return menuIndex == Drive0MenuIndex ? 0 : 1;
         }
 
         private static string FormatDriveLabel(int drive, string? label)
@@ -3188,6 +3526,12 @@ namespace BBC
                 return;
             }
 
+            if (romManagerOpen && keySym == SDLK_ESCAPE)
+            {
+                CloseRomManager();
+                return;
+            }
+
             if (archiveEntries.Count > 0)
             {
                 HandleArchiveKeyDown(keySym);
@@ -3687,9 +4031,18 @@ namespace BBC
             new BbcInputKey(0x62, "SPACE", 160, 258, 360, 46)
         ];
 
-        private readonly record struct MenuDefinition(string Title, MenuItem[] Items);
+        private readonly record struct MenuDefinition(string Title, MenuItem[] Items, MenuCommand? DirectCommand = null);
 
         private readonly record struct MenuItem(string Text, string Shortcut, MenuCommand Command, bool Enabled = true, bool Separator = false);
+
+        private enum InputMapperAction
+        {
+            None,
+            ToggleShiftLock,
+            Load,
+            Save,
+            Reset
+        }
 
         private static readonly MenuDefinition HayesMenu = new MenuDefinition(HayesMenuTitle,
         [
@@ -3697,11 +4050,26 @@ namespace BBC
             new MenuItem("Reset", "", MenuCommand.ResetHayesModem)
         ]);
 
+        private static readonly MenuDefinition Drive0Menu = new MenuDefinition("Drive 0",
+        [
+            new MenuItem("Load Disc...", "", MenuCommand.MountDrive0),
+            new MenuItem("Eject Disc", "", MenuCommand.EjectDrive0),
+            new MenuItem("Create SSD...", "", MenuCommand.CreateBlankSsdDrive0)
+        ]);
+
+        private static readonly MenuDefinition Drive1Menu = new MenuDefinition("Drive 1",
+        [
+            new MenuItem("Load Disc...", "", MenuCommand.MountDrive1),
+            new MenuItem("Eject Disc", "", MenuCommand.EjectDrive1),
+            new MenuItem("Create SSD...", "", MenuCommand.CreateBlankSsdDrive1)
+        ]);
+
         private enum MenuCommand
         {
             MountDrive0,
             MountDrive1,
-            CreateBlankSsd,
+            CreateBlankSsdDrive0,
+            CreateBlankSsdDrive1,
             EjectDrive0,
             EjectDrive1,
             SaveScreenshot,
@@ -3724,12 +4092,8 @@ namespace BBC
             ResetHayesModem,
             ToggleScanlines,
             ToggleFullScreen,
-            PasteClipboard,
-            ToggleShiftLock,
-            OpenInputMapper,
-            SaveInputMap,
-            LoadInputMap,
-            ResetInputMap
+            OpenRomManager,
+            OpenInputMapper
         }
 
         private MenuDefinition[] CreateMenus()
@@ -3738,16 +4102,6 @@ namespace BBC
             [
                 new MenuDefinition("File",
                     CreateFileMenuItems()),
-                new MenuDefinition("Disc",
-                [
-                    new MenuItem("Mount drive 0...", "D0", MenuCommand.MountDrive0),
-                    new MenuItem("Eject drive 0", "", MenuCommand.EjectDrive0),
-                    MenuSeparator(),
-                    new MenuItem("Mount drive 1...", "D1", MenuCommand.MountDrive1),
-                    new MenuItem("Eject drive 1", "", MenuCommand.EjectDrive1),
-                    MenuSeparator(),
-                    new MenuItem("Create blank SSD", "", MenuCommand.CreateBlankSsd)
-                ]),
                 new MenuDefinition("Machine",
                 [
                     new MenuItem("BREAK", "F12", MenuCommand.Break),
@@ -3760,21 +4114,12 @@ namespace BBC
                     MenuSeparator(),
                     new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause)
                 ]),
-                new MenuDefinition("ROM Manager", []),
+                new MenuDefinition("ROM Manager", [], MenuCommand.OpenRomManager),
+                new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper),
                 new MenuDefinition("View",
                 [
                     new MenuItem("Fullscreen", "", MenuCommand.ToggleFullScreen),
                     new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines)
-                ]),
-                new MenuDefinition("Input",
-                [
-                    new MenuItem("Keyboard Mapper", "", MenuCommand.OpenInputMapper),
-                    new MenuItem("Open Map...", "", MenuCommand.LoadInputMap),
-                    new MenuItem("Save Map", "", MenuCommand.SaveInputMap),
-                    new MenuItem("Reset Map", "", MenuCommand.ResetInputMap),
-                    MenuSeparator(),
-                    new MenuItem("Paste clipboard", "Ctrl/Cmd+V", MenuCommand.PasteClipboard),
-                    new MenuItem("Shift Lock", "L Ctrl+L Shift", MenuCommand.ToggleShiftLock)
                 ])
             ];
         }
@@ -3882,10 +4227,9 @@ namespace BBC
                 pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Mount, path, drive));
         }
 
-        private void EnqueueBlankSsd()
+        private void EnqueueBlankSsd(int drive)
         {
-            int drive = GetFirstEmptyPhysicalDrive();
-            if (drive < 0)
+            if (drive is < 0 or > 1)
                 return;
 
             string? path = SelectNativeSaveFile();
@@ -3912,14 +4256,6 @@ namespace BBC
             int index = GetRecentStateIndex(command);
             if (index >= 0 && index < recentStatePaths.Count)
                 pendingStateActions.Enqueue(new HostStateAction(HostStateActionKind.Load, recentStatePaths[index]));
-        }
-
-        private int GetFirstEmptyPhysicalDrive()
-        {
-            if (!Drive0Mounted)
-                return 0;
-
-            return Drive1Mounted ? -1 : 1;
         }
 
         private static string? SelectNativeFile()
