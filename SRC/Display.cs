@@ -86,7 +86,7 @@ namespace BBC
         private const int HayesPanelPaddingY = 5;
         private const int HayesPanelBrandGap = 10;
         private const int HayesPanelLedGap = 21;
-        private const int HayesPanelLedCount = 7;
+        private const int HayesPanelLedCount = 8;
         private const int HayesMenuIndex = -2;
         private const int Drive0MenuIndex = -3;
         private const int Drive1MenuIndex = -4;
@@ -238,6 +238,8 @@ namespace BBC
         public bool HayesModemEnabled { get; set; }
 
         public bool HayesLoopbackEnabled { get; set; }
+
+        public bool HayesHighSpeedLedActive { get; set; }
 
         public bool HayesAutoAnswerLedActive { get; set; }
 
@@ -2778,13 +2780,14 @@ namespace BBC
 
             byte brandColour = activeMenuIndex == HayesMenuIndex || hoveredMenuIndex == HayesMenuIndex ? (byte)245 : (byte)190;
             DrawRendererText(HayesMenuTitle, panel.X + HayesPanelPaddingX, brandY, brandColour, brandColour, brandColour);
-            DrawHayesLed(firstLedCenterX, ledCenterY, labelY, "AA", HayesAutoAnswerLedActive);
-            DrawHayesLed(firstLedCenterX + HayesPanelLedGap, ledCenterY, labelY, "CD", HayesCarrierDetectLedActive);
-            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 2), ledCenterY, labelY, "OH", HayesOffHookLedActive);
-            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 3), ledCenterY, labelY, "RD", HayesReceiveDataLedActive);
-            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 4), ledCenterY, labelY, "SD", HayesSendDataLedActive);
-            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 5), ledCenterY, labelY, "TR", HayesTerminalReadyLedActive);
-            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 6), ledCenterY, labelY, "MR", HayesModemReadyLedActive);
+            DrawHayesLed(firstLedCenterX, ledCenterY, labelY, "HS", HayesHighSpeedLedActive);
+            DrawHayesLed(firstLedCenterX + HayesPanelLedGap, ledCenterY, labelY, "AA", HayesAutoAnswerLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 2), ledCenterY, labelY, "CD", HayesCarrierDetectLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 3), ledCenterY, labelY, "OH", HayesOffHookLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 4), ledCenterY, labelY, "RD", HayesReceiveDataLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 5), ledCenterY, labelY, "SD", HayesSendDataLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 6), ledCenterY, labelY, "TR", HayesTerminalReadyLedActive);
+            DrawHayesLed(firstLedCenterX + (HayesPanelLedGap * 7), ledCenterY, labelY, "MR", HayesModemReadyLedActive);
         }
 
         private void DrawHayesLed(int centerX, int centerY, int labelY, string label, bool active)

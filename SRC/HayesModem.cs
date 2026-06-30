@@ -104,12 +104,13 @@ namespace BBC
             bool connected = tcpClient is not null;
             bool activeDial = Volatile.Read(ref dialing) != 0;
             return new HayesModemLedState(
+                HighSpeed: true,
                 AutoAnswer: false,
-                CarrierDetect: connected || activeDial,
+                CarrierDetect: connected,
                 OffHook: connected || activeDial,
                 ReceiveData: nowTicks < Volatile.Read(ref receiveDataLedUntilTicks),
                 SendData: nowTicks < Volatile.Read(ref sendDataLedUntilTicks),
-                TerminalReady: serialAcia.RequestToSend,
+                TerminalReady: true,
                 ModemReady: Volatile.Read(ref disposed) == 0);
         }
 
@@ -1201,6 +1202,7 @@ namespace BBC
         }
 
         public readonly record struct HayesModemLedState(
+            bool HighSpeed,
             bool AutoAnswer,
             bool CarrierDetect,
             bool OffHook,

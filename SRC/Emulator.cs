@@ -1049,6 +1049,7 @@ namespace BBC
             HayesModem? modem = hayesModem;
             if (modem is null)
             {
+                display.HayesHighSpeedLedActive = false;
                 display.HayesAutoAnswerLedActive = false;
                 display.HayesCarrierDetectLedActive = false;
                 display.HayesOffHookLedActive = false;
@@ -1061,6 +1062,7 @@ namespace BBC
             }
 
             HayesModem.HayesModemLedState ledState = modem.GetLedState(Stopwatch.GetTimestamp());
+            display.HayesHighSpeedLedActive = ledState.HighSpeed;
             display.HayesAutoAnswerLedActive = ledState.AutoAnswer;
             display.HayesCarrierDetectLedActive = ledState.CarrierDetect;
             display.HayesOffHookLedActive = ledState.OffHook;
