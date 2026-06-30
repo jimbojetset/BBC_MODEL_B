@@ -45,9 +45,9 @@ namespace BBC
         private const int RomPanelTitleHeight = 24;
         private const int RomBankNumberHeight = 10;
         private const int RomLabelMaxCharacters = 14;
-        private const int RomLayoutButtonWidth = 98;
-        private const int RomLayoutButtonHeight = 20;
-        private const int RomLayoutButtonBottomInset = 14;
+        private const int RomLayoutButtonWidth = InputActionButtonWidth;
+        private const int RomLayoutButtonHeight = InputActionButtonHeight;
+        private const int RomLayoutButtonBottomInset = 11;
         private const int DfsRomBank = 14;
         private const int BasicRomBank = 15;
         private const int RomActionWidth = 82;
@@ -905,8 +905,8 @@ namespace BBC
         private void DrawInputMapperActionButtons(SdlRect panel)
         {
             DrawInputMapperActionButton(GetInputShiftLockButtonRect(panel), "SHIFT LOCK", bbcShiftLockEnabled);
-            DrawInputMapperActionButton(GetInputLoadMapButtonRect(panel), "Open");
-            DrawInputMapperActionButton(GetInputSaveMapButtonRect(panel), "Save");
+            DrawInputMapperActionButton(GetInputLoadMapButtonRect(panel), "Import");
+            DrawInputMapperActionButton(GetInputSaveMapButtonRect(panel), "Export");
             DrawInputMapperActionButton(GetInputResetMapButtonRect(panel), "Reset");
         }
 
@@ -2232,15 +2232,14 @@ namespace BBC
         private static SdlRect GetRomImportButtonRect(SdlRect panel)
         {
             int y = panel.Y + panel.H - RomLayoutButtonHeight - RomLayoutButtonBottomInset;
-            int x = panel.X + panel.W - (RomLayoutButtonWidth * 2) - 18;
+            int x = panel.X + panel.W - 14 - (RomLayoutButtonWidth * 2) - InputActionButtonGap;
             return new SdlRect(x, y, RomLayoutButtonWidth, RomLayoutButtonHeight);
         }
 
         private static SdlRect GetRomExportButtonRect(SdlRect panel)
         {
-            int y = panel.Y + panel.H - RomLayoutButtonHeight - RomLayoutButtonBottomInset;
-            int x = panel.X + panel.W - RomLayoutButtonWidth - 10;
-            return new SdlRect(x, y, RomLayoutButtonWidth, RomLayoutButtonHeight);
+            SdlRect import = GetRomImportButtonRect(panel);
+            return new SdlRect(import.X + RomLayoutButtonWidth + InputActionButtonGap, import.Y, RomLayoutButtonWidth, RomLayoutButtonHeight);
         }
 
         private static int GetRomActionRowCount(int bank)
