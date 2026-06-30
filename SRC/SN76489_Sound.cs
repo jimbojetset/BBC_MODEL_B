@@ -312,7 +312,7 @@ namespace BBC
             WaitForGeneratedDrain();
         }
 
-        public void PlayModemConnectionSequence()
+        public void PlayModemConnectionSequence(Action? remoteAnswered = null)
         {
             int totalMilliseconds = ScaleModemConnectionDuration(
                 ModemPostDialSilenceMilliseconds
@@ -326,11 +326,15 @@ namespace BBC
 
             if (audioDevice == 0 || Volatile.Read(ref hostOutputPaused) || !Volatile.Read(ref running))
             {
-                Thread.Sleep(totalMilliseconds);
+                int silenceMilliseconds = ScaleModemConnectionDuration(ModemPostDialSilenceMilliseconds);
+                Thread.Sleep(silenceMilliseconds);
+                remoteAnswered?.Invoke();
+                Thread.Sleep(Math.Max(0, totalMilliseconds - silenceMilliseconds));
                 return;
             }
 
             QueueModemSilence(ScaleModemConnectionDuration(ModemPostDialSilenceMilliseconds));
+            remoteAnswered?.Invoke();
 
             QueueModemTonePair(ModemRingbackLowHz, ModemRingbackHighHz, ScaleModemConnectionDuration(400));
             QueueModemSilence(ScaleModemConnectionDuration(200));

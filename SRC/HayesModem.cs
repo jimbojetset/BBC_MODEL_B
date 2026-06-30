@@ -53,7 +53,8 @@ namespace BBC
         private int closing;
         private int disposed;
         private int loopbackEnabled;
-        private int dialing;
+        private int hostNetworkAvailable;
+        private int remoteAnswered;
         private long lastTransmitTicks;
         private long receiveDataLedUntilTicks;
         private long sendDataLedUntilTicks;
@@ -79,6 +80,7 @@ namespace BBC
             this.serialAcia = serialAcia;
             this.sound = sound;
             this.serialAcia.SetCarrierPresent(true);
+            RefreshHostNetworkAvailable();
             serialOutputThread = new Thread(DrainSerialOutput)
             {
                 IsBackground = true,
@@ -102,12 +104,13 @@ namespace BBC
         public HayesModemLedState GetLedState(long nowTicks)
         {
             bool connected = tcpClient is not null;
-            bool activeDial = Volatile.Read(ref dialing) != 0;
+            bool networkAvailable = Volatile.Read(ref hostNetworkAvailable) != 0;
+            bool answered = Volatile.Read(ref remoteAnswered) != 0;
             return new HayesModemLedState(
                 HighSpeed: true,
                 AutoAnswer: false,
-                CarrierDetect: connected,
-                OffHook: connected || activeDial,
+                CarrierDetect: connected || answered,
+                OffHook: networkAvailable,
                 ReceiveData: nowTicks < Volatile.Read(ref receiveDataLedUntilTicks),
                 SendData: nowTicks < Volatile.Read(ref sendDataLedUntilTicks),
                 TerminalReady: true,
@@ -487,7 +490,7 @@ namespace BBC
                 return;
             }
 
-            if (!NetworkInterface.GetIsNetworkAvailable())
+            if (!RefreshHostNetworkAvailable())
             {
                 Respond("NO DIALTONE");
                 return;
@@ -495,31 +498,31 @@ namespace BBC
 
             if (!TryResolveDialAddress(host, out IPAddress dialAddress, out string dialDigits, out bool networkUnavailable))
             {
+                if (networkUnavailable)
+                    Volatile.Write(ref hostNetworkAvailable, 0);
+
                 Respond(networkUnavailable ? "NO DIALTONE" : "NO CARRIER");
                 return;
             }
 
             try
             {
-                Volatile.Write(ref dialing, 1);
                 if (toneDial)
                     sound.PlayModemDialSequence(dialDigits);
 
                 if (!ProbeTcpEndpoint(host, port))
                 {
-                    Volatile.Write(ref dialing, 0);
                     Respond("NO CARRIER");
                     return;
                 }
 
-                sound.PlayModemConnectionSequence();
+                sound.PlayModemConnectionSequence(() => Volatile.Write(ref remoteAnswered, 1));
 
                 TcpClient client = ConnectTcpEndpoint(host, port);
                 tcpClient = client;
                 networkStream = client.GetStream();
                 Volatile.Write(ref online, 1);
                 Volatile.Write(ref closing, 0);
-                Volatile.Write(ref dialing, 0);
                 UpdateCarrierPresent();
                 receiveThread = new Thread(ReadNetwork)
                 {
@@ -532,7 +535,6 @@ namespace BBC
             }
             catch (Exception ex) when (ex is SocketException or IOException or ObjectDisposedException)
             {
-                Volatile.Write(ref dialing, 0);
                 Disconnect(reportNoCarrier: false);
                 Respond("NO CARRIER");
                 Trace($"connect failed {host}:{port}: {ex.Message}");
@@ -565,6 +567,13 @@ namespace BBC
 
             client.EndConnect(connect);
             return client;
+        }
+
+        private bool RefreshHostNetworkAvailable()
+        {
+            bool available = NetworkInterface.GetIsNetworkAvailable();
+            Volatile.Write(ref hostNetworkAvailable, available ? 1 : 0);
+            return available;
         }
 
         private void HandleOnlineByte(byte value)
@@ -657,6 +666,7 @@ namespace BBC
             bool wasOnline = Online || tcpClient is not null;
             Volatile.Write(ref online, 0);
             Volatile.Write(ref closing, 1);
+            Volatile.Write(ref remoteAnswered, 0);
             escapePlusCount = 0;
             ClearSerialOutput();
 
@@ -692,6 +702,7 @@ namespace BBC
         {
             LoopbackEnabled = false;
             Disconnect(reportNoCarrier: false);
+            RefreshHostNetworkAvailable();
             commandLine.Clear();
             ResetConfiguration();
             escapePlusCount = 0;
@@ -778,6 +789,7 @@ namespace BBC
             lastTransmitTicks = 0;
             Volatile.Write(ref receiveDataLedUntilTicks, 0);
             Volatile.Write(ref sendDataLedUntilTicks, 0);
+            RefreshHostNetworkAvailable();
 
             lock (serialOutputSync)
             {
