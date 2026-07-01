@@ -1029,10 +1029,11 @@ namespace BBC
                 "8" => "*",
                 "9" => "(",
                 "0" => ")",
-                "-" => "_",
+                "-" => "=",
                 "^" => "~",
                 "@" => "`",
                 "[" => "{",
+                "_" => "£",
                 "]" => "}",
                 ":" => "*",
                 ";" => ":",
@@ -1364,6 +1365,19 @@ namespace BBC
                 if (suppressedTextInputCharacters > 0)
                 {
                     suppressedTextInputCharacters--;
+                    continue;
+                }
+
+                if (ch == '£')
+                {
+                    _ = BbcKeyboard.TryMapCharacter(ch, out BbcKeyBinding poundKey);
+                    bool hostShiftDown = (SDL_GetModState() & KMOD_SHIFT) != 0;
+                    bool shiftAdjusted = ApplyShiftAdjustment(poundKey.ShiftAdjustment, hostShiftDown);
+                    PressBbcMatrixKey(poundKey.MatrixKey);
+                    ReleaseBbcMatrixKey(poundKey.MatrixKey);
+                    RestoreAdjustedShift(
+                        new ActiveHostKey(poundKey.MatrixKey, poundKey.ShiftAdjustment, shiftAdjusted),
+                        hostShiftDown);
                     continue;
                 }
 
@@ -3294,6 +3308,7 @@ namespace BBC
                 ['|'] = [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
                 ['}'] = [0b01000, 0b00100, 0b00100, 0b00010, 0b00100, 0b00100, 0b01000],
                 ['~'] = [0, 0, 0b01000, 0b10101, 0b00010, 0, 0],
+                ['£'] = [0b00110, 0b01001, 0b01000, 0b11100, 0b01000, 0b01001, 0b11110],
             };
 
             public static byte[] GetRows(char character)

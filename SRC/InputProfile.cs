@@ -742,7 +742,7 @@ namespace BBC
                 RightBrace => "}",
                 Tilde => "~",
                 Section => "Section",
-                Pound => "GBP",
+                Pound => "£",
                 Underscore => "_",
                 Num0 => "0",
                 Num1 => "1",
