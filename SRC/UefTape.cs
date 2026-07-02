@@ -36,6 +36,7 @@ namespace BBC
         private int characterCyclesRemaining;
         private bool playbackStarted;
         private bool reachedEnd;
+        private bool paused;
 
         public UefTape(SerialACIA serialAcia)
         {
@@ -60,6 +61,24 @@ namespace BBC
             }
         }
 
+        public bool Paused
+        {
+            get
+            {
+                lock (sync)
+                    return paused;
+            }
+        }
+
+        public bool CanPause
+        {
+            get
+            {
+                lock (sync)
+                    return events.Count > 0 && !reachedEnd;
+            }
+        }
+
         public void Mount(string path)
         {
             List<TapeEvent> loadedEvents = ReadEvents(path);
@@ -77,6 +96,7 @@ namespace BBC
                 characterCyclesRemaining = 0;
                 playbackStarted = false;
                 reachedEnd = false;
+                paused = false;
             }
 
             serialAcia.ClearTapeReadRequest();
@@ -96,6 +116,7 @@ namespace BBC
                 characterCyclesRemaining = 0;
                 playbackStarted = false;
                 reachedEnd = false;
+                paused = false;
             }
 
             serialAcia.ClearTapeReadRequest();
@@ -111,6 +132,12 @@ namespace BBC
             lock (sync)
             {
                 if (events.Count == 0 || reachedEnd)
+                {
+                    serialAcia.SetTapePlaying(false);
+                    return;
+                }
+
+                if (paused)
                 {
                     serialAcia.SetTapePlaying(false);
                     return;
@@ -205,6 +232,7 @@ namespace BBC
                 characterCyclesRemaining = 0;
                 playbackStarted = false;
                 reachedEnd = false;
+                paused = false;
             }
 
             serialAcia.ClearTapeReadRequest();
@@ -224,6 +252,7 @@ namespace BBC
                 writer.Write(characterCyclesRemaining);
                 writer.Write(playbackStarted);
                 writer.Write(reachedEnd);
+                writer.Write(paused);
             }
         }
 
@@ -237,6 +266,7 @@ namespace BBC
             int savedCharacterCycles = reader.ReadInt32();
             bool savedPlaybackStarted = reader.ReadBoolean();
             bool savedReachedEnd = reader.ReadBoolean();
+            bool savedPaused = reader.ReadBoolean();
 
             lock (sync)
             {
@@ -248,6 +278,7 @@ namespace BBC
                 characterCyclesRemaining = 0;
                 playbackStarted = false;
                 reachedEnd = false;
+                paused = false;
             }
 
             if (!hadTape || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -267,10 +298,25 @@ namespace BBC
                 characterCyclesRemaining = Math.Max(0, savedCharacterCycles);
                 playbackStarted = savedPlaybackStarted;
                 reachedEnd = savedReachedEnd || eventIndex >= events.Count;
+                paused = savedPaused;
             }
 
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetTapePlaying(false);
+        }
+
+        public bool TogglePaused()
+        {
+            lock (sync)
+            {
+                if (events.Count == 0 || reachedEnd)
+                    return false;
+
+                paused = !paused;
+                if (paused)
+                    serialAcia.SetTapePlaying(false);
+                return paused;
+            }
         }
 
         private static int CharacterCycles(int bits)

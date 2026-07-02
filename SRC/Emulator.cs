@@ -493,7 +493,7 @@ namespace BBC
         private StreamWriter? serialPcTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 11;
+        private const int SaveStateVersion = 12;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -647,6 +647,7 @@ namespace BBC
                 SynchronizeRomManagerPause(Display);
                 SynchronizeInputMapperPause(Display);
                 DrainHostPauseRequests(Display);
+                DrainHostTapePauseRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
                 DrainHostHayesModemToggleRequests(Display);
                 DrainHostHayesLoopbackToggleRequests(Display);
@@ -677,9 +678,10 @@ namespace BBC
                 Display.Drive0ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(0)
                     || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
                 Display.Drive1ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(1);
-                Display.CassetteMotorLedActive = serialAcia.MotorRunning || serialAcia.TapePlaying;
+                Display.CassetteMotorLedActive = !tape.Paused && (serialAcia.MotorRunning || serialAcia.TapePlaying);
                 Display.CapsLockLedActive = bbcCapsLockState;
                 Display.EmulationPaused = emulationPaused;
+                Display.TapePaused = tape.Paused;
                 Display.Tube6502Enabled = tube6502 is not null;
                 Display.HayesModemEnabled = hayesModem is not null;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
@@ -1035,6 +1037,25 @@ namespace BBC
             int count = display.DrainPauseToggleRequests();
             for (int i = 0; i < count; i++)
                 SetEmulationPaused(!emulationPaused);
+        }
+
+        private void DrainHostTapePauseRequests(Display display)
+        {
+            int count = display.DrainTapePauseToggleRequests();
+            for (int i = 0; i < count; i++)
+            {
+                if (!tape.CanPause)
+                {
+                    display.ShowNotification("No tape mounted", string.Empty, 1500);
+                    continue;
+                }
+
+                bool paused = tape.TogglePaused();
+                display.ShowNotification(
+                    paused ? "Tape paused" : "Tape running",
+                    paused ? "BBC continues running" : string.Empty,
+                    paused ? 4000 : 1500);
+            }
         }
 
         private void DrainHostTube6502ToggleRequests(Display display)

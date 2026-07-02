@@ -139,6 +139,7 @@ namespace BBC
         private int suppressedTextInputCharacters;
         private int pendingTraceToggleRequests;
         private int pendingPauseToggleRequests;
+        private int pendingTapePauseToggleRequests;
         private int pendingFrameAdvanceRequests;
         private int pendingTube6502ToggleRequests;
         private int pendingHayesModemToggleRequests;
@@ -241,6 +242,8 @@ namespace BBC
         public bool ShiftLockLedActive { get; set; }
 
         public bool EmulationPaused { get; set; }
+
+        public bool TapePaused { get; set; }
 
         public bool Tube6502Enabled { get; set; }
 
@@ -577,6 +580,13 @@ namespace BBC
         {
             int count = pendingPauseToggleRequests;
             pendingPauseToggleRequests = 0;
+            return count;
+        }
+
+        public int DrainTapePauseToggleRequests()
+        {
+            int count = pendingTapePauseToggleRequests;
+            pendingTapePauseToggleRequests = 0;
             return count;
         }
 
@@ -2478,6 +2488,9 @@ namespace BBC
                 case MenuCommand.TogglePause:
                     pendingPauseToggleRequests++;
                     break;
+                case MenuCommand.ToggleTapePause:
+                    pendingTapePauseToggleRequests++;
+                    break;
                 case MenuCommand.ToggleTube6502:
                     pendingTube6502ToggleRequests++;
                     break;
@@ -2632,6 +2645,7 @@ namespace BBC
                 MenuCommand.ToggleScanlines => scanlinesEnabled,
                 MenuCommand.ToggleFullScreen => fullScreenEnabled,
                 MenuCommand.TogglePause => EmulationPaused,
+                MenuCommand.ToggleTapePause => TapePaused,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
                 MenuCommand.ToggleHayesLoopback => HayesLoopbackEnabled,
@@ -3804,6 +3818,12 @@ namespace BBC
                 return;
             }
 
+            if (keySym == SDLK_P && (modifiers & KMOD_CTRL) != 0 && (modifiers & KMOD_SHIFT) != 0)
+            {
+                pendingTapePauseToggleRequests++;
+                return;
+            }
+
             if (keySym == SDLK_P && (modifiers & KMOD_CTRL) != 0)
             {
                 pendingPauseToggleRequests++;
@@ -4317,6 +4337,7 @@ namespace BBC
             ControlBreak,
             PowerReset,
             TogglePause,
+            ToggleTapePause,
             ToggleTube6502,
             ToggleHayesModem,
             ToggleHayesLoopback,
@@ -4343,7 +4364,8 @@ namespace BBC
                     new MenuItem("6502 Co-Processor", "", MenuCommand.ToggleTube6502),
                     new MenuItem("Hayes Modem", "", MenuCommand.ToggleHayesModem),
                     MenuSeparator(),
-                    new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause)
+                    new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause),
+                    new MenuItem("Tape pause", "Ctrl+Shift+P", MenuCommand.ToggleTapePause)
                 ]),
                 new MenuDefinition("ROM Manager", [], MenuCommand.OpenRomManager),
                 new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper),
