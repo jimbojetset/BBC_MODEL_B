@@ -35,6 +35,11 @@ namespace BBC
         private const int MenuShortcutGap = 18;
         private const int TubeMenuStatusGap = 6;
         private const string TubeMenuStatusLabel = "SECOND PROCESSOR";
+        private const int TubeCoProcessorImageWidth = 72;
+        private const int TubeCoProcessorImageHeight = 47;
+        private const int TubeCoProcessorImageRightInset = 12;
+        private const int TubeCoProcessorImageTopInset = 4;
+        private const string TubeCoProcessorImageResourceName = "BBC.TubeCoProcessor.png";
         private const int RomSlotColumns = 8;
         private const int RomSlotRows = 2;
         private const int RomSlotWidth = 58;
@@ -151,6 +156,7 @@ namespace BBC
         private IntPtr renderer;
         private IntPtr texture;
         private IntPtr scanlineTexture;
+        private IntPtr tubeCoProcessorTexture;
         private IntPtr emptyDriveGlyphTexture;
         private IntPtr mountedDriveGlyphTexture;
         private IntPtr emptyRomSocketTexture;
@@ -316,6 +322,7 @@ namespace BBC
             ThrowIfNull(texture, "SDL_CreateTexture");
 
             scanlineTexture = CreateScanlineTexture(width, height);
+            tubeCoProcessorTexture = CreateTubeCoProcessorTexture();
             emptyDriveGlyphTexture = CreateDriveGlyphTexture(0xFF404040);
             mountedDriveGlyphTexture = CreateDriveGlyphTexture(0xFF005020);
             emptyRomSocketTexture = CreateRomSocketTexture(false);
@@ -645,6 +652,7 @@ namespace BBC
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
             DrawTopBorderStatusMessage();
+            DrawTubeCoProcessorImage();
             DrawDriveGlyphs();
             DrawMenuBar();
             if (IsBottomOverlayMenu(activeMenuIndex))
@@ -739,6 +747,19 @@ namespace BBC
 
             DrawRoundLed(ledCenterX, ledCenterY, StatusLedDiameter / 2, 220, 0, 0);
             DrawRendererText(TubeMenuStatusLabel, labelX, 8, 190, 190, 190);
+        }
+
+        private void DrawTubeCoProcessorImage()
+        {
+            if (!Tube6502Enabled || tubeCoProcessorTexture == IntPtr.Zero)
+                return;
+
+            SdlRect target = new SdlRect(
+                logicalWidth - TubeCoProcessorImageWidth - TubeCoProcessorImageRightInset,
+                TopMenuHeight + TubeCoProcessorImageTopInset,
+                TubeCoProcessorImageWidth,
+                TubeCoProcessorImageHeight);
+            _ = SDL_RenderCopy(renderer, tubeCoProcessorTexture, IntPtr.Zero, ref target);
         }
 
         private void DrawOpenMenu(int menuIndex)
@@ -3374,6 +3395,45 @@ namespace BBC
             return glyph;
         }
 
+        private IntPtr CreateTubeCoProcessorTexture()
+        {
+            if (!TryLoadTubeCoProcessorPng(out uint[] pixels, out int width, out int height))
+                return IntPtr.Zero;
+
+            IntPtr image = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
+            if (image == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            _ = SDL_SetTextureBlendMode(image, SDL_BLENDMODE_BLEND);
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                _ = SDL_UpdateTexture(image, IntPtr.Zero, handle.AddrOfPinnedObject(), width * sizeof(uint));
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return image;
+        }
+
+        private static bool TryLoadTubeCoProcessorPng(out uint[] pixels, out int width, out int height)
+        {
+            pixels = [];
+            width = 0;
+            height = 0;
+            using Stream? resource = typeof(Display).Assembly.GetManifestResourceStream(TubeCoProcessorImageResourceName);
+            if (resource is null)
+                return false;
+
+            using MemoryStream pngStream = new MemoryStream();
+            resource.CopyTo(pngStream);
+            byte[] png = pngStream.ToArray();
+            return TryReadPng(png, out pixels, out width, out height);
+        }
+
         private IntPtr CreateRomSocketTexture(bool occupied)
         {
             IntPtr texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, RomSlotWidth, RomSlotHeight);
@@ -3463,6 +3523,153 @@ namespace BBC
             }
         }
 
+        private static bool TryReadPng(ReadOnlySpan<byte> png, out uint[] pixels, out int width, out int height)
+        {
+            pixels = [];
+            width = 0;
+            height = 0;
+            ReadOnlySpan<byte> signature = [0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            if (png.Length < signature.Length || !png[..signature.Length].SequenceEqual(signature))
+                return false;
+
+            using MemoryStream idat = new MemoryStream();
+            int offset = signature.Length;
+            bool sawHeader = false;
+            int bytesPerPixel = 0;
+            while (offset + 12 <= png.Length)
+            {
+                int length = ReadBigEndian(png, offset);
+                offset += 4;
+                if (length < 0 || offset + 4 + length + 4 > png.Length)
+                    return false;
+
+                ReadOnlySpan<byte> type = png.Slice(offset, 4);
+                offset += 4;
+                ReadOnlySpan<byte> data = png.Slice(offset, length);
+                offset += length;
+                offset += 4;
+
+                if (type.SequenceEqual("IHDR"u8))
+                {
+                    if (data.Length != 13 || data[8] != 8 || data[10] != 0 || data[11] != 0 || data[12] != 0)
+                        return false;
+
+                    width = ReadBigEndian(data, 0);
+                    height = ReadBigEndian(data, 4);
+                    if (width <= 0 || height <= 0)
+                        return false;
+
+                    bytesPerPixel = data[9] switch
+                    {
+                        2 => 3,
+                        6 => 4,
+                        _ => 0
+                    };
+
+                    if (bytesPerPixel == 0)
+                        return false;
+
+                    sawHeader = true;
+                    continue;
+                }
+
+                if (type.SequenceEqual("IDAT"u8))
+                {
+                    idat.Write(data);
+                    continue;
+                }
+
+                if (type.SequenceEqual("IEND"u8))
+                    break;
+            }
+
+            if (!sawHeader || idat.Length == 0)
+                return false;
+
+            int stride = width * bytesPerPixel;
+            byte[] raw = new byte[(stride + 1) * height];
+            idat.Position = 0;
+            using (ZLibStream zlib = new ZLibStream(idat, CompressionMode.Decompress))
+            {
+                int bytesRead = 0;
+                while (bytesRead < raw.Length)
+                {
+                    int read = zlib.Read(raw, bytesRead, raw.Length - bytesRead);
+                    if (read == 0)
+                        break;
+
+                    bytesRead += read;
+                }
+
+                if (bytesRead != raw.Length)
+                    return false;
+            }
+
+            pixels = new uint[width * height];
+            byte[] previous = new byte[stride];
+            byte[] current = new byte[stride];
+
+            int rawOffset = 0;
+            for (int y = 0; y < height; y++)
+            {
+                byte filter = raw[rawOffset++];
+                raw.AsSpan(rawOffset, stride).CopyTo(current.AsSpan());
+                rawOffset += stride;
+
+                if (!UnfilterPngRow(current, previous, filter, bytesPerPixel))
+                    return false;
+
+                int pixelOffset = y * width;
+                for (int x = 0; x < width; x++)
+                {
+                    int source = x * bytesPerPixel;
+                    uint alpha = bytesPerPixel == 4 ? current[source + 3] : 255u;
+                    pixels[pixelOffset + x] =
+                        (alpha << 24)
+                        | ((uint)current[source] << 16)
+                        | ((uint)current[source + 1] << 8)
+                        | current[source + 2];
+                }
+
+                current.CopyTo(previous, 0);
+            }
+
+            return true;
+        }
+
+        private static bool UnfilterPngRow(Span<byte> row, ReadOnlySpan<byte> previous, byte filter, int bytesPerPixel)
+        {
+            for (int i = 0; i < row.Length; i++)
+            {
+                byte left = i >= bytesPerPixel ? row[i - bytesPerPixel] : (byte)0;
+                byte above = previous[i];
+                byte upperLeft = i >= bytesPerPixel ? previous[i - bytesPerPixel] : (byte)0;
+                row[i] = filter switch
+                {
+                    0 => row[i],
+                    1 => (byte)(row[i] + left),
+                    2 => (byte)(row[i] + above),
+                    3 => (byte)(row[i] + ((left + above) >> 1)),
+                    4 => (byte)(row[i] + Paeth(left, above, upperLeft)),
+                    _ => row[i]
+                };
+            }
+
+            return filter <= 4;
+        }
+
+        private static byte Paeth(byte left, byte above, byte upperLeft)
+        {
+            int estimate = left + above - upperLeft;
+            int leftDistance = Math.Abs(estimate - left);
+            int aboveDistance = Math.Abs(estimate - above);
+            int upperLeftDistance = Math.Abs(estimate - upperLeft);
+            if (leftDistance <= aboveDistance && leftDistance <= upperLeftDistance)
+                return left;
+
+            return aboveDistance <= upperLeftDistance ? above : upperLeft;
+        }
+
         public void Present(ReadOnlySpan<uint> pixels)
         {
             CopyFrame(pixels);
@@ -3484,6 +3691,12 @@ namespace BBC
             {
                 SDL_DestroyTexture(scanlineTexture);
                 scanlineTexture = IntPtr.Zero;
+            }
+
+            if (tubeCoProcessorTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(tubeCoProcessorTexture);
+                tubeCoProcessorTexture = IntPtr.Zero;
             }
 
             if (emptyDriveGlyphTexture != IntPtr.Zero)
@@ -4665,6 +4878,14 @@ namespace BBC
             }
 
             return crc;
+        }
+
+        private static int ReadBigEndian(ReadOnlySpan<byte> source, int offset)
+        {
+            return (source[offset] << 24)
+                | (source[offset + 1] << 16)
+                | (source[offset + 2] << 8)
+                | source[offset + 3];
         }
 
         private static void WriteBigEndian(Span<byte> destination, int offset, int value)

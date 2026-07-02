@@ -20,6 +20,8 @@
     <None Include="Assets\*.wav">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Remove="Assets\co-processor.png" Condition="Exists('Assets\co-processor.png')" />
+    <EmbeddedResource Include="Assets\co-processor.png" LogicalName="BBC.TubeCoProcessor.png" Condition="Exists('Assets\co-processor.png')" />
     <None Update="ROMS\*.rom">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
