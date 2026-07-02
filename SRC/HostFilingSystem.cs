@@ -150,7 +150,10 @@ namespace BBC
 
             if (IsTapeCommand(command))
             {
-                ReturnFromSubroutine(cpu);
+                cpu.registers.A = 0x8C;
+                cpu.registers.X = 0;
+                cpu.registers.Y = 0;
+                cpu.registers.PC = OsbyteEntry;
                 return true;
             }
 
@@ -359,6 +362,13 @@ namespace BBC
             return TryReadOptNumber(command, out int option) && option == 1;
         }
 
+        private static bool IsTapeCommand(string command)
+        {
+            string trimmed = command.Trim();
+            return trimmed.Length == 4
+                && string.Equals(trimmed, "TAPE", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool TryReadOptNumber(string command, out int option)
         {
             option = -1;
@@ -378,13 +388,6 @@ namespace BBC
 
             option = trimmed[offset] - '0';
             return offset + 1 == trimmed.Length || trimmed[offset + 1] == ',' || char.IsWhiteSpace(trimmed[offset + 1]);
-        }
-
-        private static bool IsTapeCommand(string command)
-        {
-            string trimmed = command.Trim();
-            return trimmed.Length == 4
-                && string.Equals(trimmed, "TAPE", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool TryHandleMouseCommand(string command)

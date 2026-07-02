@@ -70,6 +70,11 @@ namespace BBC.CPU
 
         public bool IrqLineAsserted => Volatile.Read(ref irqLineAsserted) != 0;
 
+        public void SetOverflowInput()
+        {
+            registers.Flags.V = true;
+        }
+
         public void InitiateNMI(ulong value)
         {
             NMI_Buffer.Enqueue(value);

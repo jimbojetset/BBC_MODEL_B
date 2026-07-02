@@ -4499,13 +4499,13 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc, archive, or file'; $dialog.Filter = 'BBC discs and archives (*.ssd;*.dsd;*.zip)|*.ssd;*.dsd;*.zip|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc, tape, archive, or file'; $dialog.Filter = 'BBC media (*.ssd;*.dsd;*.uef;*.zip)|*.ssd;*.dsd;*.uef;*.zip|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc, archive, or file\")");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc, tape, archive, or file\")");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc, archive, or file");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc, tape, archive, or file");
             }
             catch
             {

@@ -400,7 +400,8 @@ namespace BBC
         private static readonly bool InitialHayesModemEnabled = Environment.GetEnvironmentVariable("BBC_HAYES_MODEM") == "1";
         private static readonly bool SerialPcTraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE") == "1";
         private static readonly bool SerialPcTraceAutoEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
-        private static readonly string? SerialPcTracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE_FILE");
+        private static readonly string? SerialPcTracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE_FILE")
+            ?? (SerialPcTraceAutoEnabled ? SerialACIA.TracePath : null);
         private const string OsRomMarker = "BBC Computer";
         private const string AmxMouseRomMarker = "AMX Mouse Support";
         private const int TargetFramesPerSecond = 50;
@@ -455,6 +456,7 @@ namespace BBC
         private readonly System6522Via systemVia;
         private readonly User6522Via userVia = new User6522Via();
         private readonly SerialACIA serialAcia = new SerialACIA();
+        private readonly UefTape tape;
         private readonly uPD7002_ADC adc = new uPD7002_ADC();
         private readonly HostFilingSystem hostFilingSystem;
         private readonly Intel8271_Disk discController;
@@ -491,7 +493,7 @@ namespace BBC
         private StreamWriter? serialPcTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 9;
+        private const int SaveStateVersion = 11;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -526,6 +528,7 @@ namespace BBC
             discDriveSound = DiscDriveSound.TryLoadDefault();
             Sound.DiscDriveSound = discDriveSound;
             systemVia = new System6522Via(Sound);
+            tape = new UefTape(serialAcia);
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
             hostFilingSystem.QueueKeyboardScript = QueueExecScript;
@@ -553,6 +556,8 @@ namespace BBC
             Cpu.OnCyclesExecuted = AdvanceDeviceCycles;
             Cpu.OnBeforeInstruction = HandleHostFirmwareHooks;
             Cpu.OnAccessStretch = ComputeBusStretchCycles;
+            serialAcia.ByteReceived += Cpu.SetOverflowInput;
+            serialAcia.IrqChanged += _ => UpdateCpuIrqLine();
             adc.EndOfConversionChanged += eocActive =>
             {
                 systemVia.SignalAdcEndOfConversion(eocActive);
@@ -672,7 +677,7 @@ namespace BBC
                 Display.Drive0ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(0)
                     || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
                 Display.Drive1ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(1);
-                Display.CassetteMotorLedActive = serialAcia.MotorRunning;
+                Display.CassetteMotorLedActive = serialAcia.MotorRunning || serialAcia.TapePlaying;
                 Display.CapsLockLedActive = bbcCapsLockState;
                 Display.EmulationPaused = emulationPaused;
                 Display.Tube6502Enabled = tube6502 is not null;
@@ -786,6 +791,18 @@ namespace BBC
             if (IsZipArchivePath(path))
                 return MountZipArchive(path, autoRunDisc, requestedDrive);
 
+            if (IsTapeImagePath(path))
+            {
+                tape.Mount(path);
+                hostFilingSystem.Unmount();
+
+                Console.WriteLine($"Mounted UEF: {tape.MountedFileName}");
+                Display?.ShowNotification($"{tape.MountedFileName} loaded", "Use *TAPE then CHAIN \"\"", 4000);
+                if (autoRunDisc)
+                    QueueMountedTapeAutoRun();
+                return false;
+            }
+
             if (IsDiscImagePath(path))
             {
                 if (discController.HasMountedDisc && discController.ImageDirty)
@@ -807,6 +824,11 @@ namespace BBC
 
             Console.WriteLine($"Mounted:    {hostFilingSystem.MountedFileName}");
             return false;
+        }
+
+        public void QueueMountedTapeAutoRun()
+        {
+            QueueBootScript("*TAPE\rCHAIN \"\"");
         }
 
         private bool MountZipArchive(string path, bool autoRunDisc, int? requestedDrive)
@@ -1000,6 +1022,7 @@ namespace BBC
             Video.Tick(cycles);
             userVia.Tick(cycles);
             discController.Tick(cycles);
+            tape.Tick(cycles);
             adc.Tick(cycles);
             TickCapsLockTap(cycles);
             tube6502?.AdvanceHostCycles(cycles);
@@ -1264,7 +1287,7 @@ namespace BBC
 
         private void UpdateCpuIrqLine()
         {
-            Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted || tubeHostIrqAsserted);
+            Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted || serialAcia.IrqAsserted || tubeHostIrqAsserted);
         }
 
         private bool HandleHostFirmwareHooks()
@@ -1390,12 +1413,6 @@ namespace BBC
             }
 
             if (Cpu.registers.A == 0x8B)
-            {
-                ReturnFromFirmwareSubroutine();
-                return true;
-            }
-
-            if (Cpu.registers.A == 0x8C)
             {
                 ReturnFromFirmwareSubroutine();
                 return true;
@@ -1791,6 +1808,7 @@ namespace BBC
                 systemVia.SaveState(writer);
                 userVia.SaveState(writer);
                 serialAcia.SaveState(writer);
+                tape.SaveState(writer);
                 writer.Write(hayesModem is not null);
                 if (hayesModem is not null)
                     WriteStateBlock(writer, hayesModem.SaveState);
@@ -1854,6 +1872,7 @@ namespace BBC
                 systemVia.LoadState(reader);
                 userVia.LoadState(reader);
                 serialAcia.LoadState(reader);
+                tape.LoadState(reader);
                 bool saveHasHayesModem = reader.ReadBoolean();
                 if (saveHasHayesModem)
                 {
@@ -3280,6 +3299,11 @@ namespace BBC
                 || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsTapeImagePath(string path)
+        {
+            return string.Equals(Path.GetExtension(path), ".uef", StringComparison.OrdinalIgnoreCase);
+        }
+
         private void TraceSerialPc(string operation, ushort address, byte value)
         {
             bool highSignal = address == 0xFE09
@@ -3288,7 +3312,7 @@ namespace BBC
             if (!SerialPcTraceEnabled && !(SerialPcTraceAutoEnabled && highSignal))
                 return;
 
-            string line = $"[serial-pc] PC ${Cpu.registers.PC & 0xFFFF:X4} {operation} ${address:X4} = ${value:X2} I={(Cpu.registers.Flags.I ? 1 : 0)}";
+            string line = $"[serial-pc] PC ${Cpu.registers.PC & 0xFFFF:X4} {operation} ${address:X4} = ${value:X2} I={(Cpu.registers.Flags.I ? 1 : 0)} V={(Cpu.registers.Flags.V ? 1 : 0)}{FormatTapeStateTrace()}";
             if (line == lastSerialPcTraceLine)
                 return;
 
@@ -3299,8 +3323,23 @@ namespace BBC
                 return;
             }
 
+            if (SerialPcTracePath == SerialACIA.TracePath)
+            {
+                SerialACIA.WriteTraceLine(line);
+                return;
+            }
+
             serialPcTraceWriter ??= new StreamWriter(SerialPcTracePath, append: false) { AutoFlush = true };
             serialPcTraceWriter.WriteLine(line);
+        }
+
+        private string FormatTapeStateTrace()
+        {
+            if (!SerialPcTraceAutoEnabled && !SerialPcTraceEnabled)
+                return string.Empty;
+
+            byte[] memory = Memory.Memory;
+            return $" C2=${memory[0x00C2]:X2} BC=${memory[0x00BC]:X2} BD=${memory[0x00BD]:X2} C0=${memory[0x00C0]:X2} C8=${memory[0x03C8]:X2} C9=${memory[0x03C9]:X2}";
         }
 
         private void TraceSerialPcMessage(string line)

@@ -28,9 +28,12 @@ namespace BBC
         private const byte AciaStatusClearToSendInactive = 0x08;
         private const byte AciaStatusInterruptRequest = 0x80;
 
-        private static readonly int[] SerialUlaBaudRates = { 19200, 1200, 4800, 150, 9600, 300, 2400, 75 };
+        private static readonly int[] SerialUlaBaudRates = { 19200, 9600, 4800, 2400, 1200, 300, 150, 75 };
         private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
+        public static readonly string TracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE_FILE") ?? "bbc-serial-trace.log";
         private static readonly bool LoopbackEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_LOOPBACK") == "1";
+        private static readonly object TraceSync = new object();
+        private static bool traceStarted;
 
         private readonly object sync = new object();
         private readonly Queue<byte> receiveBytes = new Queue<byte>();
@@ -40,10 +43,22 @@ namespace BBC
         private byte serialUlaControl;
         private long transmitReadyAtTicks;
         private bool transmitInterruptEnabled;
+        private bool tapeReadRequested;
+        private bool dataCarrierDetectLatched;
+        private bool receiveStatusOverflowPending;
 
         public bool MotorRunning { get; private set; }
 
         public bool TapePlaying { get; private set; }
+
+        public bool TapeReadRequested
+        {
+            get
+            {
+                lock (sync)
+                    return tapeReadRequested;
+            }
+        }
 
         public bool CarrierPresent { get; private set; } = true;
 
@@ -80,6 +95,8 @@ namespace BBC
 
         public event Action<bool>? IrqChanged;
 
+        public event Action? ByteReceived;
+
         public static bool IsAddress(ushort address)
         {
             return address is >= AciaStart and <= AciaEnd
@@ -93,6 +110,8 @@ namespace BBC
                 byte value = (address & 1) == 0
                     ? ReadAciaStatus()
                     : ReadAciaData();
+                lock (sync)
+                    tapeReadRequested = true;
                 TraceRead(address, value);
                 return value;
             }
@@ -124,12 +143,24 @@ namespace BBC
 
         public void QueueReceivedByte(byte value)
         {
+            QueueReceivedByte(value, latchDataCarrierDetect: false);
+        }
+
+        public void QueueTapeByte(byte value)
+        {
+            QueueReceivedByte(value, latchDataCarrierDetect: false);
+        }
+
+        private void QueueReceivedByte(byte value, bool latchDataCarrierDetect)
+        {
             byte received = FormatReceivedByte(value);
             lock (sync)
             {
                 receiveBytes.Enqueue(received);
+                if (latchDataCarrierDetect)
+                    dataCarrierDetectLatched = true;
+                receiveStatusOverflowPending = true;
             }
-
             UpdateInterruptLine();
             Trace($"rx <= ${received:X2}");
         }
@@ -163,6 +194,9 @@ namespace BBC
                 aciaControl = 0;
                 serialUlaControl = 0;
                 transmitReadyAtTicks = 0;
+                tapeReadRequested = false;
+                dataCarrierDetectLatched = false;
+                receiveStatusOverflowPending = false;
                 lastTracedReads.Clear();
             }
 
@@ -174,7 +208,21 @@ namespace BBC
         public void SetCarrierPresent(bool present)
         {
             CarrierPresent = present;
+            if (!present)
+                dataCarrierDetectLatched = true;
             UpdateInterruptLine();
+        }
+
+        public void PulseTapeCarrierDetect()
+        {
+            lock (sync)
+            {
+                CarrierPresent = true;
+                dataCarrierDetectLatched = true;
+            }
+
+            UpdateInterruptLine();
+            ByteReceived?.Invoke();
         }
 
         public void SetClearToSend(bool clear)
@@ -187,6 +235,30 @@ namespace BBC
         {
             TapePlaying = false;
             MotorRunning = false;
+            SetCarrierPresent(true);
+            ClearTapeReadRequest();
+        }
+
+        public void SetTapePlaying(bool playing)
+        {
+            TapePlaying = playing;
+        }
+
+        public void ClearTapeReadRequest()
+        {
+            lock (sync)
+                tapeReadRequested = false;
+        }
+
+        public void ClearTapeCarrierDetect()
+        {
+            lock (sync)
+            {
+                CarrierPresent = true;
+                dataCarrierDetectLatched = false;
+            }
+
+            UpdateInterruptLine();
         }
 
         public void SaveState(BinaryWriter writer)
@@ -198,6 +270,8 @@ namespace BBC
                 writer.Write(MotorRunning);
                 writer.Write(TapePlaying);
                 writer.Write(CarrierPresent);
+                writer.Write(dataCarrierDetectLatched);
+                writer.Write(receiveStatusOverflowPending);
                 writer.Write(ClearToSend);
                 WriteQueue(writer, receiveBytes);
                 WriteQueue(writer, transmitBytes);
@@ -213,6 +287,8 @@ namespace BBC
                 MotorRunning = reader.ReadBoolean();
                 TapePlaying = reader.ReadBoolean();
                 CarrierPresent = reader.ReadBoolean();
+                dataCarrierDetectLatched = reader.ReadBoolean();
+                receiveStatusOverflowPending = reader.ReadBoolean();
                 ClearToSend = reader.ReadBoolean();
                 ReadQueue(reader, receiveBytes);
                 ReadQueue(reader, transmitBytes);
@@ -226,6 +302,18 @@ namespace BBC
         private byte ReadAciaStatus()
         {
             byte status = BuildAciaStatus();
+            bool signalOverflow = false;
+            lock (sync)
+            {
+                if ((status & AciaStatusReceiveDataFull) != 0 && receiveStatusOverflowPending)
+                {
+                    receiveStatusOverflowPending = false;
+                    signalOverflow = true;
+                }
+            }
+
+            if (signalOverflow)
+                ByteReceived?.Invoke();
             SetInterruptLine((status & AciaStatusInterruptRequest) != 0);
             return status;
         }
@@ -248,7 +336,7 @@ namespace BBC
                     status |= AciaStatusReceiveDataFull;
             }
 
-            if (!CarrierPresent)
+            if (!CarrierPresent || dataCarrierDetectLatched)
                 status |= AciaStatusDataCarrierDetect;
 
             if (ReceiveInterruptEnabled() && (status & AciaStatusReceiveDataFull) != 0)
@@ -266,6 +354,7 @@ namespace BBC
             {
                 if (receiveBytes.TryDequeue(out byte value))
                 {
+                    dataCarrierDetectLatched = false;
                     UpdateInterruptLine();
                     return value;
                 }
@@ -464,7 +553,7 @@ namespace BBC
         private static void Trace(string message)
         {
             if (TraceEnabled)
-                Console.WriteLine($"[serial] {message}");
+                WriteTraceLine($"[serial] {message}");
         }
 
         private void TraceRead(ushort address, byte value)
@@ -476,7 +565,23 @@ namespace BBC
                 return;
 
             lastTracedReads[address] = value;
-            Console.WriteLine($"[serial] read ${address:X4} => ${value:X2}");
+            WriteTraceLine($"[serial] read ${address:X4} => ${value:X2}");
+        }
+
+        public static void WriteTraceLine(string line)
+        {
+            lock (TraceSync)
+            {
+                if (!traceStarted)
+                {
+                    File.WriteAllText(TracePath, string.Empty);
+                    traceStarted = true;
+                }
+
+                File.AppendAllText(TracePath, line + Environment.NewLine);
+            }
+
+            Console.WriteLine(line);
         }
     }
 }
