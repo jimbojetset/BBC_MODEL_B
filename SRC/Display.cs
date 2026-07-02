@@ -71,6 +71,9 @@ namespace BBC
         private const int DriveGlyphHeight = 22;
         private const int DriveGlyphMargin = 8;
         private const int DriveGlyphGap = 5;
+        private const byte DriveGlyphBodyRed = 0xb6;
+        private const byte DriveGlyphBodyGreen = 0xb1;
+        private const byte DriveGlyphBodyBlue = 0x9e;
         private const int DriveNumberWidth = 3;
         private const int DriveNumberHeight = 5;
         private const int DriveNumberGap = 1;
@@ -2815,9 +2818,7 @@ namespace BBC
             SdlRect glyphRect = new SdlRect(glyphX, glyphY, DriveGlyphWidth, DriveGlyphHeight);
             int driveMenuIndex = GetDriveMenuIndex(drive);
             bool active = activeMenuIndex == driveMenuIndex || hoveredMenuIndex == driveMenuIndex;
-            byte body = active ? (byte)245 : (byte)235;
-            byte bodyGreen = active ? (byte)236 : (byte)226;
-            _ = SDL_SetRenderDrawColor(renderer, body, bodyGreen, 174, 255);
+            _ = SDL_SetRenderDrawColor(renderer, DriveGlyphBodyRed, DriveGlyphBodyGreen, DriveGlyphBodyBlue, 255);
             _ = SDL_RenderFillRect(renderer, ref glyphRect);
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             DrawRectOutline(glyphRect);
