@@ -81,6 +81,7 @@ namespace BBC.CPU
         }
 
         private int cyclesThisOperation = 0;
+        private int cyclesNotifiedThisInstruction;
         private long totalCycles;
         public long TotalCycles => Interlocked.Read(ref totalCycles);
         public Action<int>? OnCyclesExecuted;
@@ -304,6 +305,7 @@ namespace BBC.CPU
                         ushort pcBefore = (ushort)registers.PC;
                         byte opcodeBefore = PeekByte(pcBefore);
                         int beforeCycles = cyclesThisOperation;
+                        cyclesNotifiedThisInstruction = 0;
                         bool handledByHost = OnBeforeInstruction?.Invoke() == true;
 
                         if (!handledByHost)
@@ -330,8 +332,12 @@ namespace BBC.CPU
                             if (handledByHost)
                                 cyclesThisOperation += deltaCycles;
 
-                            Interlocked.Add(ref totalCycles, deltaCycles);
-                            OnCyclesExecuted?.Invoke(deltaCycles);
+                            int remainingCycles = Math.Max(0, deltaCycles - cyclesNotifiedThisInstruction);
+                            if (remainingCycles > 0)
+                            {
+                                Interlocked.Add(ref totalCycles, remainingCycles);
+                                OnCyclesExecuted?.Invoke(remainingCycles);
+                            }
                         }
                         OnInstructionExecuted?.Invoke(pcBefore, opcodeBefore, deltaCycles, handledByHost);
                         if (jammed)
@@ -1581,7 +1587,11 @@ namespace BBC.CPU
         {
             ulong baseAddr = Absolute();
             ulong addr = baseAddr + registers.X;
-            if (CrossBoundary(addr, baseAddr) && checkBoundary) { cyclesThisOperation += 1; }
+            if (CrossBoundary(addr, baseAddr) && checkBoundary)
+            {
+                cyclesThisOperation += 1;
+                NotifyCyclesDuringInstruction(1);
+            }
             return addr & 0xFFFF;
         }
 
@@ -1590,8 +1600,22 @@ namespace BBC.CPU
         {
             ulong baseAddr = Absolute();
             ulong addr = baseAddr + registers.Y;
-            if (CrossBoundary(addr, baseAddr) && checkBoundary) { cyclesThisOperation += 1; }
+            if (CrossBoundary(addr, baseAddr) && checkBoundary)
+            {
+                cyclesThisOperation += 1;
+                NotifyCyclesDuringInstruction(1);
+            }
             return addr & 0xFFFF;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private void WriteIndexedAbsolute(byte index, byte value)
+        {
+            ulong baseAddr = Absolute();
+            ulong addr = (baseAddr + index) & 0xFFFF;
+            ulong dummyAddr = (baseAddr & 0xFF00) | ((baseAddr + index) & 0x00FF);
+            ReadByteFromMemory(dummyAddr);
+            WriteByteToMemory(addr, value);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -1633,8 +1657,25 @@ namespace BBC.CPU
             byte value2 = (byte)(ReadByteFromMemory(value += 1) & 0xFF);
             ulong value3 = (ulong)((value2 << 8) | value1);
             ulong addr = value3 + registers.Y;
-            if (CrossBoundary(addr, value3) && checkBoundary) { cyclesThisOperation += 1; }
+            if (CrossBoundary(addr, value3) && checkBoundary)
+            {
+                cyclesThisOperation += 1;
+                NotifyCyclesDuringInstruction(1);
+            }
             return addr & 0xFFFF;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        private void WriteIndirectY(byte value)
+        {
+            byte zeroPage = GetNextByteInstruction();
+            byte low = ReadByteFromMemory(zeroPage);
+            byte high = ReadByteFromMemory((byte)(zeroPage + 1));
+            ulong baseAddr = (ulong)((high << 8) | low);
+            ulong addr = (baseAddr + registers.Y) & 0xFFFF;
+            ulong dummyAddr = (baseAddr & 0xFF00) | ((baseAddr + registers.Y) & 0x00FF);
+            ReadByteFromMemory(dummyAddr);
+            WriteByteToMemory(addr, value);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1788,13 +1829,13 @@ namespace BBC.CPU
 
         private void STA_ABX()
         {
-            WriteByteToMemory(X_Indexed_Absolute(false), registers.A);
+            WriteIndexedAbsolute(registers.X, registers.A);
             cyclesThisOperation += 5;
         }
 
         private void STA_ABY()
         {
-            WriteByteToMemory(Y_Indexed_Absolute(false), registers.A);
+            WriteIndexedAbsolute(registers.Y, registers.A);
             cyclesThisOperation += 5;
         }
 
@@ -1818,7 +1859,7 @@ namespace BBC.CPU
 
         private void STA_ZPIY()
         {
-            WriteByteToMemory(Zero_Page_Indirect_Y_Indexed(false), registers.A);
+            WriteIndirectY(registers.A);
             cyclesThisOperation += 6;
         }
 
@@ -2001,7 +2042,7 @@ namespace BBC.CPU
             ulong addr = Absolute();
             byte value1 = ReadByteFromMemory(addr);
             byte value2 = (byte)((value1 + (~0x01)) + 1);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value1, value2);
             Set_FlagsNZ(value2);
             cyclesThisOperation += 6;
         }
@@ -2011,7 +2052,7 @@ namespace BBC.CPU
             ulong addr = X_Indexed_Absolute(false);
             byte value1 = ReadByteFromMemory(addr);
             byte value2 = (byte)((value1 + (~0x01)) + 1);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value1, value2);
             Set_FlagsNZ(value2);
             cyclesThisOperation += 7;
         }
@@ -2021,7 +2062,7 @@ namespace BBC.CPU
             ulong addr = Zero_Page();
             byte value1 = ReadByteFromMemory(addr);
             byte value2 = (byte)((value1 + (~0x01)) + 1);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value1, value2);
             Set_FlagsNZ(value2);
             cyclesThisOperation += 5;
         }
@@ -2031,7 +2072,7 @@ namespace BBC.CPU
             ulong addr = X_Indexed_Zero_Page();
             byte value1 = ReadByteFromMemory(addr);
             byte value2 = (byte)((value1 + (~0x01)) + 1);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value1, value2);
             Set_FlagsNZ(value2);
             cyclesThisOperation += 6;
         }
@@ -2060,9 +2101,9 @@ namespace BBC.CPU
         {
             ulong addr = Absolute();
             byte value1 = ReadByteFromMemory(addr);
-            value1++;
-            WriteByteToMemory(addr, value1);
-            Set_FlagsNZ(value1);
+            byte value2 = (byte)(value1 + 1);
+            WriteReadModifyWrite(addr, value1, value2);
+            Set_FlagsNZ(value2);
             cyclesThisOperation += 6;
         }
 
@@ -2070,9 +2111,9 @@ namespace BBC.CPU
         {
             ulong addr = X_Indexed_Absolute(false);
             byte value1 = ReadByteFromMemory(addr);
-            value1++;
-            WriteByteToMemory(addr, value1);
-            Set_FlagsNZ(value1);
+            byte value2 = (byte)(value1 + 1);
+            WriteReadModifyWrite(addr, value1, value2);
+            Set_FlagsNZ(value2);
             cyclesThisOperation += 7;
         }
 
@@ -2080,9 +2121,9 @@ namespace BBC.CPU
         {
             ulong addr = Zero_Page();
             byte value1 = ReadByteFromMemory(addr);
-            value1++;
-            WriteByteToMemory(addr, value1);
-            Set_FlagsNZ(value1);
+            byte value2 = (byte)(value1 + 1);
+            WriteReadModifyWrite(addr, value1, value2);
+            Set_FlagsNZ(value2);
             cyclesThisOperation += 5;
         }
 
@@ -2090,9 +2131,9 @@ namespace BBC.CPU
         {
             ulong addr = X_Indexed_Zero_Page();
             byte value1 = ReadByteFromMemory(addr);
-            value1++;
-            WriteByteToMemory(addr, value1);
-            Set_FlagsNZ(value1);
+            byte value2 = (byte)(value1 + 1);
+            WriteReadModifyWrite(addr, value1, value2);
+            Set_FlagsNZ(value2);
             cyclesThisOperation += 6;
         }
 
@@ -2686,10 +2727,9 @@ namespace BBC.CPU
         private void ASLAC()
         {
             byte addr = registers.A;
-            registers.Flags.N = ((addr & (1 << 6)) != 0);
             registers.Flags.C = ((addr & (1 << 7)) != 0);
             byte value = (byte)(addr << 1);
-            registers.Flags.Z = (value == 0);
+            Set_FlagsNZ(value);
             registers.A = value;
             cyclesThisOperation += 2;
         }
@@ -2698,11 +2738,10 @@ namespace BBC.CPU
         {
             ulong addr = Absolute();
             byte value = ReadByteFromMemory(addr);
-            registers.Flags.N = ((value & (1 << 6)) != 0);
             registers.Flags.C = ((value & (1 << 7)) != 0);
             byte value2 = (byte)(value << 1);
-            registers.Flags.Z = (value2 == 0);
-            WriteByteToMemory(addr, value2);
+            Set_FlagsNZ(value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 6;
         }
 
@@ -2710,11 +2749,10 @@ namespace BBC.CPU
         {
             ulong addr = X_Indexed_Absolute(false);
             byte value = ReadByteFromMemory(addr);
-            registers.Flags.N = ((value & (1 << 6)) != 0);
             registers.Flags.C = ((value & (1 << 7)) != 0);
             byte value2 = (byte)(value << 1);
-            registers.Flags.Z = (value2 == 0);
-            WriteByteToMemory(addr, value2);
+            Set_FlagsNZ(value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 7;
         }
 
@@ -2722,11 +2760,10 @@ namespace BBC.CPU
         {
             ulong addr = Zero_Page();
             byte value = ReadByteFromMemory(addr);
-            registers.Flags.N = ((value & (1 << 6)) != 0);
             registers.Flags.C = ((value & (1 << 7)) != 0);
             byte value2 = (byte)(value << 1);
-            registers.Flags.Z = (value2 == 0);
-            WriteByteToMemory(addr, value2);
+            Set_FlagsNZ(value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 5;
         }
 
@@ -2734,11 +2771,10 @@ namespace BBC.CPU
         {
             ulong addr = X_Indexed_Zero_Page();
             byte value = ReadByteFromMemory(addr);
-            registers.Flags.N = ((value & (1 << 6)) != 0);
             registers.Flags.C = ((value & (1 << 7)) != 0);
             byte value2 = (byte)(value << 1);
-            registers.Flags.Z = (value2 == 0);
-            WriteByteToMemory(addr, value2);
+            Set_FlagsNZ(value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 6;
         }
 
@@ -2765,7 +2801,7 @@ namespace BBC.CPU
             registers.Flags.C = ((value & (1 << 0)) != 0);
             byte value2 = (byte)(value >> 1);
             registers.Flags.Z = (value2 == 0);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 6;
         }
 
@@ -2777,7 +2813,7 @@ namespace BBC.CPU
             registers.Flags.C = ((value & (1 << 0)) != 0);
             byte value2 = (byte)(value >> 1);
             registers.Flags.Z = (value2 == 0);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 7;
         }
 
@@ -2790,7 +2826,7 @@ namespace BBC.CPU
             byte value2 = (byte)(value >> 1);
             value2 ^= (byte)((-0 ^ value2) & (1 << 7));
             registers.Flags.Z = (value2 == 0);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 5;
         }
 
@@ -2803,7 +2839,7 @@ namespace BBC.CPU
             byte value2 = (byte)(value >> 1);
             value2 ^= (byte)((-0 ^ value2) & (1 << 7));
             registers.Flags.Z = (value2 == 0);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 6;
         }
 
@@ -2830,7 +2866,7 @@ namespace BBC.CPU
             byte value2 = (byte)((value << 1) + carry);
             registers.Flags.C = ((value & (1 << 7)) != 0);
             Set_FlagsNZ(value2);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 6;
         }
 
@@ -2842,7 +2878,7 @@ namespace BBC.CPU
             byte value2 = (byte)((value << 1) + carry);
             registers.Flags.C = ((value & (1 << 7)) != 0);
             Set_FlagsNZ(value2);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 7;
         }
 
@@ -2854,7 +2890,7 @@ namespace BBC.CPU
             byte value2 = (byte)((value << 1) + carry);
             registers.Flags.C = ((value & (1 << 7)) != 0);
             Set_FlagsNZ(value2);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 5;
         }
 
@@ -2866,7 +2902,7 @@ namespace BBC.CPU
             byte value2 = (byte)((value << 1) + carry);
             registers.Flags.C = ((value & (1 << 7)) != 0);
             Set_FlagsNZ(value2);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 6;
         }
 
@@ -2895,7 +2931,7 @@ namespace BBC.CPU
                 value2 += 0x80;
             registers.Flags.C = ((value & (1 << 0)) != 0);
             Set_FlagsNZ(value2);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 6;
         }
 
@@ -2908,7 +2944,7 @@ namespace BBC.CPU
                 value2 += 0x80;
             registers.Flags.C = ((value & (1 << 0)) != 0);
             Set_FlagsNZ(value2);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 7;
         }
 
@@ -2921,7 +2957,7 @@ namespace BBC.CPU
                 value2 += 0x80;
             registers.Flags.C = ((value & (1 << 0)) != 0);
             Set_FlagsNZ(value2);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 5;
         }
 
@@ -2934,7 +2970,7 @@ namespace BBC.CPU
                 value2 += 0x80;
             registers.Flags.C = ((value & (1 << 0)) != 0);
             Set_FlagsNZ(value2);
-            WriteByteToMemory(addr, value2);
+            WriteReadModifyWrite(addr, value, value2);
             cyclesThisOperation += 6;
         }
 
@@ -3105,6 +3141,7 @@ namespace BBC.CPU
         private byte ReadByteFromMemory(ulong addr)
         {
             ulong masked = addr & 0xFFFF;
+            NotifyCyclesDuringInstruction(1);
             byte value = bus.ReadByte(masked);
             var stretch = OnAccessStretch;
             if (stretch != null)
@@ -3125,6 +3162,7 @@ namespace BBC.CPU
         private void WriteByteToMemory(ulong addr, byte value)
         {
             ulong masked = addr & 0xFFFF;
+            NotifyCyclesDuringInstruction(1);
             bus.WriteByte(masked, value);
             var stretch = OnAccessStretch;
             if (stretch != null)
@@ -3132,6 +3170,21 @@ namespace BBC.CPU
                 int extra = stretch(masked);
                 if (extra > 0) cyclesThisOperation += extra;
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void WriteReadModifyWrite(ulong addr, byte originalValue, byte modifiedValue)
+        {
+            WriteByteToMemory(addr, originalValue);
+            WriteByteToMemory(addr, modifiedValue);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void NotifyCyclesDuringInstruction(int cycles)
+        {
+            cyclesNotifiedThisInstruction += cycles;
+            Interlocked.Add(ref totalCycles, cycles);
+            OnCyclesExecuted?.Invoke(cycles);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

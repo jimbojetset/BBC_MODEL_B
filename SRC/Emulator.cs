@@ -426,6 +426,13 @@ namespace BBC
         private static readonly bool SerialPcTraceAutoEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
         private static readonly string? SerialPcTracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE_FILE")
             ?? (SerialPcTraceAutoEnabled ? SerialACIA.TracePath : null);
+        private static readonly bool RuntimeTraceStartupEnabled = Environment.GetEnvironmentVariable("BBC_RUNTIME_TRACE") == "1";
+        private static readonly string RuntimeTraceStartupPath = Environment.GetEnvironmentVariable("BBC_RUNTIME_TRACE_FILE") ?? "bbc-runtime-trace.log";
+        private static readonly bool TapeAutoplayEnabled = Environment.GetEnvironmentVariable("BBC_TAPE_AUTOPLAY") == "1";
+        private static readonly bool UserViaTraceEnabled = Environment.GetEnvironmentVariable("BBC_USER_VIA_TRACE") == "1";
+        private static readonly string UserViaTracePath = Environment.GetEnvironmentVariable("BBC_USER_VIA_TRACE_FILE") ?? "bbc-user-via-trace.log";
+        private static readonly bool ExileRamTraceEnabled = Environment.GetEnvironmentVariable("BBC_EXILE_RAM_TRACE") == "1";
+        private static readonly string ExileRamTracePath = Environment.GetEnvironmentVariable("BBC_EXILE_RAM_TRACE_FILE") ?? "bbc-exile-ram-trace.log";
         private const string OsRomMarker = "BBC Computer";
         private const string AmxMouseRomMarker = "AMX Mouse Support";
         private const int TargetFramesPerSecond = 50;
@@ -516,6 +523,8 @@ namespace BBC
         private long runtimeTraceInstructionCount;
         private int runtimeTraceFrame;
         private StreamWriter? serialPcTraceWriter;
+        private StreamWriter? userViaTraceWriter;
+        private StreamWriter? exileRamTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
         private const int SaveStateVersion = 13;
@@ -650,6 +659,7 @@ namespace BBC
             Sound.Start();
             Sound.QueuePowerOnBeep();
 
+            StartStartupRuntimeTrace();
             StartCpu();
 
             long frameTicks = Math.Max(1, Stopwatch.Frequency / TargetFramesPerSecond);
@@ -733,6 +743,7 @@ namespace BBC
             }
 
             StopCpu();
+            StopStartupRuntimeTrace();
         }
 
         private void DumpTubeDebugStateIfDue()
@@ -761,6 +772,7 @@ namespace BBC
             if (!initialised)
                 Initialise();
 
+            StartStartupRuntimeTrace();
             StartCpu();
 
             long deadline = Stopwatch.GetTimestamp() + (long)(duration.TotalSeconds * Stopwatch.Frequency);
@@ -785,6 +797,7 @@ namespace BBC
             }
 
             StopCpu();
+            StopStartupRuntimeTrace();
 
             if (cpuException is not null)
                 throw new InvalidOperationException("CPU execution failed.", cpuException);
@@ -862,6 +875,8 @@ namespace BBC
             hostFilingSystem.Unmount();
 
             Console.WriteLine($"Mounted UEF: {tape.MountedFileName}");
+            if (TapeAutoplayEnabled && tape.Play())
+                Console.WriteLine("Tape playing");
             Display?.ShowNotification($"{tape.MountedFileName} loaded", "Use *TAPE then CHAIN \"\"", 4000);
         }
 
@@ -948,6 +963,8 @@ namespace BBC
             }
             discController.StopTrace();
             StopRuntimeTrace();
+            StopUserViaTrace();
+            StopExileRamTrace();
             DisposeHayesModem();
             tube6502?.Dispose();
             Sound.Dispose();
@@ -2296,6 +2313,18 @@ namespace BBC
             }
         }
 
+        private void StartStartupRuntimeTrace()
+        {
+            if (RuntimeTraceStartupEnabled)
+                StartRuntimeTrace(RuntimeTraceStartupPath);
+        }
+
+        private void StopStartupRuntimeTrace()
+        {
+            if (RuntimeTraceStartupEnabled)
+                StopRuntimeTrace();
+        }
+
         private string? StopRuntimeTrace()
         {
             lock (runtimeTraceLock)
@@ -2312,6 +2341,37 @@ namespace BBC
                 runtimeTraceFramePcSamples.Clear();
                 return runtimeTracePath;
             }
+        }
+
+        private void TraceUserVia(string operation, ushort address, byte value)
+        {
+            if (!UserViaTraceEnabled)
+                return;
+
+            userViaTraceWriter ??= new StreamWriter(UserViaTracePath, append: false, Encoding.UTF8);
+            userViaTraceWriter.WriteLine(
+                $"via {operation} pc=${Cpu.registers.PC:X4} cycles={Cpu.TotalCycles} addr=${address:X4} value=${value:X2} {userVia.TraceState}");
+        }
+
+        private void StopUserViaTrace()
+        {
+            userViaTraceWriter?.Dispose();
+            userViaTraceWriter = null;
+        }
+
+        private void TraceExileRamWrite(ushort address, byte value)
+        {
+            if (!ExileRamTraceEnabled || address < 0x0B00 || address > 0x0BFF)
+                return;
+
+            exileRamTraceWriter ??= new StreamWriter(ExileRamTracePath, append: false, Encoding.UTF8);
+            exileRamTraceWriter.WriteLine($"ram write pc=${Cpu.registers.PC:X4} cycles={Cpu.TotalCycles} addr=${address:X4} value=${value:X2}");
+        }
+
+        private void StopExileRamTrace()
+        {
+            exileRamTraceWriter?.Dispose();
+            exileRamTraceWriter = null;
         }
 
         private void TraceRuntimeInstruction(ushort pc, byte opcode, int cycles, bool handledByHost)
@@ -3327,6 +3387,8 @@ namespace BBC
                 if (addr >= SidewaysRomStart)
                     return true;
 
+                TraceExileRamWrite(addr, value);
+
                 return false;
             };
         }
@@ -3341,6 +3403,7 @@ namespace BBC
             ushort addr = (ushort)(address & 0xFFFF);
             if (addr >= IoStart && addr <= IoEnd)
                 return 1;
+
             return 0;
         }
 
@@ -3366,6 +3429,7 @@ namespace BBC
             if (User6522Via.IsAddress(address))
             {
                 byte value = userVia.Read(address);
+                TraceUserVia("read", address, value);
                 UpdateCpuIrqLine();
                 return value;
             }
@@ -3410,6 +3474,7 @@ namespace BBC
 
             if (User6522Via.IsAddress(address))
             {
+                TraceUserVia("write", address, value);
                 userVia.Write(address, value);
                 UpdateCpuIrqLine();
                 return;
