@@ -33,6 +33,8 @@ namespace BBC
         public const int Mode7ScreenBytes = 1024;
 
         private const uint Background = 0xFF000000;
+        private const int TeletextCharacterWidth = 12;
+        private const int TeletextDisplayCharacterWidth = 16;
         private const int BeamFramebufferWidth = 1024;
         private const int BeamFramebufferHeight = 625;
         private const int VDisplayEnable = 1 << 0;
@@ -540,7 +542,9 @@ namespace BBC
             }
 
             beamUlaControl = control;
-            beamPixelsPerCharacter = (control & UlaClockHigh) != 0 ? 8 : 16;
+            beamPixelsPerCharacter = nextBeamMode == BbcScreenMode.Mode7
+                ? TeletextDisplayCharacterWidth
+                : (control & UlaClockHigh) != 0 ? 8 : 16;
             beamHalfClock = (control & UlaClockHigh) == 0;
 
             if (previousBeamMode == BbcScreenMode.Mode4
@@ -1493,7 +1497,7 @@ namespace BBC
             private GlyphSet nextGlyphSet;
             private GlyphSet currentGlyphSet;
             private GlyphSet heldGlyphSet;
-            private const int TeletextCellWidth = 16;
+            private const int TeletextCellWidth = TeletextDisplayCharacterWidth;
 
             public TeletextChip(uint[] colours)
             {
@@ -1705,7 +1709,10 @@ namespace BBC
 
                 ushort mask = GetRowMask(data, scanline, currentGlyphSet, previousDoubleHeight);
                 for (int pixel = 0; pixel < TeletextCellWidth && offset + pixel < maxOffset; pixel++)
-                    buffer[offset + pixel] = (mask & (1 << (15 - pixel))) != 0 ? foreground : background;
+                {
+                    int sourcePixel = pixel * TeletextCharacterWidth / TeletextCellWidth;
+                    buffer[offset + pixel] = (mask & (1 << (15 - sourcePixel))) != 0 ? foreground : background;
+                }
             }
 
             private byte HandleControlCode(byte data)

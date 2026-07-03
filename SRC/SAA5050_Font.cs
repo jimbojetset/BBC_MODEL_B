@@ -25,9 +25,9 @@ namespace BBC
         private const int GlyphRowsPerCharacter = 10;
         private const int RoundedWidth = SourceCellWidth * 2;
         private const int RoundedHeight = SourceCellHeight * 2;
-        private const int GlyphXOffset = 1;
+        private const int GlyphXOffset = 0;
         private const int GlyphYOffset = 2;
-        private const int TeletextCellWidth = 16;
+        private const int TeletextCellWidth = 12;
 
         private const string GlyphRowsEncoded =
             "AAAAAAAAAAEEEEEAEAAAKKKAAAAAAAGJIcIIfAAAOVUOFVOAAAYZCEITDAAAIUUIVSNAAAEEEAAAAAAA" +
@@ -104,15 +104,15 @@ namespace BBC
 
             for (int outputX = 0; outputX < TeletextCellWidth; outputX++)
             {
-                int block = (row < 6 ? 0 : row < 14 ? 2 : 4) + (outputX < 8 ? 0 : 1);
+                int block = (row < 6 ? 0 : row < 14 ? 2 : 4) + (outputX < 6 ? 0 : 1);
                 if ((pattern & (1 << block)) == 0)
                     continue;
 
                 if (separated)
                 {
-                    int blockStartX = outputX < 8 ? 0 : 8;
+                    int blockStartX = outputX < 6 ? 0 : 6;
                     int blockStartY = row < 6 ? 0 : row < 14 ? 6 : 14;
-                    int blockEndX = blockStartX + 7;
+                    int blockEndX = blockStartX + 5;
                     int blockEndY = row < 6 ? 5 : row < 14 ? 13 : 19;
                     if (outputX == blockStartX || outputX == blockEndX || row == blockStartY || row == blockEndY)
                         continue;
