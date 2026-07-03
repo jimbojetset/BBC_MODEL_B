@@ -40,6 +40,9 @@ namespace BBC
         private const int TubeCoProcessorImageRightInset = 12;
         private const int TubeCoProcessorImageTopInset = 4;
         private const string TubeCoProcessorImageResourceName = "BBC.TubeCoProcessor.png";
+        private const int CassetteImageBottomGap = 30;
+        private const int CassetteImageScalePercent = 70;
+        private const string CassetteImageResourceName = "BBC.Cassette.png";
         private const int RomSlotColumns = 8;
         private const int RomSlotRows = 2;
         private const int RomSlotWidth = 58;
@@ -98,6 +101,7 @@ namespace BBC
         private const int HayesMenuIndex = -2;
         private const int Drive0MenuIndex = -3;
         private const int Drive1MenuIndex = -4;
+        private const int CassetteMenuIndex = -5;
         private const string HayesMenuTitle = "MODEM";
         private const int BottomOverlayPadding = 4;
         private const byte OverlayTextGrey = 80;
@@ -126,6 +130,7 @@ namespace BBC
         private readonly Queue<HostJoystickChange> pendingJoystickChanges = new Queue<HostJoystickChange>();
         private readonly Queue<HostAnalogJoystickChange> pendingAnalogJoystickChanges = new Queue<HostAnalogJoystickChange>();
         private readonly Queue<HostDiscAction> pendingDiscActions = new Queue<HostDiscAction>();
+        private readonly Queue<HostTapeAction> pendingTapeActions = new Queue<HostTapeAction>();
         private readonly Queue<HostStateAction> pendingStateActions = new Queue<HostStateAction>();
         private readonly Queue<HostRomAction> pendingRomActions = new Queue<HostRomAction>();
         private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
@@ -138,6 +143,7 @@ namespace BBC
         private int pendingScreenshotRequests;
         private int suppressedTextInputCharacters;
         private int pendingTraceToggleRequests;
+        private int pendingSoundToggleRequests;
         private int pendingPauseToggleRequests;
         private int pendingTapePauseToggleRequests;
         private int pendingFrameAdvanceRequests;
@@ -158,6 +164,9 @@ namespace BBC
         private IntPtr texture;
         private IntPtr scanlineTexture;
         private IntPtr tubeCoProcessorTexture;
+        private IntPtr cassetteTexture;
+        private int cassetteTextureWidth;
+        private int cassetteTextureHeight;
         private IntPtr emptyDriveGlyphTexture;
         private IntPtr mountedDriveGlyphTexture;
         private IntPtr emptyRomSocketTexture;
@@ -243,7 +252,15 @@ namespace BBC
 
         public bool EmulationPaused { get; set; }
 
+        public bool SoundOutputEnabled { get; set; } = true;
+
         public bool TapePaused { get; set; }
+
+        public bool TapeMounted { get; set; }
+
+        public bool TapePlaying { get; set; }
+
+        public string? TapeLabel { get; set; }
 
         public bool Tube6502Enabled { get; set; }
 
@@ -326,6 +343,7 @@ namespace BBC
 
             scanlineTexture = CreateScanlineTexture(width, height);
             tubeCoProcessorTexture = CreateTubeCoProcessorTexture();
+            cassetteTexture = CreateCassetteTexture();
             emptyDriveGlyphTexture = CreateDriveGlyphTexture(0xFF404040);
             mountedDriveGlyphTexture = CreateDriveGlyphTexture(0xFF005020);
             emptyRomSocketTexture = CreateRomSocketTexture(false);
@@ -510,6 +528,12 @@ namespace BBC
                 destination.Add(pendingDiscActions.Dequeue());
         }
 
+        public void DrainTapeActions(ICollection<HostTapeAction> destination)
+        {
+            while (pendingTapeActions.Count > 0)
+                destination.Add(pendingTapeActions.Dequeue());
+        }
+
         public void DrainStateActions(ICollection<HostStateAction> destination)
         {
             while (pendingStateActions.Count > 0)
@@ -573,6 +597,13 @@ namespace BBC
         {
             int count = pendingTraceToggleRequests;
             pendingTraceToggleRequests = 0;
+            return count;
+        }
+
+        public int DrainSoundToggleRequests()
+        {
+            int count = pendingSoundToggleRequests;
+            pendingSoundToggleRequests = 0;
             return count;
         }
 
@@ -770,6 +801,15 @@ namespace BBC
                 TubeCoProcessorImageWidth,
                 TubeCoProcessorImageHeight);
             _ = SDL_RenderCopy(renderer, tubeCoProcessorTexture, IntPtr.Zero, ref target);
+        }
+
+        private void DrawCassetteImage()
+        {
+            if (cassetteTexture == IntPtr.Zero)
+                return;
+
+            SdlRect target = GetCassetteImageRect();
+            _ = SDL_RenderCopy(renderer, cassetteTexture, IntPtr.Zero, ref target);
         }
 
         private void DrawOpenMenu(int menuIndex)
@@ -1477,6 +1517,9 @@ namespace BBC
             if (IsInHayesMenuLabel(x, y))
                 return true;
 
+            if (IsInCassetteMenuLabel(x, y))
+                return true;
+
             if (IsInDriveMenuLabel(x, y))
                 return true;
 
@@ -1703,6 +1746,9 @@ namespace BBC
             if (IsInHayesMenuLabel(x, y))
                 return HayesMenuIndex;
 
+            if (IsInCassetteMenuLabel(x, y))
+                return CassetteMenuIndex;
+
             int driveMenuIndex = GetDriveMenuIndexAt(x, y);
             if (driveMenuIndex != -1)
                 return driveMenuIndex;
@@ -1809,12 +1855,21 @@ namespace BBC
             return Math.Clamp(centerX - (menuWidth / 2), 0, logicalWidth - menuWidth);
         }
 
+        private int GetCassetteDropDownX(int menuWidth)
+        {
+            SdlRect cassette = GetCassetteImageRect();
+            int centerX = cassette.X + (cassette.W / 2);
+            return Math.Clamp(centerX - (menuWidth / 2), 0, logicalWidth - menuWidth);
+        }
+
         private int GetDropDownX(int menuIndex, int menuWidth)
         {
             if (menuIndex == HayesMenuIndex)
                 return GetHayesDropDownX(menuWidth);
             if (IsDriveMenu(menuIndex))
                 return GetDriveDropDownX(menuWidth, GetDriveMenuDrive(menuIndex));
+            if (IsCassetteMenu(menuIndex))
+                return GetCassetteDropDownX(menuWidth);
 
             return GetTopMenuX(menuIndex) - 4;
         }
@@ -1825,6 +1880,8 @@ namespace BBC
                 return GetHayesPanelRect().Y - menuHeight;
             if (IsDriveMenu(menuIndex))
                 return GetDriveGlyphRect(GetDriveMenuDrive(menuIndex)).Y - menuHeight;
+            if (IsCassetteMenu(menuIndex))
+                return GetCassetteImageRect().Y - menuHeight;
 
             return TopMenuHeight;
         }
@@ -1849,6 +1906,7 @@ namespace BBC
                 HayesMenuIndex => HayesMenu,
                 Drive0MenuIndex => Drive0Menu,
                 Drive1MenuIndex => Drive1Menu,
+                CassetteMenuIndex => CassetteMenu,
                 _ => menus[menuIndex]
             };
         }
@@ -2454,6 +2512,24 @@ namespace BBC
                 case MenuCommand.EjectDrive1:
                     pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Eject, string.Empty, 1));
                     break;
+                case MenuCommand.LoadTape:
+                    EnqueueSelectedTape();
+                    break;
+                case MenuCommand.PlayTape:
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Play, string.Empty));
+                    break;
+                case MenuCommand.PauseTape:
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.TogglePause, string.Empty));
+                    break;
+                case MenuCommand.StopTape:
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Stop, string.Empty));
+                    break;
+                case MenuCommand.RewindTape:
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Rewind, string.Empty));
+                    break;
+                case MenuCommand.EjectTape:
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Eject, string.Empty));
+                    break;
                 case MenuCommand.SaveScreenshot:
                     pendingScreenshotRequests++;
                     break;
@@ -2487,6 +2563,9 @@ namespace BBC
                     break;
                 case MenuCommand.TogglePause:
                     pendingPauseToggleRequests++;
+                    break;
+                case MenuCommand.ToggleSoundOutput:
+                    pendingSoundToggleRequests++;
                     break;
                 case MenuCommand.ToggleTapePause:
                     pendingTapePauseToggleRequests++;
@@ -2645,7 +2724,10 @@ namespace BBC
                 MenuCommand.ToggleScanlines => scanlinesEnabled,
                 MenuCommand.ToggleFullScreen => fullScreenEnabled,
                 MenuCommand.TogglePause => EmulationPaused,
+                MenuCommand.ToggleSoundOutput => SoundOutputEnabled,
                 MenuCommand.ToggleTapePause => TapePaused,
+                MenuCommand.PlayTape => TapePlaying,
+                MenuCommand.PauseTape => TapePaused,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
                 MenuCommand.ToggleHayesLoopback => HayesLoopbackEnabled,
@@ -2663,6 +2745,11 @@ namespace BBC
                 MenuCommand.CreateBlankSsdDrive1 => !Drive1Mounted,
                 MenuCommand.EjectDrive0 => Drive0Mounted,
                 MenuCommand.EjectDrive1 => Drive1Mounted,
+                MenuCommand.PlayTape => TapeMounted && !TapePlaying,
+                MenuCommand.PauseTape => TapeMounted,
+                MenuCommand.StopTape => TapeMounted && TapePlaying,
+                MenuCommand.RewindTape => TapeMounted,
+                MenuCommand.EjectTape => TapeMounted,
                 MenuCommand.LoadRecentState1
                     or MenuCommand.LoadRecentState2
                     or MenuCommand.LoadRecentState3
@@ -2757,12 +2844,16 @@ namespace BBC
 
             DrawStatusLeds(bottomOverlayY);
             DrawHayesModemPanel();
+            DrawCassetteImage();
             DrawDriveGlyph(drive0X, glyphY, 0, Drive0Mounted, Drive0ActivityLedActive, Drive0DoubleSided);
             DrawDriveGlyph(drive1X, glyphY, 1, Drive1Mounted, Drive1ActivityLedActive, Drive1DoubleSided);
             DrawDriveNumber(drive0X, glyphY, 0);
             DrawDriveNumber(drive1X, glyphY, 1);
-            if (!IsDriveMenu(activeMenuIndex))
+            if (!IsBottomOverlayMenu(activeMenuIndex))
+            {
+                DrawHoveredCassetteLabel();
                 DrawHoveredDriveLabel(drive0X, drive1X, glyphY);
+            }
         }
 
         private int GetBottomOverlayHeight()
@@ -2961,6 +3052,23 @@ namespace BBC
             if (string.IsNullOrWhiteSpace(label))
                 return;
 
+            DrawHoverLabel(label, centerX, glyphY - 6);
+        }
+
+        private void DrawHoveredCassetteLabel()
+        {
+            if (!TapeMounted || !IsInCassetteMenuLabel(uiMouseX, uiMouseY))
+                return;
+
+            SdlRect cassette = GetCassetteImageRect();
+            DrawHoverLabel(FormatCassetteLabel(TapeLabel), cassette.X + (cassette.W / 2), cassette.Y - 6);
+        }
+
+        private void DrawHoverLabel(string label, int centerX, int bottomY)
+        {
+            if (string.IsNullOrWhiteSpace(label))
+                return;
+
             const int paddingX = 6;
             const int paddingY = 4;
             const int maxColumns = 34;
@@ -2968,7 +3076,7 @@ namespace BBC
             int width = GetRendererTextWidth(text) + (paddingX * 2);
             int height = NotificationGlyphHeight + (paddingY * 2);
             int x = Math.Clamp(centerX - (width / 2), 4, logicalWidth - width - 4);
-            int y = Math.Max(TopMenuHeight + 2, glyphY - height - 6);
+            int y = Math.Max(TopMenuHeight + 2, bottomY - height);
 
             SdlRect background = new SdlRect(x, y, width, height);
             _ = SDL_SetRenderDrawColor(renderer, 12, 12, 12, 235);
@@ -2998,9 +3106,28 @@ namespace BBC
             return new SdlRect(drive == 0 ? drive0X : drive1X, glyphY, DriveGlyphWidth, DriveGlyphHeight);
         }
 
+        private SdlRect GetCassetteImageRect()
+        {
+            if (cassetteTexture == IntPtr.Zero)
+                return new SdlRect(0, 0, 0, 0);
+
+            SdlRect drive1 = GetDriveGlyphRect(1);
+            int width = Math.Max(1, cassetteTextureWidth * CassetteImageScalePercent / 100);
+            int height = Math.Max(1, cassetteTextureHeight * CassetteImageScalePercent / 100);
+            int x = drive1.X + ((drive1.W - width) / 2);
+            int y = drive1.Y - CassetteImageBottomGap - height;
+            return new SdlRect(x, y, width, height);
+        }
+
         private bool IsInDriveMenuLabel(int x, int y)
         {
             return GetDriveMenuIndexAt(x, y) != -1;
+        }
+
+        private bool IsInCassetteMenuLabel(int x, int y)
+        {
+            SdlRect rect = GetCassetteImageRect();
+            return rect.W > 0 && x >= rect.X && x < rect.X + rect.W && y >= rect.Y && y < rect.Y + rect.H;
         }
 
         private int GetDriveMenuIndexAt(int x, int y)
@@ -3020,14 +3147,19 @@ namespace BBC
             return menuIndex is Drive0MenuIndex or Drive1MenuIndex;
         }
 
+        private static bool IsCassetteMenu(int menuIndex)
+        {
+            return menuIndex == CassetteMenuIndex;
+        }
+
         private static bool IsBottomOverlayMenu(int menuIndex)
         {
-            return menuIndex == HayesMenuIndex || IsDriveMenu(menuIndex);
+            return menuIndex == HayesMenuIndex || IsDriveMenu(menuIndex) || IsCassetteMenu(menuIndex);
         }
 
         private bool IsOpenMenuIndex(int menuIndex)
         {
-            return menuIndex >= 0 && !IsDirectMenu(menuIndex) || menuIndex == HayesMenuIndex || IsDriveMenu(menuIndex);
+            return menuIndex >= 0 && !IsDirectMenu(menuIndex) || menuIndex == HayesMenuIndex || IsDriveMenu(menuIndex) || IsCassetteMenu(menuIndex);
         }
 
         private static int GetDriveMenuIndex(int drive)
@@ -3044,6 +3176,11 @@ namespace BBC
         {
             string disc = string.IsNullOrWhiteSpace(label) ? "disc" : label.Trim();
             return $"{drive}: {disc}";
+        }
+
+        private static string FormatCassetteLabel(string? label)
+        {
+            return string.IsNullOrWhiteSpace(label) ? "Tape" : label.Trim();
         }
 
         private void DrawRoundLed(int centerX, int centerY, int radius, byte red, byte green, byte blue)
@@ -3433,12 +3570,53 @@ namespace BBC
             return image;
         }
 
+        private IntPtr CreateCassetteTexture()
+        {
+            if (!TryLoadCassettePng(out uint[] pixels, out int width, out int height))
+                return IntPtr.Zero;
+
+            IntPtr image = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
+            if (image == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            cassetteTextureWidth = width;
+            cassetteTextureHeight = height;
+            _ = SDL_SetTextureBlendMode(image, SDL_BLENDMODE_BLEND);
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                _ = SDL_UpdateTexture(image, IntPtr.Zero, handle.AddrOfPinnedObject(), width * sizeof(uint));
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return image;
+        }
+
         private static bool TryLoadTubeCoProcessorPng(out uint[] pixels, out int width, out int height)
         {
             pixels = [];
             width = 0;
             height = 0;
             using Stream? resource = typeof(Display).Assembly.GetManifestResourceStream(TubeCoProcessorImageResourceName);
+            if (resource is null)
+                return false;
+
+            using MemoryStream pngStream = new MemoryStream();
+            resource.CopyTo(pngStream);
+            byte[] png = pngStream.ToArray();
+            return TryReadPng(png, out pixels, out width, out height);
+        }
+
+        private static bool TryLoadCassettePng(out uint[] pixels, out int width, out int height)
+        {
+            pixels = [];
+            width = 0;
+            height = 0;
+            using Stream? resource = typeof(Display).Assembly.GetManifestResourceStream(CassetteImageResourceName);
             if (resource is null)
                 return false;
 
@@ -3713,6 +3891,12 @@ namespace BBC
                 tubeCoProcessorTexture = IntPtr.Zero;
             }
 
+            if (cassetteTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(cassetteTexture);
+                cassetteTexture = IntPtr.Zero;
+            }
+
             if (emptyDriveGlyphTexture != IntPtr.Zero)
             {
                 SDL_DestroyTexture(emptyDriveGlyphTexture);
@@ -3815,6 +3999,12 @@ namespace BBC
             if (keySym == SDLK_T && (modifiers & KMOD_CTRL) != 0)
             {
                 pendingTraceToggleRequests++;
+                return;
+            }
+
+            if (keySym == SDLK_Q && (modifiers & KMOD_CTRL) != 0)
+            {
+                pendingSoundToggleRequests++;
                 return;
             }
 
@@ -4315,6 +4505,16 @@ namespace BBC
             new MenuItem("Create SSD...", "", MenuCommand.CreateBlankSsdDrive1)
         ]);
 
+        private static readonly MenuDefinition CassetteMenu = new MenuDefinition("Cassette",
+        [
+            new MenuItem("Load", "", MenuCommand.LoadTape),
+            new MenuItem("Play", "", MenuCommand.PlayTape),
+            new MenuItem("Pause", "", MenuCommand.PauseTape),
+            new MenuItem("Stop", "", MenuCommand.StopTape),
+            new MenuItem("Rewind", "", MenuCommand.RewindTape),
+            new MenuItem("Eject", "", MenuCommand.EjectTape)
+        ]);
+
         private enum MenuCommand
         {
             MountDrive0,
@@ -4323,6 +4523,12 @@ namespace BBC
             CreateBlankSsdDrive1,
             EjectDrive0,
             EjectDrive1,
+            LoadTape,
+            PlayTape,
+            PauseTape,
+            StopTape,
+            RewindTape,
+            EjectTape,
             SaveScreenshot,
             SaveState,
             LoadState,
@@ -4337,6 +4543,7 @@ namespace BBC
             ControlBreak,
             PowerReset,
             TogglePause,
+            ToggleSoundOutput,
             ToggleTapePause,
             ToggleTube6502,
             ToggleHayesModem,
@@ -4364,6 +4571,7 @@ namespace BBC
                     new MenuItem("6502 Co-Processor", "", MenuCommand.ToggleTube6502),
                     new MenuItem("Hayes Modem", "", MenuCommand.ToggleHayesModem),
                     MenuSeparator(),
+                    new MenuItem("Sound output", "Ctrl+Q", MenuCommand.ToggleSoundOutput),
                     new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause),
                     new MenuItem("Tape pause", "Ctrl+Shift+P", MenuCommand.ToggleTapePause)
                 ]),
@@ -4478,6 +4686,13 @@ namespace BBC
             string? path = SelectNativeFile();
             if (!string.IsNullOrWhiteSpace(path))
                 pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Mount, path, drive));
+        }
+
+        private void EnqueueSelectedTape()
+        {
+            string? path = SelectNativeFile();
+            if (!string.IsNullOrWhiteSpace(path))
+                pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Mount, path));
         }
 
         private void EnqueueBlankSsd(int drive)
@@ -5324,6 +5539,8 @@ namespace BBC
 
     public readonly record struct HostDiscAction(HostDiscActionKind Kind, string Path, int Drive, string ArchiveEntryPath = "");
 
+    public readonly record struct HostTapeAction(HostTapeActionKind Kind, string Path);
+
     public readonly record struct HostStateAction(HostStateActionKind Kind, string Path);
 
     public enum HostStateActionKind
@@ -5337,6 +5554,16 @@ namespace BBC
         Mount,
         MountArchiveEntry,
         CreateBlankSsd,
+        Eject
+    }
+
+    public enum HostTapeActionKind
+    {
+        Mount,
+        Play,
+        TogglePause,
+        Stop,
+        Rewind,
         Eject
     }
 

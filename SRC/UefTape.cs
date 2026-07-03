@@ -18,6 +18,9 @@ namespace BBC
     {
         private const int BbcClockHz = 2_000_000;
         private const int UefCarrierCyclesPerSecond = 1200;
+        private const int TapeZeroToneHz = 1200;
+        private const int TapeOneToneHz = 2400;
+        private const int TapeBitCycles = BbcClockHz / UefCarrierCyclesPerSecond;
         private const ushort OriginChunk = 0x0000;
         private const ushort ImplicitDataChunk = 0x0100;
         private const ushort DefinedDataChunk = 0x0104;
@@ -27,20 +30,28 @@ namespace BBC
         private const ushort FloatingGapChunk = 0x0116;
 
         private readonly SerialACIA serialAcia;
+        private readonly SN76489_Sound tapeSound;
         private readonly object sync = new object();
         private readonly List<TapeEvent> events = new List<TapeEvent>();
         private string? mountedPath;
         private string? mountedFileName;
         private int eventIndex;
         private int delayCyclesRemaining;
+        private int delayToneHz;
         private int characterCyclesRemaining;
         private bool playbackStarted;
         private bool reachedEnd;
+        private bool transportPlaying;
         private bool paused;
+        private byte characterToneByte;
+        private int characterToneBitCount;
+        private int characterToneBitIndex;
+        private int characterToneBitCyclesRemaining;
 
-        public UefTape(SerialACIA serialAcia)
+        public UefTape(SerialACIA serialAcia, SN76489_Sound tapeSound)
         {
             this.serialAcia = serialAcia;
+            this.tapeSound = tapeSound;
         }
 
         public bool HasTape
@@ -70,6 +81,15 @@ namespace BBC
             }
         }
 
+        public bool Playing
+        {
+            get
+            {
+                lock (sync)
+                    return transportPlaying && !paused && !reachedEnd;
+            }
+        }
+
         public bool CanPause
         {
             get
@@ -93,15 +113,19 @@ namespace BBC
                 mountedFileName = Path.GetFileName(path);
                 eventIndex = 0;
                 delayCyclesRemaining = 0;
+                delayToneHz = 0;
                 characterCyclesRemaining = 0;
                 playbackStarted = false;
                 reachedEnd = false;
+                transportPlaying = false;
                 paused = false;
+                ResetCharacterTone();
             }
 
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetCarrierPresent(true);
             serialAcia.SetTapePlaying(false);
+            SilenceTapeTone();
         }
 
         public void Unmount()
@@ -113,15 +137,19 @@ namespace BBC
                 mountedFileName = null;
                 eventIndex = 0;
                 delayCyclesRemaining = 0;
+                delayToneHz = 0;
                 characterCyclesRemaining = 0;
                 playbackStarted = false;
                 reachedEnd = false;
+                transportPlaying = false;
                 paused = false;
+                ResetCharacterTone();
             }
 
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetCarrierPresent(true);
             serialAcia.SetTapePlaying(false);
+            SilenceTapeTone();
         }
 
         public void Tick(int cycles)
@@ -134,18 +162,21 @@ namespace BBC
                 if (events.Count == 0 || reachedEnd)
                 {
                     serialAcia.SetTapePlaying(false);
+                    SilenceTapeTone();
                     return;
                 }
 
-                if (paused)
+                if (paused || !transportPlaying)
                 {
                     serialAcia.SetTapePlaying(false);
+                    SilenceTapeTone();
                     return;
                 }
 
-                if (!playbackStarted && !serialAcia.MotorRunning)
+                if (!serialAcia.MotorRunning)
                 {
                     serialAcia.SetTapePlaying(false);
+                    SilenceTapeTone();
                     return;
                 }
 
@@ -157,6 +188,7 @@ namespace BBC
                 {
                     if (delayCyclesRemaining > 0)
                     {
+                        SetTapeTone(delayToneHz);
                         int consumed = Math.Min(remainingCycles, delayCyclesRemaining);
                         delayCyclesRemaining -= consumed;
                         remainingCycles -= consumed;
@@ -166,9 +198,11 @@ namespace BBC
 
                     if (characterCyclesRemaining > 0)
                     {
+                        ApplyCharacterTone();
                         int consumed = Math.Min(remainingCycles, characterCyclesRemaining);
                         characterCyclesRemaining -= consumed;
                         remainingCycles -= consumed;
+                        AdvanceCharacterTone(consumed);
                         if (characterCyclesRemaining > 0)
                             return;
                     }
@@ -177,7 +211,9 @@ namespace BBC
                     if (tapeEvent.Kind == TapeEventKind.Carrier)
                     {
                         serialAcia.SetCarrierPresent(true);
+                        SetTapeTone(TapeOneToneHz);
                         delayCyclesRemaining = tapeEvent.Cycles;
+                        delayToneHz = TapeOneToneHz;
                         eventIndex++;
                         return;
                     }
@@ -192,14 +228,18 @@ namespace BBC
                     if (tapeEvent.Kind == TapeEventKind.Gap)
                     {
                         serialAcia.SetCarrierPresent(true);
+                        SilenceTapeTone();
                         delayCyclesRemaining = tapeEvent.Cycles;
+                        delayToneHz = 0;
                         eventIndex++;
                         continue;
                     }
 
                     if (tapeEvent.Cycles > 0)
                     {
+                        SilenceTapeTone();
                         delayCyclesRemaining = tapeEvent.Cycles;
+                        delayToneHz = 0;
                         eventIndex++;
                         continue;
                     }
@@ -212,6 +252,7 @@ namespace BBC
                     serialAcia.QueueTapeByte(tapeEvent.Byte);
                     eventIndex++;
                     characterCyclesRemaining = CharacterCycles(tapeEvent.BitCount);
+                    StartCharacterTone(tapeEvent.Byte, tapeEvent.BitCount);
                 }
 
                 if (eventIndex >= events.Count)
@@ -219,6 +260,7 @@ namespace BBC
                     reachedEnd = true;
                     playbackStarted = false;
                     serialAcia.SetTapePlaying(false);
+                    SilenceTapeTone();
                 }
             }
         }
@@ -229,15 +271,19 @@ namespace BBC
             {
                 eventIndex = 0;
                 delayCyclesRemaining = 0;
+                delayToneHz = 0;
                 characterCyclesRemaining = 0;
                 playbackStarted = false;
                 reachedEnd = false;
+                transportPlaying = false;
                 paused = false;
+                ResetCharacterTone();
             }
 
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetCarrierPresent(true);
             serialAcia.SetTapePlaying(false);
+            SilenceTapeTone();
         }
 
         public void SaveState(BinaryWriter writer)
@@ -249,9 +295,11 @@ namespace BBC
                 WriteString(writer, mountedFileName);
                 writer.Write(eventIndex);
                 writer.Write(delayCyclesRemaining);
+                writer.Write(delayToneHz);
                 writer.Write(characterCyclesRemaining);
                 writer.Write(playbackStarted);
                 writer.Write(reachedEnd);
+                writer.Write(transportPlaying);
                 writer.Write(paused);
             }
         }
@@ -263,9 +311,11 @@ namespace BBC
             string? fileName = ReadString(reader);
             int savedEventIndex = reader.ReadInt32();
             int savedDelayCycles = reader.ReadInt32();
+            int savedDelayToneHz = reader.ReadInt32();
             int savedCharacterCycles = reader.ReadInt32();
             bool savedPlaybackStarted = reader.ReadBoolean();
             bool savedReachedEnd = reader.ReadBoolean();
+            bool savedTransportPlaying = reader.ReadBoolean();
             bool savedPaused = reader.ReadBoolean();
 
             lock (sync)
@@ -275,15 +325,19 @@ namespace BBC
                 mountedFileName = null;
                 eventIndex = 0;
                 delayCyclesRemaining = 0;
+                delayToneHz = 0;
                 characterCyclesRemaining = 0;
                 playbackStarted = false;
                 reachedEnd = false;
+                transportPlaying = false;
                 paused = false;
+                ResetCharacterTone();
             }
 
             if (!hadTape || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             {
                 serialAcia.SetTapePlaying(false);
+                SilenceTapeTone();
                 return;
             }
 
@@ -295,14 +349,18 @@ namespace BBC
                 mountedFileName = string.IsNullOrWhiteSpace(fileName) ? Path.GetFileName(path) : fileName;
                 eventIndex = Math.Clamp(savedEventIndex, 0, events.Count);
                 delayCyclesRemaining = Math.Max(0, savedDelayCycles);
+                delayToneHz = Math.Max(0, savedDelayToneHz);
                 characterCyclesRemaining = Math.Max(0, savedCharacterCycles);
                 playbackStarted = savedPlaybackStarted;
                 reachedEnd = savedReachedEnd || eventIndex >= events.Count;
+                transportPlaying = savedTransportPlaying && !reachedEnd;
                 paused = savedPaused;
+                ResetCharacterTone();
             }
 
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetTapePlaying(false);
+            SilenceTapeTone();
         }
 
         public bool TogglePaused()
@@ -314,14 +372,114 @@ namespace BBC
 
                 paused = !paused;
                 if (paused)
+                {
                     serialAcia.SetTapePlaying(false);
+                    SilenceTapeTone();
+                }
                 return paused;
+            }
+        }
+
+        public bool Play()
+        {
+            lock (sync)
+            {
+                if (events.Count == 0 || reachedEnd)
+                    return false;
+
+                transportPlaying = true;
+                paused = false;
+                return true;
+            }
+        }
+
+        public bool Stop()
+        {
+            lock (sync)
+            {
+                if (events.Count == 0)
+                    return false;
+
+                transportPlaying = false;
+                paused = false;
+                playbackStarted = false;
+                serialAcia.SetTapePlaying(false);
+                SilenceTapeTone();
+                return true;
             }
         }
 
         private static int CharacterCycles(int bits)
         {
-            return Math.Max(1, BbcClockHz * Math.Max(1, bits) / UefCarrierCyclesPerSecond);
+            return Math.Max(1, TapeBitCycles * Math.Max(1, bits));
+        }
+
+        private void StartCharacterTone(byte value, int bitCount)
+        {
+            characterToneByte = value;
+            characterToneBitCount = Math.Max(1, bitCount);
+            characterToneBitIndex = 0;
+            characterToneBitCyclesRemaining = TapeBitCycles;
+            ApplyCharacterTone();
+        }
+
+        private void AdvanceCharacterTone(int cycles)
+        {
+            if (characterToneBitCount <= 0 || cycles <= 0)
+                return;
+
+            int remainingCycles = cycles;
+            while (remainingCycles > 0 && characterToneBitIndex < characterToneBitCount)
+            {
+                int consumed = Math.Min(remainingCycles, characterToneBitCyclesRemaining);
+                characterToneBitCyclesRemaining -= consumed;
+                remainingCycles -= consumed;
+
+                if (characterToneBitCyclesRemaining > 0)
+                    continue;
+
+                characterToneBitIndex++;
+                characterToneBitCyclesRemaining = TapeBitCycles;
+                ApplyCharacterTone();
+            }
+        }
+
+        private void ApplyCharacterTone()
+        {
+            if (characterToneBitIndex >= characterToneBitCount)
+                return;
+
+            SetTapeTone(GetCharacterBitTone(characterToneByte, characterToneBitIndex));
+        }
+
+        private static int GetCharacterBitTone(byte value, int bitIndex)
+        {
+            if (bitIndex == 0)
+                return TapeZeroToneHz;
+
+            int dataBit = bitIndex - 1;
+            if (dataBit < 8)
+                return (value & (1 << dataBit)) != 0 ? TapeOneToneHz : TapeZeroToneHz;
+
+            return TapeOneToneHz;
+        }
+
+        private void ResetCharacterTone()
+        {
+            characterToneByte = 0;
+            characterToneBitCount = 0;
+            characterToneBitIndex = 0;
+            characterToneBitCyclesRemaining = 0;
+        }
+
+        private void SetTapeTone(int frequencyHz)
+        {
+            tapeSound.SetCassetteTone(frequencyHz);
+        }
+
+        private void SilenceTapeTone()
+        {
+            tapeSound.SetCassetteTone(0);
         }
 
         private static List<TapeEvent> ReadEvents(string path)

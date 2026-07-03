@@ -72,6 +72,19 @@ namespace BBC
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(options.TapePath))
+            {
+                try
+                {
+                    emulator.MountTapeFile(options.TapePath);
+                }
+                catch (Exception ex) when (IsUserMountException(ex))
+                {
+                    string message = emulator.QueueHostMountFailure(options.TapePath, ex);
+                    Console.WriteLine(message);
+                }
+            }
+
             if (options.StartupCommands.Count > 0)
                 emulator.QueueBootScript(string.Join('\r', options.StartupCommands));
 
@@ -89,6 +102,7 @@ namespace BBC
             List<string> startupCommands = new List<string>();
             string? printAutoLoadPath = null;
             string? loadStatePath = null;
+            string? tapePath = null;
             double speedScale = 1.0;
             bool autoRunDisc = true;
             bool tube6502 = false;
@@ -191,6 +205,15 @@ namespace BBC
                     continue;
                 }
 
+                if (string.Equals(args[i], "--tape", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException("--Tape requires a UEF path.");
+
+                    tapePath = args[++i];
+                    continue;
+                }
+
                 if (TryParseDriveOption(args[i], "--drive", out int discDrive))
                 {
                     if (i + 1 >= args.Length)
@@ -226,7 +249,7 @@ namespace BBC
                     mounts.Add(new MountRequest(blankImage, null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mounts, printAutoLoadPath, loadStatePath, speedScale, autoRunDisc, tube6502, tubeHostRomPath, tube6502RomPath, startupCommands);
+            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, speedScale, autoRunDisc, tube6502, tubeHostRomPath, tube6502RomPath, startupCommands);
         }
 
         private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
@@ -342,6 +365,7 @@ namespace BBC
         private readonly record struct StartupOptions(
             int HeadlessMilliseconds,
             IReadOnlyList<MountRequest> Mounts,
+            string? TapePath,
             string? PrintAutoLoadPath,
             string? LoadStatePath,
             double SpeedScale,
@@ -438,6 +462,7 @@ namespace BBC
         private readonly HostAnalogJoystickChange[] analogJoystickChangeScratch = new HostAnalogJoystickChange[16];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
         private readonly List<HostDiscAction> discActionScratch = new List<HostDiscAction>();
+        private readonly List<HostTapeAction> tapeActionScratch = new List<HostTapeAction>();
         private readonly List<HostStateAction> stateActionScratch = new List<HostStateAction>();
         private readonly List<HostRomAction> romActionScratch = new List<HostRomAction>();
         private readonly Queue<byte> pendingKeyboardInput = new Queue<byte>();
@@ -493,7 +518,7 @@ namespace BBC
         private StreamWriter? serialPcTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 12;
+        private const int SaveStateVersion = 13;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -528,7 +553,7 @@ namespace BBC
             discDriveSound = DiscDriveSound.TryLoadDefault();
             Sound.DiscDriveSound = discDriveSound;
             systemVia = new System6522Via(Sound);
-            tape = new UefTape(serialAcia);
+            tape = new UefTape(serialAcia, Sound);
             hostFilingSystem = new HostFilingSystem(Memory);
             hostFilingSystem.QueueKeyboardText = QueueKeyboardText;
             hostFilingSystem.QueueKeyboardScript = QueueExecScript;
@@ -647,6 +672,7 @@ namespace BBC
                 SynchronizeRomManagerPause(Display);
                 SynchronizeInputMapperPause(Display);
                 DrainHostPauseRequests(Display);
+                DrainHostSoundToggleRequests(Display);
                 DrainHostTapePauseRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
                 DrainHostHayesModemToggleRequests(Display);
@@ -655,6 +681,7 @@ namespace BBC
                 DrainHostPowerResetRequests(Display);
                 DrainHostBreakInput(Display);
                 DrainHostDiscLoads(Display);
+                DrainHostTapeActions(Display);
                 DrainHostStateActions(Display);
                 DrainHostRomActions(Display);
                 DrainHostKeyMatrixInput(Display);
@@ -681,7 +708,11 @@ namespace BBC
                 Display.CassetteMotorLedActive = !tape.Paused && (serialAcia.MotorRunning || serialAcia.TapePlaying);
                 Display.CapsLockLedActive = bbcCapsLockState;
                 Display.EmulationPaused = emulationPaused;
+                Display.SoundOutputEnabled = !Sound.HostOutputMuted;
                 Display.TapePaused = tape.Paused;
+                Display.TapeMounted = tape.HasTape;
+                Display.TapePlaying = tape.Playing;
+                Display.TapeLabel = tape.MountedFileName;
                 Display.Tube6502Enabled = tube6502 is not null;
                 Display.HayesModemEnabled = hayesModem is not null;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
@@ -795,13 +826,7 @@ namespace BBC
 
             if (IsTapeImagePath(path))
             {
-                tape.Mount(path);
-                hostFilingSystem.Unmount();
-
-                Console.WriteLine($"Mounted UEF: {tape.MountedFileName}");
-                Display?.ShowNotification($"{tape.MountedFileName} loaded", "Use *TAPE then CHAIN \"\"", 4000);
-                if (autoRunDisc)
-                    QueueMountedTapeAutoRun();
+                MountTapeFile(path);
                 return false;
             }
 
@@ -828,9 +853,24 @@ namespace BBC
             return false;
         }
 
-        public void QueueMountedTapeAutoRun()
+        private void MountTapeFile(string path)
         {
-            QueueBootScript("*TAPE\rCHAIN \"\"");
+            if (!IsTapeImagePath(path))
+                throw new InvalidDataException("Only UEF tape images can be loaded into the cassette player.");
+
+            tape.Mount(path);
+            hostFilingSystem.Unmount();
+
+            Console.WriteLine($"Mounted UEF: {tape.MountedFileName}");
+            Display?.ShowNotification($"{tape.MountedFileName} loaded", "Use *TAPE then CHAIN \"\"", 4000);
+        }
+
+        private void EjectTape()
+        {
+            string? fileName = tape.MountedFileName;
+            tape.Unmount();
+            Console.WriteLine(fileName is null ? "Tape ejected" : $"Tape ejected: {fileName}");
+            Display?.ShowNotification("Tape ejected", string.Empty, 1500);
         }
 
         private bool MountZipArchive(string path, bool autoRunDisc, int? requestedDrive)
@@ -1039,23 +1079,71 @@ namespace BBC
                 SetEmulationPaused(!emulationPaused);
         }
 
+        private void DrainHostSoundToggleRequests(Display display)
+        {
+            int count = display.DrainSoundToggleRequests();
+            for (int i = 0; i < count; i++)
+            {
+                bool muted = !Sound.HostOutputMuted;
+                Sound.SetHostOutputMuted(muted);
+                display.ShowNotification(muted ? "Sound off" : "Sound on", string.Empty, 1500);
+            }
+        }
+
         private void DrainHostTapePauseRequests(Display display)
         {
             int count = display.DrainTapePauseToggleRequests();
             for (int i = 0; i < count; i++)
-            {
-                if (!tape.CanPause)
-                {
-                    display.ShowNotification("No tape mounted", string.Empty, 1500);
-                    continue;
-                }
+                ToggleTapePause(display);
+        }
 
-                bool paused = tape.TogglePaused();
-                display.ShowNotification(
-                    paused ? "Tape paused" : "Tape running",
-                    paused ? "BBC continues running" : string.Empty,
-                    paused ? 4000 : 1500);
+        private void ToggleTapePause(Display display)
+        {
+            if (!tape.CanPause)
+            {
+                display.ShowNotification("No tape mounted", string.Empty, 1500);
+                return;
             }
+
+            bool paused = tape.TogglePaused();
+            display.ShowNotification(
+                paused ? "Tape paused" : "Tape running",
+                paused ? "BBC continues running" : string.Empty,
+                paused ? 4000 : 1500);
+        }
+
+        private void PlayTape(Display display)
+        {
+            if (!tape.Play())
+            {
+                display.ShowNotification("No tape mounted", string.Empty, 1500);
+                return;
+            }
+
+            display.ShowNotification("Tape playing", "Waiting for BBC motor", 1500);
+        }
+
+        private void StopTape(Display display)
+        {
+            if (!tape.Stop())
+            {
+                display.ShowNotification("No tape mounted", string.Empty, 1500);
+                return;
+            }
+
+            display.ShowNotification("Tape stopped", string.Empty, 1500);
+        }
+
+        private void RewindTape(Display display)
+        {
+            if (!tape.HasTape)
+            {
+                display.ShowNotification("No tape mounted", string.Empty, 1500);
+                return;
+            }
+
+            tape.ResetPlayback();
+            display.ShowNotification("Tape rewound", "Ready from start", 1500);
         }
 
         private void DrainHostTube6502ToggleRequests(Display display)
@@ -1725,6 +1813,53 @@ namespace BBC
                         ? $"Disc action failed: {ex.Message}"
                         : QueueHostMountFailure(action.Path, ex);
                     Console.WriteLine(message);
+                }
+            }
+        }
+
+        private void DrainHostTapeActions(Display display)
+        {
+            tapeActionScratch.Clear();
+            display.DrainTapeActions(tapeActionScratch);
+
+            foreach (HostTapeAction action in tapeActionScratch)
+            {
+                try
+                {
+                    switch (action.Kind)
+                    {
+                        case HostTapeActionKind.Mount:
+                            MountTapeFile(action.Path);
+                            break;
+                        case HostTapeActionKind.Play:
+                            PlayTape(display);
+                            break;
+                        case HostTapeActionKind.TogglePause:
+                            ToggleTapePause(display);
+                            break;
+                        case HostTapeActionKind.Stop:
+                            StopTape(display);
+                            break;
+                        case HostTapeActionKind.Rewind:
+                            RewindTape(display);
+                            break;
+                        case HostTapeActionKind.Eject:
+                            EjectTape();
+                            break;
+                    }
+                }
+                catch (Exception ex) when (ex is FileNotFoundException
+                    or DirectoryNotFoundException
+                    or UnauthorizedAccessException
+                    or IOException
+                    or InvalidDataException
+                    or InvalidOperationException)
+                {
+                    string message = string.IsNullOrWhiteSpace(action.Path)
+                        ? $"Tape action failed: {ex.Message}"
+                        : $"Tape action failed for '{Path.GetFileName(action.Path)}': {ex.Message}";
+                    Console.WriteLine(message);
+                    display.ShowNotification("Tape action failed", ex.Message, 5000);
                 }
             }
         }

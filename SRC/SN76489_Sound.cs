@@ -65,6 +65,7 @@ namespace BBC
         private const int V32BisRateSignalMilliseconds = 320;
         private const int V32BisScrambledOnesMilliseconds = 180;
         private const int ModemFinalNoiseMilliseconds = 1000;
+        private const double CassetteToneAmplitude = 0.055;
         private const int PsgWriteEnableDelayCycles = 14;
         private const ushort AudioFormatS16 = 0x8010;
         private readonly object syncRoot = new object();
@@ -92,14 +93,19 @@ namespace BBC
         private ushort noiseShiftRegister = 0x4000;
         private int latchedChannel;
         private bool latchedVolume;
+        private int cassetteToneHz;
+        private double cassetteTonePhase;
         private uint audioDevice;
         private Thread? audioThread;
         private bool running;
         private bool hostOutputPaused;
+        private bool hostOutputMuted;
         private bool disposed;
         private DiscDriveSound? discDriveSound;
 
         public bool ThrottleToPlayback { get; set; } = true;
+
+        public bool HostOutputMuted => Volatile.Read(ref hostOutputMuted);
 
         public DiscDriveSound? DiscDriveSound
         {
@@ -146,6 +152,8 @@ namespace BBC
                 noiseShiftRegister = 0x4000;
                 latchedChannel = 0;
                 latchedVolume = false;
+                cassetteToneHz = 0;
+                cassetteTonePhase = 0;
                 discDriveSound?.Reset();
             }
         }
@@ -212,6 +220,8 @@ namespace BBC
                 generatedWriteIndex = 0;
                 generatedCount = 0;
                 lastGeneratedSample = 0;
+                cassetteToneHz = 0;
+                cassetteTonePhase = 0;
                 discDriveSound?.Reset();
             }
 
@@ -378,6 +388,13 @@ namespace BBC
                 SilenceHostOutput();
         }
 
+        public void SetHostOutputMuted(bool muted)
+        {
+            Volatile.Write(ref hostOutputMuted, muted);
+            if (muted)
+                SilenceHostOutput();
+        }
+
         private void SilenceHostOutput()
         {
             lock (syncRoot)
@@ -391,6 +408,20 @@ namespace BBC
 
             if (audioDevice != 0)
                 SDL_ClearQueuedAudio(audioDevice);
+        }
+
+        public void SetCassetteTone(int frequencyHz)
+        {
+            lock (syncRoot)
+            {
+                int clampedFrequency = Math.Max(0, frequencyHz);
+                if (cassetteToneHz == clampedFrequency)
+                    return;
+
+                cassetteToneHz = clampedFrequency;
+                if (cassetteToneHz == 0)
+                    cassetteTonePhase = 0;
+            }
         }
 
         private static double GetPowerOnBeepEnvelope(int sampleIndex, int sampleCount)
@@ -714,7 +745,7 @@ namespace BBC
             if (cycles <= 0)
                 return;
 
-            if (Volatile.Read(ref hostOutputPaused))
+            if (Volatile.Read(ref hostOutputPaused) || Volatile.Read(ref hostOutputMuted))
             {
                 lock (syncRoot)
                 {
@@ -831,7 +862,20 @@ namespace BBC
 
             mixed /= chipSamples;
             mixed += discDriveSound?.GenerateSample() ?? 0;
+            mixed += GenerateCassetteToneSample();
             return (short)Math.Clamp(mixed * short.MaxValue, short.MinValue, short.MaxValue);
+        }
+
+        private double GenerateCassetteToneSample()
+        {
+            if (cassetteToneHz <= 0)
+                return 0;
+
+            double sample = Math.Sin(cassetteTonePhase) * CassetteToneAmplitude;
+            cassetteTonePhase += Math.Tau * cassetteToneHz / SampleRate;
+            while (cassetteTonePhase >= Math.Tau)
+                cassetteTonePhase -= Math.Tau;
+            return sample;
         }
 
         private void GenerateSamplesForCycles(int cycles)
