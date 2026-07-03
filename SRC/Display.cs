@@ -42,7 +42,10 @@ namespace BBC
         private const string TubeCoProcessorImageResourceName = "BBC.TubeCoProcessor.png";
         private const int CassetteImageBottomGap = 30;
         private const int CassetteImageScalePercent = 70;
+        private const int CassetteLedRightInset = 9;
+        private const int CassetteLedBottomInset = 15;
         private const string CassetteImageResourceName = "BBC.Cassette.png";
+        private const string CassetteLoadedImageResourceName = "BBC.CassetteLoaded.png";
         private const int RomSlotColumns = 8;
         private const int RomSlotRows = 2;
         private const int RomSlotWidth = 58;
@@ -167,6 +170,9 @@ namespace BBC
         private IntPtr cassetteTexture;
         private int cassetteTextureWidth;
         private int cassetteTextureHeight;
+        private IntPtr cassetteLoadedTexture;
+        private int cassetteLoadedTextureWidth;
+        private int cassetteLoadedTextureHeight;
         private IntPtr emptyDriveGlyphTexture;
         private IntPtr mountedDriveGlyphTexture;
         private IntPtr emptyRomSocketTexture;
@@ -344,6 +350,7 @@ namespace BBC
             scanlineTexture = CreateScanlineTexture(width, height);
             tubeCoProcessorTexture = CreateTubeCoProcessorTexture();
             cassetteTexture = CreateCassetteTexture();
+            cassetteLoadedTexture = CreateCassetteLoadedTexture();
             emptyDriveGlyphTexture = CreateDriveGlyphTexture(0xFF404040);
             mountedDriveGlyphTexture = CreateDriveGlyphTexture(0xFF005020);
             emptyRomSocketTexture = CreateRomSocketTexture(false);
@@ -810,6 +817,21 @@ namespace BBC
 
             SdlRect target = GetCassetteImageRect();
             _ = SDL_RenderCopy(renderer, cassetteTexture, IntPtr.Zero, ref target);
+            DrawCassetteLoadedImage(target);
+            DrawCassetteLed(target, TapePlaying);
+        }
+
+        private void DrawCassetteLoadedImage(SdlRect cassette)
+        {
+            if (!TapeMounted || cassetteLoadedTexture == IntPtr.Zero)
+                return;
+
+            SdlRect target = new SdlRect(
+                cassette.X + 7,
+                cassette.Y + 3,
+                cassetteLoadedTextureWidth,
+                cassetteLoadedTextureHeight);
+            _ = SDL_RenderCopy(renderer, cassetteLoadedTexture, IntPtr.Zero, ref target);
         }
 
         private void DrawOpenMenu(int menuIndex)
@@ -3033,6 +3055,21 @@ namespace BBC
             DrawRoundLed(centerX, centerY, radius, 38, 0, 0);
         }
 
+        private void DrawCassetteLed(SdlRect glyph, bool active)
+        {
+            int radius = DriveLedDiameter / 2;
+            int centerX = glyph.X + glyph.W - CassetteLedRightInset;
+            int centerY = glyph.Y + glyph.H - CassetteLedBottomInset;
+
+            if (active)
+            {
+                DrawRoundLed(centerX, centerY, radius, 238, 32, 42);
+                return;
+            }
+
+            DrawRoundLed(centerX, centerY, radius, 38, 0, 0);
+        }
+
         private void DrawHoveredDriveLabel(int drive0X, int drive1X, int glyphY)
         {
             string? label = null;
@@ -3596,6 +3633,32 @@ namespace BBC
             return image;
         }
 
+        private IntPtr CreateCassetteLoadedTexture()
+        {
+            if (!TryLoadCassetteLoadedPng(out uint[] pixels, out int width, out int height))
+                return IntPtr.Zero;
+
+            IntPtr image = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
+            if (image == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            cassetteLoadedTextureWidth = width;
+            cassetteLoadedTextureHeight = height;
+            _ = SDL_SetTextureBlendMode(image, SDL_BLENDMODE_BLEND);
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                _ = SDL_UpdateTexture(image, IntPtr.Zero, handle.AddrOfPinnedObject(), width * sizeof(uint));
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return image;
+        }
+
         private static bool TryLoadTubeCoProcessorPng(out uint[] pixels, out int width, out int height)
         {
             pixels = [];
@@ -3617,6 +3680,21 @@ namespace BBC
             width = 0;
             height = 0;
             using Stream? resource = typeof(Display).Assembly.GetManifestResourceStream(CassetteImageResourceName);
+            if (resource is null)
+                return false;
+
+            using MemoryStream pngStream = new MemoryStream();
+            resource.CopyTo(pngStream);
+            byte[] png = pngStream.ToArray();
+            return TryReadPng(png, out pixels, out width, out height);
+        }
+
+        private static bool TryLoadCassetteLoadedPng(out uint[] pixels, out int width, out int height)
+        {
+            pixels = [];
+            width = 0;
+            height = 0;
+            using Stream? resource = typeof(Display).Assembly.GetManifestResourceStream(CassetteLoadedImageResourceName);
             if (resource is null)
                 return false;
 
@@ -3895,6 +3973,12 @@ namespace BBC
             {
                 SDL_DestroyTexture(cassetteTexture);
                 cassetteTexture = IntPtr.Zero;
+            }
+
+            if (cassetteLoadedTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(cassetteLoadedTexture);
+                cassetteLoadedTexture = IntPtr.Zero;
             }
 
             if (emptyDriveGlyphTexture != IntPtr.Zero)

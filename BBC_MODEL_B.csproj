@@ -24,6 +24,8 @@
     <EmbeddedResource Include="Assets\co-processor.png" LogicalName="BBC.TubeCoProcessor.png" Condition="Exists('Assets\co-processor.png')" />
     <None Remove="Assets\Cassette.png" Condition="Exists('Assets\Cassette.png')" />
     <EmbeddedResource Include="Assets\Cassette.png" LogicalName="BBC.Cassette.png" Condition="Exists('Assets\Cassette.png')" />
+    <None Remove="Assets\CassetteLoaded.png" Condition="Exists('Assets\CassetteLoaded.png')" />
+    <EmbeddedResource Include="Assets\CassetteLoaded.png" LogicalName="BBC.CassetteLoaded.png" Condition="Exists('Assets\CassetteLoaded.png')" />
     <None Update="ROMS\*.rom">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
