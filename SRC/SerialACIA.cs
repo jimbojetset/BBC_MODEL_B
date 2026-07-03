@@ -501,7 +501,8 @@ namespace BBC
 
         private static int DecodeBaud(int code)
         {
-            return SerialUlaBaudRates[code & 0x07];
+            int index = ((code & 0x01) << 2) | (code & 0x02) | ((code & 0x04) >> 2);
+            return SerialUlaBaudRates[index];
         }
 
         private byte MaskDataBits(byte value)

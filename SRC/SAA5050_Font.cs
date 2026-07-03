@@ -68,7 +68,7 @@ namespace BBC
             throw new InvalidOperationException("SAA5050 glyph table contains an invalid row code.");
         }
 
-        public static ushort GetAlphanumericRowMask(byte character, int row, bool horizontalExpand)
+        public static ushort GetAlphanumericRowMask(byte character, int row)
         {
             character = (byte)(character & 0x7F);
             if (character < 32)
@@ -88,8 +88,6 @@ namespace BBC
 
                 int pixel = GlyphXOffset + outputX;
                 result |= (ushort)(1 << (15 - pixel));
-                if (horizontalExpand && pixel + 1 < TeletextCellWidth)
-                    result |= (ushort)(1 << (14 - pixel));
             }
 
             return result;

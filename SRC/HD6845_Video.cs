@@ -1707,7 +1707,7 @@ namespace BBC
                 int rowStart = offset - (offset % width);
                 int maxOffset = Math.Min(rowStart + width, buffer.Length);
 
-                ushort mask = GetRowMask(data, scanline, currentGlyphSet, previousDoubleHeight);
+                ushort mask = GetRowMask(data, scanline, currentGlyphSet);
                 for (int pixel = 0; pixel < TeletextCellWidth && offset + pixel < maxOffset; pixel++)
                 {
                     int sourcePixel = pixel * TeletextCharacterWidth / TeletextCellWidth;
@@ -1803,7 +1803,7 @@ namespace BBC
                     : GlyphSet.Normal;
             }
 
-            private static ushort GetRowMask(byte data, int scanline, GlyphSet glyphSet, bool horizontalExpand)
+            private static ushort GetRowMask(byte data, int scanline, GlyphSet glyphSet)
             {
                 if ((uint)scanline >= 20)
                     return 0;
@@ -1812,7 +1812,7 @@ namespace BBC
                 {
                     GlyphSet.Graphics => SAA5050_Font.GetMosaicRowMask(data, scanline, separated: false),
                     GlyphSet.Separated => SAA5050_Font.GetMosaicRowMask(data, scanline, separated: true),
-                    _ => SAA5050_Font.GetAlphanumericRowMask(data, scanline, horizontalExpand)
+                    _ => SAA5050_Font.GetAlphanumericRowMask(data, scanline)
                 };
             }
 
