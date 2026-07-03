@@ -40,10 +40,12 @@ namespace BBC
         private const int TubeCoProcessorImageRightInset = 12;
         private const int TubeCoProcessorImageTopInset = 4;
         private const string TubeCoProcessorImageResourceName = "BBC.TubeCoProcessor.png";
-        private const int CassetteImageBottomGap = 30;
-        private const int CassetteImageScalePercent = 70;
-        private const int CassetteLedRightInset = 9;
-        private const int CassetteLedBottomInset = 15;
+        private const int CassetteLoadedScalePercent = 130;
+        private const int CassetteLoadedOffsetX = 10;
+        private const int CassetteLoadedOffsetY = 12;
+        private const int CassetteLedOffsetX = 14;
+        private const int CassetteLedOffsetY = 4;
+        private const int CassetteLedDiameter = DriveLedDiameter - 2;
         private const string CassetteImageResourceName = "BBC.Cassette.png";
         private const string CassetteLoadedImageResourceName = "BBC.CassetteLoaded.png";
         private const int RomSlotColumns = 8;
@@ -107,6 +109,8 @@ namespace BBC
         private const int CassetteMenuIndex = -5;
         private const string HayesMenuTitle = "MODEM";
         private const int BottomOverlayPadding = 4;
+        private const int BottomOverlayExtraHeight = 10;
+        private const int BottomOverlayContentOffsetY = 10;
         private const byte OverlayTextGrey = 80;
         private const int NotificationDurationMilliseconds = 15000;
         private const int NotificationMargin = 28;
@@ -827,10 +831,10 @@ namespace BBC
                 return;
 
             SdlRect target = new SdlRect(
-                cassette.X + 7,
-                cassette.Y + 3,
-                cassetteLoadedTextureWidth,
-                cassetteLoadedTextureHeight);
+                cassette.X + CassetteLoadedOffsetX,
+                cassette.Y + CassetteLoadedOffsetY,
+                Math.Max(1, cassetteLoadedTextureWidth * CassetteLoadedScalePercent / 100),
+                Math.Max(1, cassetteLoadedTextureHeight * CassetteLoadedScalePercent / 100));
             _ = SDL_RenderCopy(renderer, cassetteLoadedTexture, IntPtr.Zero, ref target);
         }
 
@@ -1857,9 +1861,9 @@ namespace BBC
         {
             int panelWidth = GetHayesPanelWidth();
             int panelHeight = GetHayesPanelHeight();
-            int bottomOverlayY = logicalHeight - GetBottomOverlayHeight();
             int x = (logicalWidth - panelWidth) / 2;
-            int y = bottomOverlayY + ((GetBottomOverlayHeight() - panelHeight) / 2);
+            SdlRect drive = GetDriveGlyphRect(0);
+            int y = drive.Y + drive.H - panelHeight;
             return new SdlRect(x, y, panelWidth, panelHeight);
         }
 
@@ -2858,13 +2862,13 @@ namespace BBC
             int driveBlockHeight = GetDriveBlockHeight();
             int drive1X = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
             int drive0X = drive1X - DriveGlyphGap - DriveGlyphWidth;
-            int glyphY = bottomOverlayY + ((bottomOverlayHeight - driveBlockHeight) / 2);
+            int glyphY = bottomOverlayY + ((bottomOverlayHeight - BottomOverlayExtraHeight - driveBlockHeight) / 2) + BottomOverlayContentOffsetY;
 
             SdlRect bottomOverlay = new SdlRect(0, bottomOverlayY, logicalWidth, bottomOverlayHeight);
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             _ = SDL_RenderFillRect(renderer, ref bottomOverlay);
 
-            DrawStatusLeds(bottomOverlayY);
+            DrawStatusLeds(bottomOverlayY + BottomOverlayContentOffsetY);
             DrawHayesModemPanel();
             DrawCassetteImage();
             DrawDriveGlyph(drive0X, glyphY, 0, Drive0Mounted, Drive0ActivityLedActive, Drive0DoubleSided);
@@ -2886,7 +2890,7 @@ namespace BBC
                 + StatusLedDiameter;
 
             int contentHeight = Math.Max(Math.Max(GetDriveBlockHeight(), statusBlockHeight), GetHayesPanelHeight());
-            return contentHeight + (BottomOverlayPadding * 2);
+            return contentHeight + (BottomOverlayPadding * 2) + BottomOverlayExtraHeight;
         }
 
         private static int GetDriveBlockHeight()
@@ -2926,7 +2930,7 @@ namespace BBC
 
             _ = SDL_SetRenderDrawColor(renderer, 12, 12, 12, 240);
             _ = SDL_RenderFillRect(renderer, ref panel);
-            _ = SDL_SetRenderDrawColor(renderer, 130, 130, 130, 255);
+            _ = SDL_SetRenderDrawColor(renderer, 65, 65, 65, 255);
             DrawRectOutline(panel);
 
             if (activeMenuIndex == HayesMenuIndex || hoveredMenuIndex == HayesMenuIndex)
@@ -3042,7 +3046,7 @@ namespace BBC
 
         private void DrawDriveLed(int glyphX, int glyphY, bool active)
         {
-            int radius = DriveLedDiameter / 2;
+            int radius = CassetteLedDiameter / 2;
             int centerX = glyphX + 7;
             int centerY = glyphY + 6;
 
@@ -3057,9 +3061,9 @@ namespace BBC
 
         private void DrawCassetteLed(SdlRect glyph, bool active)
         {
-            int radius = DriveLedDiameter / 2;
-            int centerX = glyph.X + glyph.W - CassetteLedRightInset;
-            int centerY = glyph.Y + glyph.H - CassetteLedBottomInset;
+            int radius = CassetteLedDiameter / 2;
+            int centerX = glyph.X + CassetteLedOffsetX;
+            int centerY = glyph.Y + CassetteLedOffsetY;
 
             if (active)
             {
@@ -3138,7 +3142,7 @@ namespace BBC
             int driveBlockHeight = GetDriveBlockHeight();
             int drive1X = logicalWidth - DriveGlyphMargin - DriveGlyphWidth;
             int drive0X = drive1X - DriveGlyphGap - DriveGlyphWidth;
-            int glyphY = bottomOverlayY + ((bottomOverlayHeight - driveBlockHeight) / 2);
+            int glyphY = bottomOverlayY + ((bottomOverlayHeight - BottomOverlayExtraHeight - driveBlockHeight) / 2) + BottomOverlayContentOffsetY;
 
             return new SdlRect(drive == 0 ? drive0X : drive1X, glyphY, DriveGlyphWidth, DriveGlyphHeight);
         }
@@ -3148,11 +3152,11 @@ namespace BBC
             if (cassetteTexture == IntPtr.Zero)
                 return new SdlRect(0, 0, 0, 0);
 
-            SdlRect drive1 = GetDriveGlyphRect(1);
-            int width = Math.Max(1, cassetteTextureWidth * CassetteImageScalePercent / 100);
-            int height = Math.Max(1, cassetteTextureHeight * CassetteImageScalePercent / 100);
-            int x = drive1.X + ((drive1.W - width) / 2);
-            int y = drive1.Y - CassetteImageBottomGap - height;
+            SdlRect drive0 = GetDriveGlyphRect(0);
+            int width = cassetteTextureWidth;
+            int height = cassetteTextureHeight;
+            int x = drive0.X - DriveGlyphGap - width - 10;
+            int y = drive0.Y + drive0.H - height;
             return new SdlRect(x, y, width, height);
         }
 
@@ -4656,8 +4660,7 @@ namespace BBC
                     new MenuItem("Hayes Modem", "", MenuCommand.ToggleHayesModem),
                     MenuSeparator(),
                     new MenuItem("Sound output", "Ctrl+Q", MenuCommand.ToggleSoundOutput),
-                    new MenuItem("Pause", "Ctrl+P", MenuCommand.TogglePause),
-                    new MenuItem("Tape pause", "Ctrl+Shift+P", MenuCommand.ToggleTapePause)
+                    new MenuItem("Pause Emulator", "Ctrl+P", MenuCommand.TogglePause)
                 ]),
                 new MenuDefinition("ROM Manager", [], MenuCommand.OpenRomManager),
                 new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper),
