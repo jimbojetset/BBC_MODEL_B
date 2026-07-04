@@ -44,6 +44,20 @@ namespace BBC
             emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
             emulator.ConfigureStartupSpeedScale(options.SpeedScale);
 
+            if (options.HayesModem)
+                emulator.SetHayesModemEnabled(true, notify: false);
+
+            foreach (MountRequest mount in options.Mounts)
+            {
+                if (mount.Drive.HasValue)
+                    emulator.SetDiscDriveEnabled(mount.Drive.Value & 1, true);
+                else if (IsTapeImagePath(mount.Path))
+                    emulator.SetTapePlayerEnabled(true);
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.TapePath))
+                emulator.SetTapePlayerEnabled(true);
+
             emulator.startupLoadStatePath = options.LoadStatePath;
 
             Console.WriteLine("BBC Model B emulator initialised.");
@@ -106,6 +120,7 @@ namespace BBC
             double speedScale = 1.0;
             bool autoRunDisc = true;
             bool tube6502 = false;
+            bool hayesModem = false;
             string? tubeHostRomPath = null;
             string? tube6502RomPath = null;
 
@@ -115,6 +130,12 @@ namespace BBC
                     || string.Equals(args[i], "--tube-enable", StringComparison.OrdinalIgnoreCase))
                 {
                     tube6502 = true;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--modem", StringComparison.OrdinalIgnoreCase))
+                {
+                    hayesModem = true;
                     continue;
                 }
 
@@ -249,7 +270,7 @@ namespace BBC
                     mounts.Add(new MountRequest(blankImage, null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, speedScale, autoRunDisc, tube6502, tubeHostRomPath, tube6502RomPath, startupCommands);
+            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, speedScale, autoRunDisc, tube6502, hayesModem, tubeHostRomPath, tube6502RomPath, startupCommands);
         }
 
         private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
@@ -371,6 +392,7 @@ namespace BBC
             double SpeedScale,
             bool AutoRunDisc,
             bool Tube6502,
+            bool HayesModem,
             string? TubeHostRomPath,
             string? Tube6502RomPath,
             IReadOnlyList<string> StartupCommands);
@@ -494,6 +516,9 @@ namespace BBC
         private readonly TubeUla tubeUla = new TubeUla();
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
+        private bool tapePlayerEnabled;
+        private bool drive0Enabled = true;
+        private bool drive1Enabled;
         private string? configuredTubeHostRomPath;
         private string? configuredTube6502RomPath;
         private bool tube6502Configured;
@@ -571,7 +596,6 @@ namespace BBC
             discController.DriveMotorStarted += _ => discDriveSound?.MotorStarted();
             discController.DriveMotorStopped += _ => discDriveSound?.MotorStopped();
             discController.DriveSeek += (_, trackDelta) => discDriveSound?.Seek(trackDelta);
-            SetHayesModemEnabled(true, notify: false);
 
             tubeUla.HostIrqChanged += asserted =>
             {
@@ -682,6 +706,8 @@ namespace BBC
                 DrainHostPauseRequests(Display);
                 DrainHostSoundToggleRequests(Display);
                 DrainHostTapePauseRequests(Display);
+                DrainHostTapePlayerToggleRequests(Display);
+                DrainHostDriveToggleRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
                 DrainHostHayesModemToggleRequests(Display);
                 DrainHostHayesLoopbackToggleRequests(Display);
@@ -704,15 +730,17 @@ namespace BBC
                 RenderDisplayFrame(Display);
                 DrainHostScreenshotRequests(Display);
                 DrainHostTraceToggleRequests(Display);
-                Display.Drive0Mounted = discController.IsPhysicalDriveMounted(0);
-                Display.Drive1Mounted = discController.IsPhysicalDriveMounted(1);
-                Display.Drive0DoubleSided = discController.IsPhysicalDriveDoubleSided(0);
-                Display.Drive1DoubleSided = discController.IsPhysicalDriveDoubleSided(1);
-                Display.Drive0Label = discController.GetPhysicalDriveLabel(0);
-                Display.Drive1Label = discController.GetPhysicalDriveLabel(1);
-                Display.Drive0ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(0)
-                    || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks;
-                Display.Drive1ActivityLedActive = discController.IsPhysicalDriveActivityLedActive(1);
+                Display.Drive0Enabled = drive0Enabled;
+                Display.Drive1Enabled = drive1Enabled;
+                Display.Drive0Mounted = drive0Enabled && discController.IsPhysicalDriveMounted(0);
+                Display.Drive1Mounted = drive1Enabled && discController.IsPhysicalDriveMounted(1);
+                Display.Drive0DoubleSided = drive0Enabled && discController.IsPhysicalDriveDoubleSided(0);
+                Display.Drive1DoubleSided = drive1Enabled && discController.IsPhysicalDriveDoubleSided(1);
+                Display.Drive0Label = drive0Enabled ? discController.GetPhysicalDriveLabel(0) : null;
+                Display.Drive1Label = drive1Enabled ? discController.GetPhysicalDriveLabel(1) : null;
+                Display.Drive0ActivityLedActive = drive0Enabled && (discController.IsPhysicalDriveActivityLedActive(0)
+                    || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks);
+                Display.Drive1ActivityLedActive = drive1Enabled && discController.IsPhysicalDriveActivityLedActive(1);
                 Display.CassetteMotorLedActive = !tape.Paused && (serialAcia.MotorRunning || serialAcia.TapePlaying);
                 Display.CapsLockLedActive = bbcCapsLockState;
                 Display.EmulationPaused = emulationPaused;
@@ -721,6 +749,7 @@ namespace BBC
                 Display.TapeMounted = tape.HasTape;
                 Display.TapePlaying = tape.Playing;
                 Display.TapeLabel = tape.MountedFileName;
+                Display.TapePlayerEnabled = tapePlayerEnabled;
                 Display.Tube6502Enabled = tube6502 is not null;
                 Display.HayesModemEnabled = hayesModem is not null;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
@@ -841,6 +870,13 @@ namespace BBC
 
         public bool MountHostFile(string path, bool autoRunDisc = true, int? requestedDrive = null)
         {
+            int physicalDrive = requestedDrive.GetValueOrDefault(0) & 1;
+            if (!IsDiscDriveEnabled(physicalDrive))
+                throw new InvalidOperationException($"Disc Drive {physicalDrive} is disabled.");
+
+            if (requestedDrive.HasValue && !IsDriveLoadPath(path))
+                throw new InvalidDataException("Drives can only load SSD, DSD, or ZIP files.");
+
             if (IsZipArchivePath(path))
                 return MountZipArchive(path, autoRunDisc, requestedDrive);
 
@@ -875,6 +911,9 @@ namespace BBC
 
         private void MountTapeFile(string path)
         {
+            if (!tapePlayerEnabled)
+                throw new InvalidOperationException("Tape Player is disabled.");
+
             if (!IsTapeImagePath(path))
                 throw new InvalidDataException("Only UEF tape images can be loaded into the cassette player.");
 
@@ -889,6 +928,9 @@ namespace BBC
 
         private void EjectTape()
         {
+            if (!tapePlayerEnabled)
+                return;
+
             string? fileName = tape.MountedFileName;
             tape.Unmount();
             Console.WriteLine(fileName is null ? "Tape ejected" : $"Tape ejected: {fileName}");
@@ -933,6 +975,9 @@ namespace BBC
 
         public void EjectDisc(int drive)
         {
+            if (!IsDiscDriveEnabled(drive & 1))
+                return;
+
             discController.EjectPhysicalDrive(drive);
             Console.WriteLine($"Ejected DFS drive {drive}");
         }
@@ -1088,7 +1133,8 @@ namespace BBC
             Video.Tick(cycles);
             userVia.Tick(cycles);
             discController.Tick(cycles);
-            tape.Tick(cycles);
+            if (tapePlayerEnabled)
+                tape.Tick(cycles);
             adc.Tick(cycles);
             TickCapsLockTap(cycles);
             tube6502?.AdvanceHostCycles(cycles);
@@ -1121,8 +1167,68 @@ namespace BBC
                 ToggleTapePause(display);
         }
 
+        private void DrainHostTapePlayerToggleRequests(Display display)
+        {
+            int count = display.DrainTapePlayerToggleRequests();
+            for (int i = 0; i < count; i++)
+                SetTapePlayerEnabled(!tapePlayerEnabled, display);
+        }
+
+        private void DrainHostDriveToggleRequests(Display display)
+        {
+            int drive0Toggles = display.DrainDrive0ToggleRequests();
+            for (int i = 0; i < drive0Toggles; i++)
+                SetDiscDriveEnabled(0, !drive0Enabled, display);
+
+            int drive1Toggles = display.DrainDrive1ToggleRequests();
+            for (int i = 0; i < drive1Toggles; i++)
+                SetDiscDriveEnabled(1, !drive1Enabled, display);
+        }
+
+        private void SetDiscDriveEnabled(int drive, bool enabled, Display? display = null)
+        {
+            if (drive is < 0 or > 1)
+                return;
+
+            if (!enabled)
+                discController.EjectPhysicalDrive(drive);
+
+            if (drive == 0)
+                drive0Enabled = enabled;
+            else
+                drive1Enabled = enabled;
+
+            display?.ShowNotification(
+                enabled ? $"Disc Drive {drive} enabled" : $"Disc Drive {drive} disabled",
+                enabled ? "Drive controls visible" : string.Empty,
+                3000);
+        }
+
+        private bool IsDiscDriveEnabled(int drive)
+        {
+            return drive == 0 ? drive0Enabled : drive1Enabled;
+        }
+
+        private void SetTapePlayerEnabled(bool enabled, Display? display = null)
+        {
+            if (!enabled)
+                tape.Unmount();
+
+            tapePlayerEnabled = enabled;
+            display?.ShowNotification(
+                enabled ? "Tape Player enabled" : "Tape Player disabled",
+                enabled ? "Cassette controls visible" : string.Empty,
+                3000);
+        }
+
         private void ToggleTapePause(Display display)
         {
+            if (!tapePlayerEnabled)
+            {
+                display.ShowNotification("Tape Player disabled", "Enable it from Machine", 3000);
+                return;
+            }
+
             if (!tape.CanPause)
             {
                 display.ShowNotification("No tape mounted", string.Empty, 1500);
@@ -1138,6 +1244,12 @@ namespace BBC
 
         private void PlayTape(Display display)
         {
+            if (!tapePlayerEnabled)
+            {
+                display.ShowNotification("Tape Player disabled", "Enable it from Machine", 3000);
+                return;
+            }
+
             if (!tape.Play())
             {
                 display.ShowNotification("No tape mounted", string.Empty, 1500);
@@ -1149,6 +1261,9 @@ namespace BBC
 
         private void StopTape(Display display)
         {
+            if (!tapePlayerEnabled)
+                return;
+
             if (!tape.Stop())
             {
                 display.ShowNotification("No tape mounted", string.Empty, 1500);
@@ -1160,6 +1275,9 @@ namespace BBC
 
         private void RewindTape(Display display)
         {
+            if (!tapePlayerEnabled)
+                return;
+
             if (!tape.HasTape)
             {
                 display.ShowNotification("No tape mounted", string.Empty, 1500);
@@ -2063,7 +2181,7 @@ namespace BBC
                 }
                 else
                 {
-                    SetHayesModemEnabled(true, notify: false);
+                    SetHayesModemEnabled(false, notify: false);
                 }
 
                 adc.LoadState(reader);
@@ -3525,6 +3643,11 @@ namespace BBC
             string extension = Path.GetExtension(path);
             return string.Equals(extension, ".ssd", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsDriveLoadPath(string path)
+        {
+            return IsDiscImagePath(path) || IsZipArchivePath(path);
         }
 
         private static bool IsTapeImagePath(string path)

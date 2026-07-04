@@ -154,7 +154,10 @@ namespace BBC
         private int pendingSoundToggleRequests;
         private int pendingPauseToggleRequests;
         private int pendingTapePauseToggleRequests;
+        private int pendingTapePlayerToggleRequests;
         private int pendingFrameAdvanceRequests;
+        private int pendingDrive0ToggleRequests;
+        private int pendingDrive1ToggleRequests;
         private int pendingTube6502ToggleRequests;
         private int pendingHayesModemToggleRequests;
         private int pendingHayesLoopbackToggleRequests;
@@ -243,6 +246,10 @@ namespace BBC
 
         public bool Drive1ActivityLedActive { get; set; }
 
+        public bool Drive0Enabled { get; set; } = true;
+
+        public bool Drive1Enabled { get; set; }
+
         public bool Drive0Mounted { get; set; }
 
         public bool Drive1Mounted { get; set; }
@@ -272,6 +279,8 @@ namespace BBC
         public bool TapePlaying { get; set; }
 
         public string? TapeLabel { get; set; }
+
+        public bool TapePlayerEnabled { get; set; }
 
         public bool Tube6502Enabled { get; set; }
 
@@ -633,10 +642,31 @@ namespace BBC
             return count;
         }
 
+        public int DrainTapePlayerToggleRequests()
+        {
+            int count = pendingTapePlayerToggleRequests;
+            pendingTapePlayerToggleRequests = 0;
+            return count;
+        }
+
         public int DrainFrameAdvanceRequests()
         {
             int count = pendingFrameAdvanceRequests;
             pendingFrameAdvanceRequests = 0;
+            return count;
+        }
+
+        public int DrainDrive0ToggleRequests()
+        {
+            int count = pendingDrive0ToggleRequests;
+            pendingDrive0ToggleRequests = 0;
+            return count;
+        }
+
+        public int DrainDrive1ToggleRequests()
+        {
+            int count = pendingDrive1ToggleRequests;
+            pendingDrive1ToggleRequests = 0;
             return count;
         }
 
@@ -819,7 +849,7 @@ namespace BBC
 
         private void DrawCassetteImage()
         {
-            if (cassetteTexture == IntPtr.Zero)
+            if (!TapePlayerEnabled || cassetteTexture == IntPtr.Zero)
                 return;
 
             SdlRect target = GetCassetteImageRect();
@@ -2599,6 +2629,15 @@ namespace BBC
                 case MenuCommand.ToggleTapePause:
                     pendingTapePauseToggleRequests++;
                     break;
+                case MenuCommand.ToggleTapePlayer:
+                    pendingTapePlayerToggleRequests++;
+                    break;
+                case MenuCommand.ToggleDiscDrive0:
+                    pendingDrive0ToggleRequests++;
+                    break;
+                case MenuCommand.ToggleDiscDrive1:
+                    pendingDrive1ToggleRequests++;
+                    break;
                 case MenuCommand.ToggleTube6502:
                     pendingTube6502ToggleRequests++;
                     break;
@@ -2757,6 +2796,9 @@ namespace BBC
                 MenuCommand.ToggleTapePause => TapePaused,
                 MenuCommand.PlayTape => TapePlaying,
                 MenuCommand.PauseTape => TapePaused,
+                MenuCommand.ToggleTapePlayer => TapePlayerEnabled,
+                MenuCommand.ToggleDiscDrive0 => Drive0Enabled,
+                MenuCommand.ToggleDiscDrive1 => Drive1Enabled,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
                 MenuCommand.ToggleHayesLoopback => HayesLoopbackEnabled,
@@ -2768,17 +2810,18 @@ namespace BBC
         {
             return item.Enabled && item.Command switch
             {
-                MenuCommand.MountDrive0 => !Drive0Mounted,
-                MenuCommand.MountDrive1 => !Drive1Mounted,
-                MenuCommand.CreateBlankSsdDrive0 => !Drive0Mounted,
-                MenuCommand.CreateBlankSsdDrive1 => !Drive1Mounted,
-                MenuCommand.EjectDrive0 => Drive0Mounted,
-                MenuCommand.EjectDrive1 => Drive1Mounted,
-                MenuCommand.PlayTape => TapeMounted && !TapePlaying,
-                MenuCommand.PauseTape => TapeMounted,
-                MenuCommand.StopTape => TapeMounted && TapePlaying,
-                MenuCommand.RewindTape => TapeMounted,
-                MenuCommand.EjectTape => TapeMounted,
+                MenuCommand.MountDrive0 => Drive0Enabled && !Drive0Mounted,
+                MenuCommand.MountDrive1 => Drive1Enabled && !Drive1Mounted,
+                MenuCommand.CreateBlankSsdDrive0 => Drive0Enabled && !Drive0Mounted,
+                MenuCommand.CreateBlankSsdDrive1 => Drive1Enabled && !Drive1Mounted,
+                MenuCommand.EjectDrive0 => Drive0Enabled && Drive0Mounted,
+                MenuCommand.EjectDrive1 => Drive1Enabled && Drive1Mounted,
+                MenuCommand.LoadTape => TapePlayerEnabled,
+                MenuCommand.PlayTape => TapePlayerEnabled && TapeMounted && !TapePlaying,
+                MenuCommand.PauseTape => TapePlayerEnabled && TapeMounted,
+                MenuCommand.StopTape => TapePlayerEnabled && TapeMounted && TapePlaying,
+                MenuCommand.RewindTape => TapePlayerEnabled && TapeMounted,
+                MenuCommand.EjectTape => TapePlayerEnabled && TapeMounted,
                 MenuCommand.LoadRecentState1
                     or MenuCommand.LoadRecentState2
                     or MenuCommand.LoadRecentState3
@@ -2874,10 +2917,16 @@ namespace BBC
             DrawStatusLeds(bottomOverlayY + BottomOverlayContentOffsetY);
             DrawHayesModemPanel();
             DrawCassetteImage();
-            DrawDriveGlyph(drive0X, glyphY, 0, Drive0Mounted, Drive0ActivityLedActive, Drive0DoubleSided);
-            DrawDriveGlyph(drive1X, glyphY, 1, Drive1Mounted, Drive1ActivityLedActive, Drive1DoubleSided);
-            DrawDriveNumber(drive0X, glyphY, 0);
-            DrawDriveNumber(drive1X, glyphY, 1);
+            if (Drive0Enabled)
+            {
+                DrawDriveGlyph(drive0X, glyphY, 0, Drive0Mounted, Drive0ActivityLedActive, Drive0DoubleSided);
+                DrawDriveNumber(drive0X, glyphY, 0);
+            }
+            if (Drive1Enabled)
+            {
+                DrawDriveGlyph(drive1X, glyphY, 1, Drive1Mounted, Drive1ActivityLedActive, Drive1DoubleSided);
+                DrawDriveNumber(drive1X, glyphY, 1);
+            }
             if (!IsBottomOverlayMenu(activeMenuIndex))
             {
                 DrawHoveredCassetteLabel();
@@ -3082,12 +3131,12 @@ namespace BBC
             string? label = null;
             int centerX = 0;
 
-            if (Drive0Mounted && IsMouseOverDriveGlyph(drive0X, glyphY))
+            if (Drive0Enabled && Drive0Mounted && IsMouseOverDriveGlyph(drive0X, glyphY))
             {
                 label = FormatDriveLabel(0, Drive0Label);
                 centerX = drive0X + (DriveGlyphWidth / 2);
             }
-            else if (Drive1Mounted && IsMouseOverDriveGlyph(drive1X, glyphY))
+            else if (Drive1Enabled && Drive1Mounted && IsMouseOverDriveGlyph(drive1X, glyphY))
             {
                 label = FormatDriveLabel(1, Drive1Label);
                 centerX = drive1X + (DriveGlyphWidth / 2);
@@ -3170,6 +3219,9 @@ namespace BBC
 
         private bool IsInCassetteMenuLabel(int x, int y)
         {
+            if (!TapePlayerEnabled)
+                return false;
+
             SdlRect rect = GetCassetteImageRect();
             return rect.W > 0 && x >= rect.X && x < rect.X + rect.W && y >= rect.Y && y < rect.Y + rect.H;
         }
@@ -3178,6 +3230,9 @@ namespace BBC
         {
             for (int drive = 0; drive <= 1; drive++)
             {
+                if (!IsDriveEnabled(drive))
+                    continue;
+
                 SdlRect rect = GetDriveGlyphRect(drive);
                 if (x >= rect.X && x < rect.X + rect.W && y >= rect.Y && y < rect.Y + rect.H)
                     return GetDriveMenuIndex(drive);
@@ -3189,6 +3244,11 @@ namespace BBC
         private static bool IsDriveMenu(int menuIndex)
         {
             return menuIndex is Drive0MenuIndex or Drive1MenuIndex;
+        }
+
+        private bool IsDriveEnabled(int drive)
+        {
+            return drive == 0 ? Drive0Enabled : Drive1Enabled;
         }
 
         private static bool IsCassetteMenu(int menuIndex)
@@ -4636,6 +4696,9 @@ namespace BBC
             TogglePause,
             ToggleSoundOutput,
             ToggleTapePause,
+            ToggleTapePlayer,
+            ToggleDiscDrive0,
+            ToggleDiscDrive1,
             ToggleTube6502,
             ToggleHayesModem,
             ToggleHayesLoopback,
@@ -4659,6 +4722,10 @@ namespace BBC
                     new MenuItem("Ctrl-BREAK", "Ctrl+F12", MenuCommand.ControlBreak),
                     new MenuItem("Power reset", "", MenuCommand.PowerReset),
                     MenuSeparator(),
+                    new MenuItem("Tape Player", "", MenuCommand.ToggleTapePlayer),
+                    new MenuItem("Hayes Modem", "", MenuCommand.ToggleHayesModem),
+                    new MenuItem("Disc Drive 0", "", MenuCommand.ToggleDiscDrive0),
+                    new MenuItem("Disc Drive 1", "", MenuCommand.ToggleDiscDrive1),
                     new MenuItem("6502 Co-Processor", "", MenuCommand.ToggleTube6502),
                     MenuSeparator(),
                     new MenuItem("Sound output", "Ctrl+Q", MenuCommand.ToggleSoundOutput),
@@ -4772,14 +4839,17 @@ namespace BBC
 
         private void EnqueueSelectedFile(int drive)
         {
-            string? path = SelectNativeFile();
+            if (!IsDriveEnabled(drive))
+                return;
+
+            string? path = SelectNativeDiscFile();
             if (!string.IsNullOrWhiteSpace(path))
                 pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.Mount, path, drive));
         }
 
         private void EnqueueSelectedTape()
         {
-            string? path = SelectNativeFile();
+            string? path = SelectNativeTapeFile();
             if (!string.IsNullOrWhiteSpace(path))
                 pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Mount, path));
         }
@@ -4787,6 +4857,8 @@ namespace BBC
         private void EnqueueBlankSsd(int drive)
         {
             if (drive is < 0 or > 1)
+                return;
+            if (!IsDriveEnabled(drive))
                 return;
 
             string? path = SelectNativeSaveFile();
@@ -4815,7 +4887,7 @@ namespace BBC
                 pendingStateActions.Enqueue(new HostStateAction(HostStateActionKind.Load, recentStatePaths[index]));
         }
 
-        private static string? SelectNativeFile()
+        private static string? SelectNativeDiscFile()
         {
             try
             {
@@ -4825,13 +4897,39 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc, tape, archive, or file'; $dialog.Filter = 'BBC media (*.ssd;*.dsd;*.uef;*.zip)|*.ssd;*.dsd;*.uef;*.zip|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc or archive'; $dialog.Filter = 'BBC disc/archive (*.ssd;*.dsd;*.zip)|*.ssd;*.dsd;*.zip'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc, tape, archive, or file\")");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc or archive\" of type {\"ssd\", \"dsd\", \"zip\"})");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc, tape, archive, or file");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc or archive", "--file-filter=BBC disc/archive (*.ssd *.dsd *.zip) | *.ssd *.dsd *.zip");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string? SelectNativeTapeFile()
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC tape'; $dialog.Filter = 'UEF tape (*.uef)|*.uef'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC tape\" of type {\"uef\"})");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC tape", "--file-filter=UEF tape (*.uef) | *.uef");
             }
             catch
             {
