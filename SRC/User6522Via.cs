@@ -137,7 +137,7 @@ namespace BBC
             timer1Latch = 0x1FFFE;
             timer2Counter = 0x1FFFE;
             timer2Latch = 0x1FFFE;
-            timer1Running = false;
+            timer1Running = true;
             timer1HasInterrupted = true;
             timer2Running = false;
             timer2HasInterrupted = false;

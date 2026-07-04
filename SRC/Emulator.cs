@@ -797,6 +797,15 @@ namespace BBC
             StopCpu();
             StopStartupRuntimeTrace();
 
+            string? headlessPngPath = Environment.GetEnvironmentVariable("BBC_HEADLESS_PNG");
+            if (!string.IsNullOrWhiteSpace(headlessPngPath))
+            {
+                using Display capture = new Display(scanlines: false);
+                Video.Render(capture);
+                capture.SavePng(headlessPngPath);
+                Console.WriteLine($"Headless PNG: {headlessPngPath}");
+            }
+
             if (cpuException is not null)
                 throw new InvalidOperationException("CPU execution failed.", cpuException);
             if (tube6502?.CpuException is not null)
