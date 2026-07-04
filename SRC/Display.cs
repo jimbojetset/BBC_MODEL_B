@@ -4222,12 +4222,14 @@ namespace BBC
             MenuCommand? command = keySym switch
             {
                 SDLK_O => MenuCommand.LoadState,
-                SDLK_S => MenuCommand.SaveState,
+                SDLK_V => MenuCommand.SaveState,
                 SDLK_T => MenuCommand.ToggleTapePlayer,
                 SDLK_M => MenuCommand.ToggleHayesModem,
                 SDLK_D => MenuCommand.ToggleDiscDrive1,
                 SDLK_C => MenuCommand.ToggleTube6502,
                 SDLK_F => MenuCommand.ToggleFullScreen,
+                SDLK_R => MenuCommand.OpenRomManager,
+                SDLK_K => MenuCommand.OpenInputMapper,
                 _ => null
             };
 
@@ -4776,7 +4778,7 @@ namespace BBC
             [
                 new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
                 new MenuItem("Open state...", "Ctrl+Shift+O", MenuCommand.LoadState),
-                new MenuItem("Save state...", "Ctrl+Shift+S", MenuCommand.SaveState)
+                new MenuItem("Save state...", "Ctrl+Shift+V", MenuCommand.SaveState)
             ];
 
             if (recentStatePaths.Count > 0)

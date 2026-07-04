@@ -155,6 +155,8 @@ F11                     Toggle scanlines
 Ctrl+S / Cmd+S          Save screenshot
 Ctrl+L / Cmd+L          Open the disc picker
 Ctrl+V / Cmd+V          Paste clipboard text into the BBC
+Ctrl+Shift+R            Open the ROM Manager
+Ctrl+Shift+K            Open the Keyboard Mapper
 Left Ctrl+Left Shift    Toggle BBC SHIFT LOCK
 ```
 
