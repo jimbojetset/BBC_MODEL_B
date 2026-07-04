@@ -2,7 +2,8 @@
 
 A BBC Micro Model B emulator written in C# and .NET.
 
-It aims to feel like a real Beeb rather than a launcher for disc images. It emulates the 6502, OS 1.20, BASIC II, DFS, the 8271 disc controller, the VIAs, video, sound, keyboard matrix, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, and an optional 65C02 Tube second processor.
+I wrote this to feel more like a real Beeb rather than just a launcher for disc images.
+It emulates the 6502, OS 1.20, BASIC II, DFS, the 8271 disc controller, the VIAs, video, sound, keyboard matrix, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, and an optional 65C02 Tube second processor.
 
 <p>
     <img src="Screenshot0.png" alt="BBC Model B emulator screenshot" width="49%">

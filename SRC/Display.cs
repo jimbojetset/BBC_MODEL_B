@@ -4135,6 +4135,9 @@ namespace BBC
                 return;
             }
 
+            if (TryExecuteMenuShortcut(keySym, modifiers))
+                return;
+
             if (keySym == SDLK_V && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
             {
                 EnqueueClipboardText();
@@ -4209,6 +4212,32 @@ namespace BBC
                 if (IsHostTextKey(keySym))
                     suppressedTextInputCharacters++;
             }
+        }
+
+        private bool TryExecuteMenuShortcut(int keySym, int modifiers)
+        {
+            if ((modifiers & KMOD_CTRL) == 0 || (modifiers & KMOD_SHIFT) == 0)
+                return false;
+
+            MenuCommand? command = keySym switch
+            {
+                SDLK_O => MenuCommand.LoadState,
+                SDLK_S => MenuCommand.SaveState,
+                SDLK_T => MenuCommand.ToggleTapePlayer,
+                SDLK_M => MenuCommand.ToggleHayesModem,
+                SDLK_D => MenuCommand.ToggleDiscDrive1,
+                SDLK_C => MenuCommand.ToggleTube6502,
+                SDLK_F => MenuCommand.ToggleFullScreen,
+                _ => null
+            };
+
+            if (!command.HasValue)
+                return false;
+
+            ExecuteMenuCommand(command.Value);
+            activeMenuIndex = -1;
+            hoveredMenuItemIndex = -1;
+            return true;
         }
 
         private bool ShouldUseTextInputForKey(int modifiers, BbcKeyBinding? key)
@@ -4722,11 +4751,11 @@ namespace BBC
                     new MenuItem("Ctrl-BREAK", "Ctrl+F12", MenuCommand.ControlBreak),
                     new MenuItem("Power reset", "", MenuCommand.PowerReset),
                     MenuSeparator(),
-                    new MenuItem("Tape Player", "", MenuCommand.ToggleTapePlayer),
-                    new MenuItem("Hayes Modem", "", MenuCommand.ToggleHayesModem),
+                    new MenuItem("Tape Player", "Ctrl+Shift+T", MenuCommand.ToggleTapePlayer),
+                    new MenuItem("Hayes Modem", "Ctrl+Shift+M", MenuCommand.ToggleHayesModem),
                     new MenuItem("Disc Drive 0", "", MenuCommand.ToggleDiscDrive0),
-                    new MenuItem("Disc Drive 1", "", MenuCommand.ToggleDiscDrive1),
-                    new MenuItem("6502 Co-Processor", "", MenuCommand.ToggleTube6502),
+                    new MenuItem("Disc Drive 1", "Ctrl+Shift+D", MenuCommand.ToggleDiscDrive1),
+                    new MenuItem("6502 Co-Processor", "Ctrl+Shift+C", MenuCommand.ToggleTube6502),
                     MenuSeparator(),
                     new MenuItem("Sound output", "Ctrl+Q", MenuCommand.ToggleSoundOutput),
                     new MenuItem("Pause Emulator", "Ctrl+P", MenuCommand.TogglePause)
@@ -4735,7 +4764,7 @@ namespace BBC
                 new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper),
                 new MenuDefinition("View",
                 [
-                    new MenuItem("Fullscreen", "", MenuCommand.ToggleFullScreen),
+                    new MenuItem("Fullscreen", "Ctrl+Shift+F", MenuCommand.ToggleFullScreen),
                     new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines)
                 ])
             ];
@@ -4746,8 +4775,8 @@ namespace BBC
             List<MenuItem> items =
             [
                 new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
-                new MenuItem("Open state...", "", MenuCommand.LoadState),
-                new MenuItem("Save state...", "", MenuCommand.SaveState)
+                new MenuItem("Open state...", "Ctrl+Shift+O", MenuCommand.LoadState),
+                new MenuItem("Save state...", "Ctrl+Shift+S", MenuCommand.SaveState)
             ];
 
             if (recentStatePaths.Count > 0)
