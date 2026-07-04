@@ -502,6 +502,9 @@ namespace BBC
         private byte ReadPortB()
         {
             byte floatingInput = IsRepeatedPortBPoll() ? floatingPortBInput : (byte)0xFF;
+            // Unconnected user-port inputs idle high on the BBC. Defender polls PB7
+            // with BIT $FE60 and visibly stalls if the emulator lets that line drift low.
+            floatingInput |= 0x80;
             byte value = ReadPort(portB, dataDirectionB, floatingInput);
             value = (byte)((value & ~externalPortBMask) | externalPortBValue);
             if ((externalPortBMask & 0x18) != 0)

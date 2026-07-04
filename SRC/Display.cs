@@ -4195,7 +4195,7 @@ namespace BBC
             EnqueueKeyboardJoystickChange(keySym, true);
 
             BbcKeyBinding? key = inputProfile.MapHostKey(keySym, modifiers);
-            if (IsHostTextKey(keySym) && ShouldUseTextInputForKey(modifiers, key))
+            if (IsHostTextKey(keySym) && ShouldUseTextInputForKey(keySym, modifiers, key))
             {
                 textInputHostKeys.Add(keySym);
                 return;
@@ -4242,13 +4242,19 @@ namespace BBC
             return true;
         }
 
-        private bool ShouldUseTextInputForKey(int modifiers, BbcKeyBinding? key)
+        private bool ShouldUseTextInputForKey(int keySym, int modifiers, BbcKeyBinding? key)
         {
             if ((modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
                 return false;
 
             if (!key.HasValue)
                 return true;
+
+            if ((modifiers & KMOD_ALT) == 0
+                && (modifiers & KMOD_SHIFT) != 0
+                && key.Value.ShiftAdjustment == BbcShiftAdjustment.Preserve
+                && IsShiftedMatrixGameplayKey(keySym))
+                return false;
 
             return (modifiers & (KMOD_SHIFT | KMOD_ALT)) != 0
                 || key.Value.ShiftAdjustment != BbcShiftAdjustment.Preserve;
@@ -4258,6 +4264,12 @@ namespace BBC
         {
             return keySym >= 32 && keySym <= 126
                 || keySym == SDLK_SECTION;
+        }
+
+        private static bool IsShiftedMatrixGameplayKey(int keySym)
+        {
+            return keySym == SDLK_SPACE
+                || keySym is >= SDLK_A and <= SDLK_Z;
         }
 
         private void EnqueueKeyUp(int keySym)
