@@ -37,6 +37,7 @@ namespace BBC
         private const string TubeMenuStatusLabel = "SECOND PROCESSOR";
         private const int TubeCoProcessorImageWidth = 72;
         private const int TubeCoProcessorImageHeight = 47;
+        private const int TubeCoProcessorImageScalePercent = 130;
         private const int TubeCoProcessorImageRightInset = 12;
         private const int TubeCoProcessorImageTopInset = 4;
         private const string TubeCoProcessorImageResourceName = "BBC.TubeCoProcessor.png";
@@ -109,8 +110,8 @@ namespace BBC
         private const int CassetteMenuIndex = -5;
         private const string HayesMenuTitle = "MODEM";
         private const int BottomOverlayPadding = 4;
-        private const int BottomOverlayExtraHeight = 10;
-        private const int BottomOverlayContentOffsetY = 10;
+        private const int BottomOverlayExtraHeight = 20;
+        private const int BottomOverlayContentOffsetY = 20;
         private const byte OverlayTextGrey = 80;
         private const int NotificationDurationMilliseconds = 15000;
         private const int NotificationMargin = 28;
@@ -806,11 +807,13 @@ namespace BBC
             if (!Tube6502Enabled || tubeCoProcessorTexture == IntPtr.Zero)
                 return;
 
+            int width = TubeCoProcessorImageWidth * TubeCoProcessorImageScalePercent / 100;
+            int height = TubeCoProcessorImageHeight * TubeCoProcessorImageScalePercent / 100;
             SdlRect target = new SdlRect(
-                logicalWidth - TubeCoProcessorImageWidth - TubeCoProcessorImageRightInset,
+                logicalWidth - width - TubeCoProcessorImageRightInset,
                 TopMenuHeight + TubeCoProcessorImageTopInset,
-                TubeCoProcessorImageWidth,
-                TubeCoProcessorImageHeight);
+                width,
+                height);
             _ = SDL_RenderCopy(renderer, tubeCoProcessorTexture, IntPtr.Zero, ref target);
         }
 
@@ -4657,7 +4660,6 @@ namespace BBC
                     new MenuItem("Power reset", "", MenuCommand.PowerReset),
                     MenuSeparator(),
                     new MenuItem("6502 Co-Processor", "", MenuCommand.ToggleTube6502),
-                    new MenuItem("Hayes Modem", "", MenuCommand.ToggleHayesModem),
                     MenuSeparator(),
                     new MenuItem("Sound output", "Ctrl+Q", MenuCommand.ToggleSoundOutput),
                     new MenuItem("Pause Emulator", "Ctrl+P", MenuCommand.TogglePause)

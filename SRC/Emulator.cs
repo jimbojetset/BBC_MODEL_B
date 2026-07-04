@@ -421,7 +421,6 @@ namespace BBC
         private const string Tube6502RomMarker = "6502 TUBE";
         private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
         private static readonly bool TubeDebugEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1";
-        private static readonly bool InitialHayesModemEnabled = Environment.GetEnvironmentVariable("BBC_HAYES_MODEM") == "1";
         private static readonly bool SerialPcTraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE") == "1";
         private static readonly bool SerialPcTraceAutoEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
         private static readonly string? SerialPcTracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE_FILE")
@@ -572,8 +571,7 @@ namespace BBC
             discController.DriveMotorStarted += _ => discDriveSound?.MotorStarted();
             discController.DriveMotorStopped += _ => discDriveSound?.MotorStopped();
             discController.DriveSeek += (_, trackDelta) => discDriveSound?.Seek(trackDelta);
-            if (InitialHayesModemEnabled)
-                SetHayesModemEnabled(true, notify: false);
+            SetHayesModemEnabled(true, notify: false);
 
             tubeUla.HostIrqChanged += asserted =>
             {
@@ -2056,7 +2054,7 @@ namespace BBC
                 }
                 else
                 {
-                    DisposeHayesModem();
+                    SetHayesModemEnabled(true, notify: false);
                 }
 
                 adc.LoadState(reader);
