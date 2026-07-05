@@ -2661,6 +2661,8 @@ namespace BBC
                 case MenuCommand.LoadTape:
                     EnqueueSelectedTape();
                     break;
+                case MenuCommand.CreateUefTape:
+                    break;
                 case MenuCommand.RecordTape:
                     break;
                 case MenuCommand.PlayTape:
@@ -2930,6 +2932,7 @@ namespace BBC
                 MenuCommand.EjectDrive0 => Drive0Enabled && Drive0Mounted,
                 MenuCommand.EjectDrive1 => Drive1Enabled && Drive1Mounted,
                 MenuCommand.LoadTape => TapePlayerEnabled && !TapeMounted,
+                MenuCommand.CreateUefTape => false,
                 MenuCommand.RecordTape => false,
                 MenuCommand.PlayTape => TapePlayerEnabled && TapeMounted && !TapePlaying,
                 MenuCommand.PauseTape => TapePlayerEnabled && TapeMounted,
@@ -4854,7 +4857,8 @@ namespace BBC
 
         private static readonly MenuDefinition EmptyCassetteMenu = new MenuDefinition("Cassette",
         [
-            new MenuItem("LOAD", "", MenuCommand.LoadTape)
+            new MenuItem("LOAD", "", MenuCommand.LoadTape),
+            new MenuItem("CREATE UEF", "", MenuCommand.CreateUefTape, Enabled: false)
         ]);
 
         private static readonly MenuDefinition LoadedCassetteMenu = new MenuDefinition("Cassette",
@@ -4877,6 +4881,7 @@ namespace BBC
             EjectDrive0,
             EjectDrive1,
             LoadTape,
+            CreateUefTape,
             RecordTape,
             PlayTape,
             PauseTape,
