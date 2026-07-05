@@ -18,6 +18,3 @@ Properties/
 Assets/*.sav
 RecentSaveStates.txt
 Assets/*.json
-Games/*.uef
-Games/*.ssd
-Games/*.dsd
