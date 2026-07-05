@@ -551,7 +551,7 @@ namespace BBC
         private StreamWriter? exileRamTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 13;
+        private const int SaveStateVersion = 14;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -2106,6 +2106,7 @@ namespace BBC
                 systemVia.SaveState(writer);
                 userVia.SaveState(writer);
                 serialAcia.SaveState(writer);
+                writer.Write(tapePlayerEnabled);
                 tape.SaveState(writer);
                 writer.Write(hayesModem is not null);
                 if (hayesModem is not null)
@@ -2170,6 +2171,7 @@ namespace BBC
                 systemVia.LoadState(reader);
                 userVia.LoadState(reader);
                 serialAcia.LoadState(reader);
+                tapePlayerEnabled = reader.ReadBoolean();
                 tape.LoadState(reader);
                 bool saveHasHayesModem = reader.ReadBoolean();
                 if (saveHasHayesModem)
