@@ -136,7 +136,7 @@ A few useful details:
 
 - Disc menu loads accept `.ssd`, `.dsd`, and `.zip`. ZIP files are browsed without extracting them.
 - Drive 0 is on by default. Drive 1 is off until enabled from `Machine` or used from the command line.
-- The tape player and Hayes modem are off by default. Enable them from `Machine`, or start with `--tape` / `--modem`.
+- The tape player is on by default. The Hayes modem is off until enabled from `Machine` or started with `--modem`.
 - Menu disc mounts behave like inserting a disc. They do not auto-boot; use `Shift-BREAK` when you want to boot.
 - Save states use `.sav` files and are opened or saved from the `File` menu.
 - Screenshots go into `Screenshots/`.
@@ -178,7 +178,7 @@ You can create blank media from the menu or command line. DFS can also catalogue
 
 The Machine menu lets you add or remove hardware while the emulator is running:
 
-- `Tape Player` enables the cassette hardware and shows the tape controls.
+- `Tape Player` toggles the cassette hardware and tape controls.
 - `Hayes Modem` enables the modem and its front-panel LEDs.
 - `Disc Drive 0` and `Disc Drive 1` enable or remove each physical drive.
 - `6502 Co-Processor` enables the Tube hardware. Use `Ctrl-BREAK` after changing it so the BBC sees the new machine.

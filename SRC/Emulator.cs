@@ -516,7 +516,7 @@ namespace BBC
         private readonly TubeUla tubeUla = new TubeUla();
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
-        private bool tapePlayerEnabled;
+        private bool tapePlayerEnabled = true;
         private bool drive0Enabled = true;
         private bool drive1Enabled;
         private string? configuredTubeHostRomPath;
