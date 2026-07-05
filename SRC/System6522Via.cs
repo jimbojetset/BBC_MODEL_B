@@ -31,8 +31,10 @@ namespace BBC
         private const byte InterruptFlagKeyboard = 0x01;
         private const byte InterruptFlagAdcEoc = 0x10;
         private const int VsyncPeripheralCycles = 20_000;
-        private const int Timer1ReloadExtraCycles = 1;
-        private const int Timer1LoadExtraCycles = 128;
+        private const int Timer1ReloadExtraCycles = 4;
+        private const int Timer1LoadExtraCycles = 1;
+        private const int Timer2LoadExtraCycles = 1;
+        private const int TimerExpiredThreshold = -2;
         private const byte InterruptSummary = 0x80;
         private readonly SN76489_Sound sound;
         private readonly byte[] registers = new byte[16];
@@ -44,13 +46,15 @@ namespace BBC
         private byte portB;
         private byte dataDirectionA;
         private byte dataDirectionB;
-        private ushort timer1Counter;
-        private ushort timer1Latch;
-        private ushort timer2Counter;
-        private ushort timer2Latch;
+        private int timer1Counter;
+        private int timer1Latch;
+        private int timer2Counter;
+        private int timer2Latch;
         private bool timer1Running;
+        private bool timer1HasInterrupted;
         private bool timer2Running;
         private bool timer2HasInterrupted;
+        private int justHit;
         private int peripheralCycleRemainder;
         private int vsyncCycleCounter;
         private int frameCounter;
@@ -81,13 +85,15 @@ namespace BBC
             portB = 0;
             dataDirectionA = 0;
             dataDirectionB = 0;
-            timer1Counter = 0;
-            timer1Latch = 0;
-            timer2Counter = 0;
-            timer2Latch = 0;
-            timer1Running = false;
+            timer1Counter = 0x1FFFE;
+            timer1Latch = 0x1FFFE;
+            timer2Counter = 0x1FFFE;
+            timer2Latch = 0x1FFFE;
+            timer1Running = true;
+            timer1HasInterrupted = true;
             timer2Running = false;
             timer2HasInterrupted = false;
+            justHit = 0;
             peripheralCycleRemainder = 0;
             vsyncCycleCounter = 0;
             frameCounter = 0;
@@ -115,8 +121,10 @@ namespace BBC
             writer.Write(timer2Counter);
             writer.Write(timer2Latch);
             writer.Write(timer1Running);
+            writer.Write(timer1HasInterrupted);
             writer.Write(timer2Running);
             writer.Write(timer2HasInterrupted);
+            writer.Write(justHit);
             writer.Write(peripheralCycleRemainder);
             writer.Write(vsyncCycleCounter);
             writer.Write(frameCounter);
@@ -141,13 +149,15 @@ namespace BBC
             portB = reader.ReadByte();
             dataDirectionA = reader.ReadByte();
             dataDirectionB = reader.ReadByte();
-            timer1Counter = reader.ReadUInt16();
-            timer1Latch = reader.ReadUInt16();
-            timer2Counter = reader.ReadUInt16();
-            timer2Latch = reader.ReadUInt16();
+            timer1Counter = reader.ReadInt32();
+            timer1Latch = reader.ReadInt32();
+            timer2Counter = reader.ReadInt32();
+            timer2Latch = reader.ReadInt32();
             timer1Running = reader.ReadBoolean();
+            timer1HasInterrupted = reader.ReadBoolean();
             timer2Running = reader.ReadBoolean();
             timer2HasInterrupted = reader.ReadBoolean();
+            justHit = reader.ReadInt32();
             peripheralCycleRemainder = reader.ReadInt32();
             vsyncCycleCounter = reader.ReadInt32();
             frameCounter = reader.ReadInt32();
@@ -238,17 +248,15 @@ namespace BBC
 
             int peripheralCycles = (cycles + peripheralCycleRemainder) / 2;
             peripheralCycleRemainder = (cycles + peripheralCycleRemainder) & 1;
-
-            if (peripheralCycles == 0)
-                return;
+            justHit = 0;
 
             if (timer1Running)
-                TickTimer1(peripheralCycles);
+                TickTimer1(cycles);
 
             if (timer2Running)
-                TickTimer2(peripheralCycles);
+                TickTimer2(cycles);
 
-            if (!externalVsyncLineEnabled)
+            if (!externalVsyncLineEnabled && peripheralCycles > 0)
                 TickVsync(peripheralCycles);
         }
 
@@ -264,11 +272,11 @@ namespace BBC
                 0x2 => dataDirectionB,
                 0x3 => dataDirectionA,
                 0x4 => ReadTimerLow(timer1Counter, InterruptFlagTimer1),
-                0x5 => (byte)(timer1Counter >> 8),
-                0x6 => (byte)timer1Latch,
-                0x7 => (byte)(timer1Latch >> 8),
+                0x5 => ReadTimerHigh(timer1Counter),
+                0x6 => ReadTimerLowLatch(timer1Latch),
+                0x7 => ReadTimerHighLatch(timer1Latch),
                 0x8 => ReadTimerLow(timer2Counter, InterruptFlagTimer2),
-                0x9 => (byte)(timer2Counter >> 8),
+                0x9 => ReadTimerHigh(timer2Counter),
                 0xD => GetInterruptFlags(),
                 0xE => (byte)(interruptEnable | 0x80),
                 _ => registers[register]
@@ -304,41 +312,51 @@ namespace BBC
                     break;
 
                 case 0x4:
-                    timer1Latch = (ushort)((timer1Latch & 0xFF00) | value);
+                    timer1Latch = SetTimerLow(timer1Latch, value);
                     registers[0x6] = value;
                     break;
 
                 case 0x5:
-                    timer1Latch = (ushort)((value << 8) | (timer1Latch & 0x00FF));
+                    timer1Latch = SetTimerHigh(timer1Latch, value);
                     LoadTimer1Counter();
                     timer1Running = true;
+                    timer1HasInterrupted = false;
                     registers[0x7] = value;
-                    ClearInterrupt(InterruptFlagTimer1);
+                    ClearTimerInterrupt(InterruptFlagTimer1, 0x01);
                     break;
 
                 case 0x6:
-                    timer1Latch = (ushort)((timer1Latch & 0xFF00) | value);
+                    timer1Latch = SetTimerLow(timer1Latch, value);
                     break;
 
                 case 0x7:
-                    timer1Latch = (ushort)((value << 8) | (timer1Latch & 0x00FF));
-                    ClearInterrupt(InterruptFlagTimer1);
+                    timer1Latch = SetTimerHigh(timer1Latch, value);
+                    ClearTimerInterrupt(InterruptFlagTimer1, 0x01);
                     break;
 
                 case 0x8:
-                    timer2Latch = (ushort)((timer2Latch & 0xFF00) | value);
+                    timer2Latch = SetTimerLow(timer2Latch, value);
                     break;
 
                 case 0x9:
-                    timer2Latch = (ushort)((value << 8) | (timer2Latch & 0x00FF));
-                    timer2Counter = timer2Latch;
+                    timer2Latch = SetTimerHigh(timer2Latch, value);
+                    LoadTimer2Counter();
                     timer2Running = true;
                     timer2HasInterrupted = false;
-                    ClearInterrupt(InterruptFlagTimer2);
+                    ClearTimerInterrupt(InterruptFlagTimer2, 0x02);
+                    break;
+
+                case 0xB:
+                    if ((justHit & 0x01) != 0 && (value & 0x40) == 0)
+                        timer1HasInterrupted = true;
                     break;
 
                 case 0xD:
                     ClearInterrupt((byte)(value & 0x7F));
+                    if ((justHit & 0x01) != 0)
+                        SetInterrupt(InterruptFlagTimer1);
+                    if ((justHit & 0x02) != 0)
+                        SetInterrupt(InterruptFlagTimer2);
                     break;
 
                 case 0xE:
@@ -352,49 +370,60 @@ namespace BBC
 
         private void TickTimer1(int cycles)
         {
-            int remaining = cycles;
+            int oldCounter = timer1Counter;
+            timer1Counter -= cycles;
+            if (timer1Counter >= TimerExpiredThreshold)
+                return;
 
-            while (remaining > 0 && timer1Running)
+            if (oldCounter > -3 && !timer1HasInterrupted)
             {
-                if (remaining <= timer1Counter)
-                {
-                    timer1Counter -= (ushort)remaining;
-                    return;
-                }
-
-                remaining -= timer1Counter + 1;
                 SetInterrupt(InterruptFlagTimer1);
-
-                if (IsTimer1FreeRunning())
-                {
-                    ReloadTimer1Counter();
-                }
-                else
-                {
-                    timer1Running = false;
-                }
+                if (timer1Counter == -3)
+                    justHit |= 0x01;
+                if (!IsTimer1FreeRunning())
+                    timer1HasInterrupted = true;
             }
+
+            if (oldCounter > -3 && !IsTimer1FreeRunning())
+                timer1HasInterrupted = true;
+
+            while (timer1Counter < -3)
+                ReloadTimer1Counter();
         }
 
         private void ReloadTimer1Counter()
         {
-            timer1Counter = AddTimerOffset(timer1Latch, Timer1ReloadExtraCycles);
+            timer1Counter += timer1Latch + Timer1ReloadExtraCycles;
         }
 
         private void LoadTimer1Counter()
         {
-            timer1Counter = AddTimerOffset(timer1Latch, Timer1LoadExtraCycles);
+            timer1Counter = timer1Latch + Timer1LoadExtraCycles;
         }
 
         private void TickTimer2(int cycles)
         {
-            if (!timer2HasInterrupted && cycles > timer2Counter)
+            int oldCounter = timer2Counter;
+            timer2Counter -= cycles;
+            if (timer2Counter >= TimerExpiredThreshold)
+                return;
+
+            if (oldCounter > -3 && !timer2HasInterrupted)
             {
                 timer2HasInterrupted = true;
                 SetInterrupt(InterruptFlagTimer2);
+                if (timer2Counter == -3)
+                    justHit |= 0x02;
             }
 
-            timer2Counter = unchecked((ushort)(timer2Counter - cycles));
+            timer2Counter += 0x20000;
+        }
+
+        private void LoadTimer2Counter()
+        {
+            timer2Counter = timer2Latch + Timer2LoadExtraCycles;
+            if ((registers[0xB] & 0x20) != 0)
+                timer2Counter -= 2;
         }
 
         private void TickVsync(int peripheralCycles)
@@ -451,10 +480,31 @@ namespace BBC
             };
         }
 
-        private byte ReadTimerLow(ushort counter, byte interruptFlag)
+        private byte ReadTimerLow(int counter, byte interruptFlag)
         {
-            ClearInterrupt(interruptFlag);
-            return (byte)counter;
+            ClearTimerInterrupt(interruptFlag, interruptFlag == InterruptFlagTimer1 ? 0x01 : 0x02);
+            return (byte)(((counter + 1) >> 1) & 0xFF);
+        }
+
+        private byte ReadTimerHigh(int counter)
+        {
+            return (byte)(((counter + 1) >> 9) & 0xFF);
+        }
+
+        private byte ReadTimerLowLatch(int latch)
+        {
+            return (byte)((latch >> 1) & 0xFF);
+        }
+
+        private byte ReadTimerHighLatch(int latch)
+        {
+            return (byte)((latch >> 9) & 0xFF);
+        }
+
+        private void ClearTimerInterrupt(byte interruptFlag, int justHitMask)
+        {
+            if ((justHit & justHitMask) == 0)
+                ClearInterrupt(interruptFlag);
         }
 
         private byte GetInterruptFlags()
@@ -481,9 +531,14 @@ namespace BBC
             return (registers[0xB] & 0x40) != 0;
         }
 
-        private static ushort AddTimerOffset(ushort value, int offset)
+        private static int SetTimerLow(int timer, byte value)
         {
-            return (ushort)Math.Clamp(value + offset, 0, 0xFFFF);
+            return (timer & 0x1FE00) | (value << 1);
+        }
+
+        private static int SetTimerHigh(int timer, byte value)
+        {
+            return (timer & 0x1FE) | (value << 9);
         }
 
         private static byte ReadPort(byte output, byte direction)

@@ -1281,6 +1281,7 @@ namespace BBC.CPU
             ushort pcBefore = (ushort)registers.PC;
             byte opcodeBefore = PeekByte(pcBefore);
             int beforeCycles = cyclesThisOperation;
+            cyclesNotifiedThisInstruction = 0;
             bool irqGate = !iFlagBeforeInstruction;
             while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
             {
@@ -1303,8 +1304,12 @@ namespace BBC.CPU
             int elapsed = cyclesThisOperation - beforeCycles;
             if (elapsed > 0)
             {
-                Interlocked.Add(ref totalCycles, elapsed);
-                OnCyclesExecuted?.Invoke(elapsed);
+                int remainingCycles = Math.Max(0, elapsed - cyclesNotifiedThisInstruction);
+                if (remainingCycles > 0)
+                {
+                    Interlocked.Add(ref totalCycles, remainingCycles);
+                    OnCyclesExecuted?.Invoke(remainingCycles);
+                }
             }
             OnInstructionExecuted?.Invoke(pcBefore, opcodeBefore, elapsed, false);
 
@@ -3147,7 +3152,11 @@ namespace BBC.CPU
             if (stretch != null)
             {
                 int extra = stretch(masked);
-                if (extra > 0) cyclesThisOperation += extra;
+                if (extra > 0)
+                {
+                    cyclesThisOperation += extra;
+                    NotifyCyclesDuringInstruction(extra);
+                }
             }
             return value;
         }
@@ -3168,7 +3177,11 @@ namespace BBC.CPU
             if (stretch != null)
             {
                 int extra = stretch(masked);
-                if (extra > 0) cyclesThisOperation += extra;
+                if (extra > 0)
+                {
+                    cyclesThisOperation += extra;
+                    NotifyCyclesDuringInstruction(extra);
+                }
             }
         }
 

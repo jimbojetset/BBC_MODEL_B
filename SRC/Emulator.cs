@@ -551,7 +551,7 @@ namespace BBC
         private StreamWriter? exileRamTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 14;
+        private const int SaveStateVersion = 15;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -3528,10 +3528,21 @@ namespace BBC
         private int ComputeBusStretchCycles(ulong address)
         {
             ushort addr = (ushort)(address & 0xFFFF);
-            if (addr >= IoStart && addr <= IoEnd)
-                return 1;
+            if (!IsOneMHzBusAddress(addr))
+                return 0;
 
-            return 0;
+            return 1 + (int)(Cpu.TotalCycles & 1);
+        }
+
+        private static bool IsOneMHzBusAddress(ushort address)
+        {
+            if (address < IoStart || address > IoEnd)
+                return false;
+
+            if (address < 0xFE00)
+                return true;
+
+            return ((address >> 5) & 0x07) is 0 or 2 or 3 or 6;
         }
 
         private byte ReadSidewaysRom(ushort address)
