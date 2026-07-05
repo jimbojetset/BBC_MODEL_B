@@ -278,6 +278,10 @@ namespace BBC
 
         public bool TapePlaying { get; set; }
 
+        public bool TapeFastTransportActive { get; set; }
+
+        public int TapeCounter { get; set; }
+
         public string? TapeLabel { get; set; }
 
         public bool TapePlayerEnabled { get; set; }
@@ -856,6 +860,7 @@ namespace BBC
             _ = SDL_RenderCopy(renderer, cassetteTexture, IntPtr.Zero, ref target);
             DrawCassetteLoadedImage(target);
             DrawCassetteLed(target, TapePlaying);
+            DrawCassetteCounter(target);
         }
 
         private void DrawCassetteLoadedImage(SdlRect cassette)
@@ -909,8 +914,17 @@ namespace BBC
 
                 bool enabled = IsMenuItemEnabled(item);
                 byte textGrey = enabled ? (byte)230 : (byte)96;
-                string label = IsMenuItemChecked(item.Command) ? "* " + item.Text : "  " + item.Text;
-                DrawRendererText(label, menuX + 10, itemY + 4, textGrey, textGrey, textGrey);
+                string itemText = GetMenuItemText(item);
+                string label = IsMenuItemChecked(item.Command) ? "* " + itemText : "  " + itemText;
+                int textX = menuX + 10;
+                TransportSymbol symbol = GetMenuItemSymbol(item);
+                if (symbol != TransportSymbol.None)
+                {
+                    DrawTransportSymbol(symbol, menuX + 13, itemY + 5, textGrey, textGrey, textGrey);
+                    textX += 18;
+                }
+
+                DrawRendererText(label, textX, itemY + 4, textGrey, textGrey, textGrey);
 
                 if (item.Shortcut.Length > 0)
                 {
@@ -919,6 +933,78 @@ namespace BBC
                 }
 
                 itemY += itemHeight;
+            }
+        }
+
+        private void DrawTransportSymbol(TransportSymbol symbol, int x, int y, byte red, byte green, byte blue)
+        {
+            _ = SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+
+            switch (symbol)
+            {
+                case TransportSymbol.Record:
+                    DrawRoundLed(x + 5, y + 5, 4, red, green, blue);
+                    break;
+                case TransportSymbol.Play:
+                    FillRightTriangle(x + 2, y + 1, 8, 9);
+                    break;
+                case TransportSymbol.Rewind:
+                    FillLeftTriangle(x + 0, y + 1, 7, 9);
+                    FillLeftTriangle(x + 6, y + 1, 7, 9);
+                    break;
+                case TransportSymbol.Cue:
+                    FillRightTriangle(x + 0, y + 1, 7, 9);
+                    FillRightTriangle(x + 6, y + 1, 7, 9);
+                    break;
+                case TransportSymbol.Stop:
+                    FillMenuRect(x + 2, y + 2, 8, 8);
+                    break;
+                case TransportSymbol.Eject:
+                    FillUpTriangle(x + 2, y + 1, 8, 6);
+                    FillMenuRect(x + 1, y + 8, 10, 2);
+                    break;
+                case TransportSymbol.Pause:
+                    FillMenuRect(x + 2, y + 1, 3, 9);
+                    FillMenuRect(x + 7, y + 1, 3, 9);
+                    break;
+                case TransportSymbol.CounterReset:
+                    DrawTinyText("000", x, y + 3, red, green, blue);
+                    break;
+            }
+
+            _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        }
+
+        private void FillMenuRect(int x, int y, int width, int height)
+        {
+            SdlRect rect = new SdlRect(x, y, width, height);
+            _ = SDL_RenderFillRect(renderer, ref rect);
+        }
+
+        private void FillRightTriangle(int x, int y, int width, int height)
+        {
+            for (int row = 0; row < height; row++)
+            {
+                int rowWidth = Math.Max(1, (row + 1) * width / height);
+                FillMenuRect(x, y + row, rowWidth, 1);
+            }
+        }
+
+        private void FillLeftTriangle(int x, int y, int width, int height)
+        {
+            for (int row = 0; row < height; row++)
+            {
+                int rowWidth = Math.Max(1, (row + 1) * width / height);
+                FillMenuRect(x + width - rowWidth, y + row, rowWidth, 1);
+            }
+        }
+
+        private void FillUpTriangle(int x, int y, int width, int height)
+        {
+            for (int row = 0; row < height; row++)
+            {
+                int rowWidth = Math.Max(1, width - (row * width / height));
+                FillMenuRect(x + ((width - rowWidth) / 2), y + row, rowWidth, 1);
             }
         }
 
@@ -1963,9 +2049,9 @@ namespace BBC
             return menuIndex switch
             {
                 HayesMenuIndex => HayesMenu,
-                Drive0MenuIndex => Drive0Menu,
-                Drive1MenuIndex => Drive1Menu,
-                CassetteMenuIndex => CassetteMenu,
+                Drive0MenuIndex => Drive0Mounted ? LoadedDrive0Menu : EmptyDrive0Menu,
+                Drive1MenuIndex => Drive1Mounted ? LoadedDrive1Menu : EmptyDrive1Menu,
+                CassetteMenuIndex => TapeMounted ? LoadedCassetteMenu : EmptyCassetteMenu,
                 _ => menus[menuIndex]
             };
         }
@@ -1975,7 +2061,7 @@ namespace BBC
             return GetRendererTextWidth(text) + 2;
         }
 
-        private static int GetDropDownWidth(MenuDefinition menu)
+        private int GetDropDownWidth(MenuDefinition menu)
         {
             if (menu.Items.Length == 0)
                 return GetRomManagerPanelWidth();
@@ -1986,7 +2072,8 @@ namespace BBC
                 if (item.Separator)
                     continue;
 
-                int itemWidth = GetRendererTextWidth("  " + item.Text)
+                int itemWidth = GetRendererTextWidth("  " + GetMenuItemText(item))
+                    + (GetMenuItemSymbol(item) == TransportSymbol.None ? 0 : 18)
                     + (item.Shortcut.Length == 0 ? 0 : MenuShortcutGap + GetRendererTextWidth(item.Shortcut));
                 width = Math.Max(width, itemWidth);
             }
@@ -2574,6 +2661,8 @@ namespace BBC
                 case MenuCommand.LoadTape:
                     EnqueueSelectedTape();
                     break;
+                case MenuCommand.RecordTape:
+                    break;
                 case MenuCommand.PlayTape:
                     pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Play, string.Empty));
                     break;
@@ -2581,10 +2670,16 @@ namespace BBC
                     pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.TogglePause, string.Empty));
                     break;
                 case MenuCommand.StopTape:
-                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Stop, string.Empty));
+                    pendingTapeActions.Enqueue(new HostTapeAction(IsTapeStopped ? HostTapeActionKind.Eject : HostTapeActionKind.Stop, string.Empty));
                     break;
                 case MenuCommand.RewindTape:
                     pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Rewind, string.Empty));
+                    break;
+                case MenuCommand.FastForwardTape:
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.FastForward, string.Empty));
+                    break;
+                case MenuCommand.ResetTapeCounter:
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.ResetCounter, string.Empty));
                     break;
                 case MenuCommand.EjectTape:
                     pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Eject, string.Empty));
@@ -2806,6 +2901,24 @@ namespace BBC
             };
         }
 
+        private string GetMenuItemText(MenuItem item)
+        {
+            return item.Command switch
+            {
+                MenuCommand.StopTape => IsTapeStopped ? "EJECT" : "STOP",
+                _ => item.Text
+            };
+        }
+
+        private TransportSymbol GetMenuItemSymbol(MenuItem item)
+        {
+            return item.Symbol == TransportSymbol.StopOrEject
+                ? IsTapeStopped ? TransportSymbol.Eject : TransportSymbol.Stop
+                : item.Symbol;
+        }
+
+        private bool IsTapeStopped => TapeMounted && !TapePlaying && !TapePaused && !TapeFastTransportActive;
+
         private bool IsMenuItemEnabled(MenuItem item)
         {
             return item.Enabled && item.Command switch
@@ -2816,11 +2929,14 @@ namespace BBC
                 MenuCommand.CreateBlankSsdDrive1 => Drive1Enabled && !Drive1Mounted,
                 MenuCommand.EjectDrive0 => Drive0Enabled && Drive0Mounted,
                 MenuCommand.EjectDrive1 => Drive1Enabled && Drive1Mounted,
-                MenuCommand.LoadTape => TapePlayerEnabled,
+                MenuCommand.LoadTape => TapePlayerEnabled && !TapeMounted,
+                MenuCommand.RecordTape => false,
                 MenuCommand.PlayTape => TapePlayerEnabled && TapeMounted && !TapePlaying,
                 MenuCommand.PauseTape => TapePlayerEnabled && TapeMounted,
-                MenuCommand.StopTape => TapePlayerEnabled && TapeMounted && TapePlaying,
+                MenuCommand.StopTape => TapeMounted,
                 MenuCommand.RewindTape => TapePlayerEnabled && TapeMounted,
+                MenuCommand.FastForwardTape => TapePlayerEnabled && TapeMounted,
+                MenuCommand.ResetTapeCounter => TapePlayerEnabled && TapeMounted,
                 MenuCommand.EjectTape => TapePlayerEnabled && TapeMounted,
                 MenuCommand.LoadRecentState1
                     or MenuCommand.LoadRecentState2
@@ -3126,6 +3242,15 @@ namespace BBC
             DrawRoundLed(centerX, centerY, radius, 38, 0, 0);
         }
 
+        private void DrawCassetteCounter(SdlRect glyph)
+        {
+            string text = Math.Clamp(TapeCounter, 0, 999).ToString("D3", CultureInfo.InvariantCulture);
+            int x = glyph.X + 22;
+            int y = glyph.Y + 4;
+
+            DrawTinyText(text, x, y, 255, 255, 255);
+        }
+
         private void DrawHoveredDriveLabel(int drive0X, int drive1X, int glyphY)
         {
             string? label = null;
@@ -3349,8 +3474,14 @@ namespace BBC
             {
                 ['0'] = [0b111, 0b101, 0b101, 0b101, 0b111],
                 ['1'] = [0b010, 0b110, 0b010, 0b010, 0b111],
+                ['2'] = [0b111, 0b001, 0b111, 0b100, 0b111],
+                ['3'] = [0b111, 0b001, 0b111, 0b001, 0b111],
                 ['4'] = [0b101, 0b101, 0b111, 0b001, 0b001],
+                ['5'] = [0b111, 0b100, 0b111, 0b001, 0b111],
+                ['6'] = [0b111, 0b100, 0b111, 0b101, 0b111],
+                ['7'] = [0b111, 0b001, 0b010, 0b010, 0b010],
                 ['8'] = [0b111, 0b101, 0b111, 0b101, 0b111],
+                ['9'] = [0b111, 0b101, 0b111, 0b001, 0b111],
                 ['A'] = [0b010, 0b101, 0b111, 0b101, 0b101],
                 ['C'] = [0b111, 0b100, 0b100, 0b100, 0b111],
                 ['D'] = [0b110, 0b101, 0b101, 0b101, 0b110],
@@ -4668,7 +4799,21 @@ namespace BBC
 
         private readonly record struct MenuDefinition(string Title, MenuItem[] Items, MenuCommand? DirectCommand = null);
 
-        private readonly record struct MenuItem(string Text, string Shortcut, MenuCommand Command, bool Enabled = true, bool Separator = false);
+        private readonly record struct MenuItem(string Text, string Shortcut, MenuCommand Command, bool Enabled = true, bool Separator = false, TransportSymbol Symbol = TransportSymbol.None);
+
+        private enum TransportSymbol
+        {
+            None,
+            Record,
+            Play,
+            Rewind,
+            Cue,
+            Stop,
+            StopOrEject,
+            Eject,
+            Pause,
+            CounterReset
+        }
 
         private enum InputMapperAction
         {
@@ -4685,28 +4830,42 @@ namespace BBC
             new MenuItem("Reset", "", MenuCommand.ResetHayesModem)
         ]);
 
-        private static readonly MenuDefinition Drive0Menu = new MenuDefinition("Drive 0",
+        private static readonly MenuDefinition EmptyDrive0Menu = new MenuDefinition("Drive 0",
         [
-            new MenuItem("Load Disc...", "", MenuCommand.MountDrive0),
-            new MenuItem("Eject Disc", "", MenuCommand.EjectDrive0),
-            new MenuItem("Create SSD...", "", MenuCommand.CreateBlankSsdDrive0)
+            new MenuItem("LOAD DISC", "", MenuCommand.MountDrive0),
+            new MenuItem("CREATE SSD", "", MenuCommand.CreateBlankSsdDrive0)
         ]);
 
-        private static readonly MenuDefinition Drive1Menu = new MenuDefinition("Drive 1",
+        private static readonly MenuDefinition LoadedDrive0Menu = new MenuDefinition("Drive 0",
         [
-            new MenuItem("Load Disc...", "", MenuCommand.MountDrive1),
-            new MenuItem("Eject Disc", "", MenuCommand.EjectDrive1),
-            new MenuItem("Create SSD...", "", MenuCommand.CreateBlankSsdDrive1)
+            new MenuItem("EJECT DISC", "", MenuCommand.EjectDrive0)
         ]);
 
-        private static readonly MenuDefinition CassetteMenu = new MenuDefinition("Cassette",
+        private static readonly MenuDefinition EmptyDrive1Menu = new MenuDefinition("Drive 1",
         [
-            new MenuItem("Load", "", MenuCommand.LoadTape),
-            new MenuItem("Play", "", MenuCommand.PlayTape),
-            new MenuItem("Pause", "", MenuCommand.PauseTape),
-            new MenuItem("Stop", "", MenuCommand.StopTape),
-            new MenuItem("Rewind", "", MenuCommand.RewindTape),
-            new MenuItem("Eject", "", MenuCommand.EjectTape)
+            new MenuItem("LOAD DISC", "", MenuCommand.MountDrive1),
+            new MenuItem("CREATE SSD", "", MenuCommand.CreateBlankSsdDrive1)
+        ]);
+
+        private static readonly MenuDefinition LoadedDrive1Menu = new MenuDefinition("Drive 1",
+        [
+            new MenuItem("EJECT DISC", "", MenuCommand.EjectDrive1)
+        ]);
+
+        private static readonly MenuDefinition EmptyCassetteMenu = new MenuDefinition("Cassette",
+        [
+            new MenuItem("LOAD", "", MenuCommand.LoadTape)
+        ]);
+
+        private static readonly MenuDefinition LoadedCassetteMenu = new MenuDefinition("Cassette",
+        [
+            new MenuItem("REC", "", MenuCommand.RecordTape, Enabled: false, Symbol: TransportSymbol.Record),
+            new MenuItem("PLAY", "", MenuCommand.PlayTape, Symbol: TransportSymbol.Play),
+            new MenuItem("REW", "", MenuCommand.RewindTape, Symbol: TransportSymbol.Rewind),
+            new MenuItem("CUE", "", MenuCommand.FastForwardTape, Symbol: TransportSymbol.Cue),
+            new MenuItem("STOP", "", MenuCommand.StopTape, Symbol: TransportSymbol.StopOrEject),
+            new MenuItem("PAUSE", "", MenuCommand.PauseTape, Symbol: TransportSymbol.Pause),
+            new MenuItem("CTR RESET", "", MenuCommand.ResetTapeCounter, Symbol: TransportSymbol.CounterReset)
         ]);
 
         private enum MenuCommand
@@ -4718,10 +4877,13 @@ namespace BBC
             EjectDrive0,
             EjectDrive1,
             LoadTape,
+            RecordTape,
             PlayTape,
             PauseTape,
             StopTape,
             RewindTape,
+            FastForwardTape,
+            ResetTapeCounter,
             EjectTape,
             SaveScreenshot,
             SaveState,
@@ -5794,6 +5956,8 @@ namespace BBC
         TogglePause,
         Stop,
         Rewind,
+        FastForward,
+        ResetCounter,
         Eject
     }
 

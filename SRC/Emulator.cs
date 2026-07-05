@@ -551,7 +551,7 @@ namespace BBC
         private StreamWriter? exileRamTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 15;
+        private const int SaveStateVersion = 18;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -741,15 +741,17 @@ namespace BBC
                 Display.Drive0ActivityLedActive = drive0Enabled && (discController.IsPhysicalDriveActivityLedActive(0)
                     || Stopwatch.GetTimestamp() < hostDiscActivityLedUntilTicks);
                 Display.Drive1ActivityLedActive = drive1Enabled && discController.IsPhysicalDriveActivityLedActive(1);
-                Display.CassetteMotorLedActive = !tape.Paused && (serialAcia.MotorRunning || serialAcia.TapePlaying);
+                Display.CassetteMotorLedActive = !tape.FastTransportActive && !tape.Paused && (serialAcia.MotorRunning || serialAcia.TapePlaying);
                 Display.CapsLockLedActive = bbcCapsLockState;
                 Display.EmulationPaused = emulationPaused;
                 Display.SoundOutputEnabled = !Sound.HostOutputMuted;
                 Display.TapePaused = tape.Paused;
                 Display.TapeMounted = tape.HasTape;
                 Display.TapePlaying = tape.Playing;
+                Display.TapeFastTransportActive = tape.FastTransportActive;
                 Display.TapeLabel = tape.MountedFileName;
                 Display.TapePlayerEnabled = tapePlayerEnabled;
+                Display.TapeCounter = tape.Counter;
                 Display.Tube6502Enabled = tube6502 is not null;
                 Display.HayesModemEnabled = hayesModem is not null;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
@@ -1284,8 +1286,47 @@ namespace BBC
                 return;
             }
 
-            tape.ResetPlayback();
-            display.ShowNotification("Tape rewound", "Ready from start", 1500);
+            if (!tape.Rewind())
+            {
+                display.ShowNotification("Tape at start", string.Empty, 1500);
+                return;
+            }
+
+            display.ShowNotification("Tape rewinding", "60x transport", 1500);
+        }
+
+        private void FastForwardTape(Display display)
+        {
+            if (!tapePlayerEnabled)
+                return;
+
+            if (!tape.HasTape)
+            {
+                display.ShowNotification("No tape mounted", string.Empty, 1500);
+                return;
+            }
+
+            if (!tape.FastForward())
+            {
+                display.ShowNotification("Tape at end", string.Empty, 1500);
+                return;
+            }
+
+            display.ShowNotification("Tape fast-forwarding", "60x transport", 1500);
+        }
+
+        private void ResetTapeCounter(Display display)
+        {
+            if (!tapePlayerEnabled)
+                return;
+
+            if (!tape.ResetCounter())
+            {
+                display.ShowNotification("No tape mounted", string.Empty, 1500);
+                return;
+            }
+
+            display.ShowNotification("Tape counter reset", "000", 1500);
         }
 
         private void DrainHostTube6502ToggleRequests(Display display)
@@ -1984,6 +2025,12 @@ namespace BBC
                             break;
                         case HostTapeActionKind.Rewind:
                             RewindTape(display);
+                            break;
+                        case HostTapeActionKind.FastForward:
+                            FastForwardTape(display);
+                            break;
+                        case HostTapeActionKind.ResetCounter:
+                            ResetTapeCounter(display);
                             break;
                         case HostTapeActionKind.Eject:
                             EjectTape();

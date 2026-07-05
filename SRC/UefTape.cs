@@ -21,6 +21,8 @@ namespace BBC
         private const int TapeZeroToneHz = 1200;
         private const int TapeOneToneHz = 2400;
         private const int TapeBitCycles = BbcClockHz / UefCarrierCyclesPerSecond;
+        private const int CounterStepCycles = BbcClockHz * 6 / 5;
+        private const int FastTransportMultiplier = 20;
         private const ushort OriginChunk = 0x0000;
         private const ushort ImplicitDataChunk = 0x0100;
         private const ushort DefinedDataChunk = 0x0104;
@@ -47,10 +49,15 @@ namespace BBC
         private bool reachedEnd;
         private bool transportPlaying;
         private bool paused;
+        private FastTapeTransport fastTransport;
         private byte characterToneByte;
         private int characterToneBitCount;
         private int characterToneBitIndex;
         private int characterToneBitCyclesRemaining;
+        private long tapePositionCycles;
+        private long counterResetPositionCycles;
+        private long totalTapeCycles;
+        private bool tapePositionSeekNeeded;
         private string? lastTraceState;
 
         public UefTape(SerialACIA serialAcia, SN76489_Sound tapeSound)
@@ -91,7 +98,25 @@ namespace BBC
             get
             {
                 lock (sync)
-                    return transportPlaying && !paused && !reachedEnd;
+                    return transportPlaying && fastTransport == FastTapeTransport.None && !paused && !reachedEnd;
+            }
+        }
+
+        public bool FastTransportActive
+        {
+            get
+            {
+                lock (sync)
+                    return fastTransport != FastTapeTransport.None;
+            }
+        }
+
+        public int Counter
+        {
+            get
+            {
+                lock (sync)
+                    return (int)Math.Clamp((tapePositionCycles - counterResetPositionCycles) / CounterStepCycles, 0, 999);
             }
         }
 
@@ -124,6 +149,11 @@ namespace BBC
                 reachedEnd = false;
                 transportPlaying = false;
                 paused = false;
+                fastTransport = FastTapeTransport.None;
+                tapePositionCycles = 0;
+                counterResetPositionCycles = 0;
+                totalTapeCycles = GetTotalCycles(events);
+                tapePositionSeekNeeded = false;
                 ResetCharacterTone();
                 lastTraceState = null;
             }
@@ -150,6 +180,11 @@ namespace BBC
                 reachedEnd = false;
                 transportPlaying = false;
                 paused = false;
+                fastTransport = FastTapeTransport.None;
+                tapePositionCycles = 0;
+                counterResetPositionCycles = 0;
+                totalTapeCycles = 0;
+                tapePositionSeekNeeded = false;
                 ResetCharacterTone();
                 lastTraceState = null;
             }
@@ -168,7 +203,21 @@ namespace BBC
 
             lock (sync)
             {
-                if (events.Count == 0 || reachedEnd)
+                if (events.Count == 0)
+                {
+                    TraceStateOnce("idle no-events-or-end");
+                    serialAcia.SetTapePlaying(false);
+                    SilenceTapeTone();
+                    return;
+                }
+
+                if (fastTransport != FastTapeTransport.None)
+                {
+                    FastTransport(cycles);
+                    return;
+                }
+
+                if (reachedEnd)
                 {
                     TraceStateOnce("idle no-events-or-end");
                     serialAcia.SetTapePlaying(false);
@@ -205,6 +254,7 @@ namespace BBC
                         int consumed = Math.Min(remainingCycles, delayCyclesRemaining);
                         delayCyclesRemaining -= consumed;
                         remainingCycles -= consumed;
+                        AdvanceTapeCounter(consumed);
                         if (delayCyclesRemaining > 0)
                             return;
                     }
@@ -215,6 +265,7 @@ namespace BBC
                         int consumed = Math.Min(remainingCycles, characterCyclesRemaining);
                         characterCyclesRemaining -= consumed;
                         remainingCycles -= consumed;
+                        AdvanceTapeCounter(consumed);
                         AdvanceCharacterTone(consumed);
                         if (characterCyclesRemaining > 0)
                             return;
@@ -304,6 +355,10 @@ namespace BBC
                 reachedEnd = false;
                 transportPlaying = false;
                 paused = false;
+                fastTransport = FastTapeTransport.None;
+                tapePositionCycles = 0;
+                counterResetPositionCycles = 0;
+                tapePositionSeekNeeded = false;
                 ResetCharacterTone();
                 lastTraceState = null;
             }
@@ -330,6 +385,11 @@ namespace BBC
                 writer.Write(reachedEnd);
                 writer.Write(transportPlaying);
                 writer.Write(paused);
+                writer.Write((int)fastTransport);
+                writer.Write(tapePositionCycles);
+                writer.Write(counterResetPositionCycles);
+                writer.Write(totalTapeCycles);
+                writer.Write(tapePositionSeekNeeded);
             }
         }
 
@@ -346,6 +406,11 @@ namespace BBC
             bool savedReachedEnd = reader.ReadBoolean();
             bool savedTransportPlaying = reader.ReadBoolean();
             bool savedPaused = reader.ReadBoolean();
+            FastTapeTransport savedFastTransport = (FastTapeTransport)reader.ReadInt32();
+            long savedTapePositionCycles = reader.ReadInt64();
+            long savedCounterResetPositionCycles = reader.ReadInt64();
+            long savedTotalTapeCycles = reader.ReadInt64();
+            bool savedTapePositionSeekNeeded = reader.ReadBoolean();
 
             lock (sync)
             {
@@ -360,6 +425,11 @@ namespace BBC
                 reachedEnd = false;
                 transportPlaying = false;
                 paused = false;
+                fastTransport = FastTapeTransport.None;
+                tapePositionCycles = 0;
+                counterResetPositionCycles = 0;
+                totalTapeCycles = 0;
+                tapePositionSeekNeeded = false;
                 ResetCharacterTone();
                 lastTraceState = null;
             }
@@ -385,6 +455,11 @@ namespace BBC
                 reachedEnd = savedReachedEnd || eventIndex >= events.Count;
                 transportPlaying = savedTransportPlaying && !reachedEnd;
                 paused = savedPaused;
+                fastTransport = Enum.IsDefined(savedFastTransport) ? savedFastTransport : FastTapeTransport.None;
+                totalTapeCycles = savedTotalTapeCycles > 0 ? savedTotalTapeCycles : GetTotalCycles(events);
+                tapePositionCycles = Math.Clamp(savedTapePositionCycles, 0, totalTapeCycles);
+                counterResetPositionCycles = Math.Clamp(savedCounterResetPositionCycles, 0, totalTapeCycles);
+                tapePositionSeekNeeded = savedTapePositionSeekNeeded;
                 ResetCharacterTone();
                 lastTraceState = null;
             }
@@ -402,7 +477,9 @@ namespace BBC
                 if (events.Count == 0 || reachedEnd)
                     return false;
 
+                AlignPlaybackToTapePosition();
                 paused = !paused;
+                fastTransport = FastTapeTransport.None;
                 if (paused)
                 {
                     serialAcia.SetTapePlaying(false);
@@ -419,7 +496,9 @@ namespace BBC
                 if (events.Count == 0 || reachedEnd)
                     return false;
 
+                AlignPlaybackToTapePosition();
                 transportPlaying = true;
+                fastTransport = FastTapeTransport.None;
                 paused = false;
                 lastTraceState = null;
                 Trace($"play index={eventIndex}/{events.Count}");
@@ -434,8 +513,10 @@ namespace BBC
                 if (events.Count == 0)
                     return false;
 
+                AlignPlaybackToTapePosition();
                 transportPlaying = false;
                 paused = false;
+                fastTransport = FastTapeTransport.None;
                 playbackStarted = false;
                 lastTraceState = null;
                 serialAcia.SetTapePlaying(false);
@@ -443,6 +524,141 @@ namespace BBC
                 Trace($"stop index={eventIndex}/{events.Count}");
                 return true;
             }
+        }
+
+        public bool FastForward()
+        {
+            return StartFastTransport(FastTapeTransport.Forward);
+        }
+
+        public bool Rewind()
+        {
+            return StartFastTransport(FastTapeTransport.Rewind);
+        }
+
+        public bool ResetCounter()
+        {
+            lock (sync)
+            {
+                if (events.Count == 0)
+                    return false;
+
+                counterResetPositionCycles = tapePositionCycles;
+                return true;
+            }
+        }
+
+        private bool StartFastTransport(FastTapeTransport mode)
+        {
+            lock (sync)
+            {
+                if (events.Count == 0)
+                    return false;
+
+                if (mode == FastTapeTransport.Forward && tapePositionCycles >= totalTapeCycles)
+                    return false;
+
+                if (mode == FastTapeTransport.Rewind && tapePositionCycles <= 0)
+                    return false;
+
+                fastTransport = mode;
+                transportPlaying = false;
+                paused = false;
+                playbackStarted = false;
+                lastTraceState = null;
+                serialAcia.SetTapePlaying(false);
+                SilenceTapeTone();
+                Trace($"{(mode == FastTapeTransport.Forward ? "fast-forward" : "rewind")} position={tapePositionCycles}/{totalTapeCycles}");
+                return true;
+            }
+        }
+
+        private void FastTransport(int cycles)
+        {
+            serialAcia.SetTapePlaying(false);
+            SilenceTapeTone();
+
+            long delta = (long)cycles * FastTransportMultiplier;
+            long nextPosition = fastTransport == FastTapeTransport.Forward
+                ? Math.Min(totalTapeCycles, tapePositionCycles + delta)
+                : Math.Max(0, tapePositionCycles - delta);
+
+            tapePositionCycles = nextPosition;
+            tapePositionSeekNeeded = true;
+
+            if (tapePositionCycles == 0 || tapePositionCycles >= totalTapeCycles)
+            {
+                SetTapePosition(tapePositionCycles);
+                tapePositionSeekNeeded = false;
+                fastTransport = FastTapeTransport.None;
+                transportPlaying = false;
+                paused = false;
+            }
+        }
+
+        private void AdvanceTapeCounter(int cycles)
+        {
+            tapePositionCycles = Math.Min(totalTapeCycles, tapePositionCycles + Math.Max(0, cycles));
+        }
+
+        private void SetTapePosition(long positionCycles)
+        {
+            tapePositionCycles = Math.Clamp(positionCycles, 0, totalTapeCycles);
+            tapePositionSeekNeeded = false;
+            eventIndex = 0;
+            delayCyclesRemaining = 0;
+            delayToneHz = 0;
+            characterCyclesRemaining = 0;
+            playbackStarted = false;
+            reachedEnd = tapePositionCycles >= totalTapeCycles && events.Count > 0;
+            ResetCharacterTone();
+
+            long remaining = tapePositionCycles;
+            for (int i = 0; i < events.Count; i++)
+            {
+                int duration = GetEventCycles(events[i]);
+                if (duration == 0)
+                {
+                    eventIndex = i + 1;
+                    continue;
+                }
+
+                if (remaining == 0)
+                {
+                    eventIndex = i;
+                    return;
+                }
+
+                if (remaining >= duration)
+                {
+                    remaining -= duration;
+                    eventIndex = i + 1;
+                    continue;
+                }
+
+                eventIndex = i + 1;
+                int eventRemaining = duration - (int)remaining;
+                if (events[i].Kind is TapeEventKind.Carrier or TapeEventKind.Gap)
+                {
+                    delayCyclesRemaining = eventRemaining;
+                    delayToneHz = events[i].Kind == TapeEventKind.Carrier ? TapeOneToneHz : 0;
+                }
+                else if (events[i].Kind == TapeEventKind.Byte)
+                {
+                    characterCyclesRemaining = eventRemaining;
+                    StartCharacterTone(events[i].Byte, events[i].BitCount);
+                    SilenceTapeTone();
+                }
+                return;
+            }
+
+            eventIndex = events.Count;
+        }
+
+        private void AlignPlaybackToTapePosition()
+        {
+            if (tapePositionSeekNeeded)
+                SetTapePosition(tapePositionCycles);
         }
 
         private void TraceStateOnce(string state)
@@ -464,6 +680,24 @@ namespace BBC
         private static int CharacterCycles(int bits)
         {
             return Math.Max(1, TapeBitCycles * Math.Max(1, bits));
+        }
+
+        private static long GetTotalCycles(List<TapeEvent> tapeEvents)
+        {
+            long total = 0;
+            foreach (TapeEvent tapeEvent in tapeEvents)
+                total += GetEventCycles(tapeEvent);
+            return total;
+        }
+
+        private static int GetEventCycles(TapeEvent tapeEvent)
+        {
+            return tapeEvent.Kind switch
+            {
+                TapeEventKind.Byte => CharacterCycles(tapeEvent.BitCount),
+                TapeEventKind.Carrier or TapeEventKind.Gap => Math.Max(0, tapeEvent.Cycles),
+                _ => 0
+            };
         }
 
         private void StartCharacterTone(byte value, int bitCount)
@@ -801,6 +1035,13 @@ namespace BBC
             CarrierDetect,
             Gap,
             Trace
+        }
+
+        private enum FastTapeTransport
+        {
+            None,
+            Forward,
+            Rewind
         }
 
         private readonly record struct TapeEvent(TapeEventKind Kind, byte Byte, int Cycles, int BitCount, string? Label)
