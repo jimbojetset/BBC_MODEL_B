@@ -1384,6 +1384,7 @@ namespace BBC
             if (selectedInputKey < 0)
                 return;
 
+            ClearLiveInputState();
             inputProfile.BindHostKey(keySym, (byte)selectedInputKey, selectedInputShiftAdjustment);
             inputProfileDirty = true;
             ShowNotification(
@@ -2761,9 +2762,8 @@ namespace BBC
                     ClearInputMapperSelection();
                     break;
                 case MenuCommand.OpenInputMapper:
-                    inputMapperOpen = true;
+                    OpenInputMapper();
                     romManagerOpen = false;
-                    ClearInputMapperSelection();
                     activeMenuIndex = -1;
                     break;
             }
@@ -2784,6 +2784,22 @@ namespace BBC
             ClearInputMapperSelection();
         }
 
+        public void ResetInputProfileForPowerCycle()
+        {
+            inputProfile = InputProfile.CreateEmulatorDefault();
+            activeInputProfileName = inputProfile.Name;
+            inputProfileDirty = false;
+            ClearInputMapperSelection();
+            ClearLiveInputState();
+        }
+
+        private void OpenInputMapper()
+        {
+            inputMapperOpen = true;
+            ClearInputMapperSelection();
+            ClearLiveInputState();
+        }
+
         private void CloseWindowPanels()
         {
             CloseRomManager();
@@ -2794,6 +2810,7 @@ namespace BBC
         {
             inputProfile.ResetToDefault();
             ClearInputMapperSelection();
+            ClearLiveInputState();
             inputProfileDirty = true;
             ShowNotification("Input map reset", "Unsaved", 2000);
         }
@@ -2808,9 +2825,7 @@ namespace BBC
             activeInputProfileName = inputProfile.Name;
             inputProfileDirty = false;
             ClearInputMapperSelection();
-            activeHostKeys.Clear();
-            activeMatrixKeys.Clear();
-            ClearJoystickSource(HostJoystickSource.Keyboard);
+            ClearLiveInputState();
             ShowNotification("Input map loaded", inputProfile.Name, 2000);
         }
 
@@ -4436,6 +4451,18 @@ namespace BBC
             JoystickControl? control = inputProfile.MapKeyboardJoystick(keySym);
             if (control.HasValue)
                 SetJoystickSource(control.Value, HostJoystickSource.Keyboard, pressed);
+        }
+
+        private void ClearLiveInputState()
+        {
+            foreach (byte matrixKey in activeMatrixKeys.Keys.ToArray())
+                EnqueueBbcKeyChange(matrixKey, false);
+
+            activeHostKeys.Clear();
+            textInputHostKeys.Clear();
+            activeMatrixKeys.Clear();
+            suppressedTextInputCharacters = 0;
+            ClearJoystickSource(HostJoystickSource.Keyboard);
         }
 
         private void SetJoystickSource(JoystickControl control, HostJoystickSource source, bool pressed)

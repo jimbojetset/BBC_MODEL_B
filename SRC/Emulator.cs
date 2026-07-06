@@ -2926,6 +2926,7 @@ namespace BBC
                 discController.PowerOff();
                 Array.Fill(display.FrameBuffer, DisplayBlack);
                 display.Present();
+                display.ResetInputProfileForPowerCycle();
                 Cpu.ResetNow();
                 Sound.QueuePowerOnBeep();
                 display.ShowNotification("Power reset", "BBC power cycled", 2000);

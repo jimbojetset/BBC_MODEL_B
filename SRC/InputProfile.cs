@@ -183,16 +183,29 @@ namespace BBC
 
         public string GetPrimaryHostKeyName(byte internalKey, BbcShiftAdjustment shiftAdjustment = BbcShiftAdjustment.Preserve)
         {
-            foreach (KeyValuePair<int, BbcKeyBinding> pair in OrderPrimaryBindingsForDisplay(customKeys, shiftAdjustment))
+            string customHostKey = GetPrimaryHostKeyName(customKeys, internalKey, shiftAdjustment);
+            if (customHostKey.Length > 0)
+                return customHostKey;
+
+            return GetPrimaryHostKeyName(unmodifiedKeys, internalKey, shiftAdjustment);
+        }
+
+        private static string GetPrimaryHostKeyName(
+            Dictionary<int, BbcKeyBinding> bindings,
+            byte internalKey,
+            BbcShiftAdjustment shiftAdjustment)
+        {
+            foreach (KeyValuePair<int, BbcKeyBinding> pair in OrderPrimaryBindingsForDisplay(bindings, shiftAdjustment))
             {
                 if (pair.Value.InternalKey == internalKey)
                     return SdlKey.GetName(pair.Key);
             }
 
-            foreach (KeyValuePair<int, BbcKeyBinding> pair in OrderPrimaryBindingsForDisplay(unmodifiedKeys, shiftAdjustment))
+            foreach (KeyValuePair<int, BbcKeyBinding> pair in bindings
+                .Where(pair => pair.Value.InternalKey == internalKey)
+                .OrderBy(pair => pair.Key))
             {
-                if (pair.Value.InternalKey == internalKey)
-                    return SdlKey.GetName(pair.Key);
+                return SdlKey.GetName(pair.Key);
             }
 
             return string.Empty;
