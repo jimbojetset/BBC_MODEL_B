@@ -12,6 +12,7 @@
 // ============================================================================
 
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace BBC
 {
@@ -33,7 +34,7 @@ namespace BBC
         private const int GeneratedQueueSamples = SampleRate / 2;
         private const int GeneratedQueueHighWaterSamples = SamplesPerBuffer * 3;
         private const int PowerOnBeepFrequencyHz = 155;
-        private const int PowerOnBeepDurationMilliseconds = 355;
+        private const int PowerOnBeepDurationMilliseconds = 400;
         private const int PowerOnBeepAttackMilliseconds = 15;
         private const int PowerOnBeepReleaseMilliseconds = 10;
         private const double PowerOnBeepAmplitude = 0.8;
@@ -308,7 +309,8 @@ namespace BBC
                         phase -= 1.0;
                 }
             }
-        }
+                 Thread.Sleep(250); // Allow the beep to be heard before the PSG takes over
+       }
 
         public void PlayModemDialSequence(string digits)
         {
