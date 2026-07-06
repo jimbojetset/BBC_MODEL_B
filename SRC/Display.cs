@@ -84,9 +84,9 @@ namespace BBC
         private const int DriveGlyphHeight = 22;
         private const int DriveGlyphMargin = 8;
         private const int DriveGlyphGap = 5;
-        private const byte DriveGlyphBodyRed = 0xb6;
-        private const byte DriveGlyphBodyGreen = 0xb1;
-        private const byte DriveGlyphBodyBlue = 0x9e;
+        private const byte DriveGlyphBodyRed = 0xd7;
+        private const byte DriveGlyphBodyGreen = 0xc7;
+        private const byte DriveGlyphBodyBlue = 0x9a;
         private const int DriveNumberWidth = 3;
         private const int DriveNumberHeight = 5;
         private const int DriveNumberGap = 1;
