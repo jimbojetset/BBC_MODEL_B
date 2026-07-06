@@ -35,9 +35,8 @@ namespace BBC
         private const int MenuShortcutGap = 18;
         private const int TubeMenuStatusGap = 6;
         private const string TubeMenuStatusLabel = "SECOND PROCESSOR";
-        private const int TubeCoProcessorImageWidth = 72;
-        private const int TubeCoProcessorImageHeight = 47;
-        private const int TubeCoProcessorImageScalePercent = 130;
+        private const int TubeCoProcessorImageWidth = 93;
+        private const int TubeCoProcessorImageHeight = 61;
         private const int TubeCoProcessorImageRightInset = 12;
         private const int TubeCoProcessorImageTopInset = 4;
         private const string TubeCoProcessorImageResourceName = "BBC.TubeCoProcessor.png";
@@ -841,13 +840,11 @@ namespace BBC
             if (!Tube6502Enabled || tubeCoProcessorTexture == IntPtr.Zero)
                 return;
 
-            int width = TubeCoProcessorImageWidth * TubeCoProcessorImageScalePercent / 100;
-            int height = TubeCoProcessorImageHeight * TubeCoProcessorImageScalePercent / 100;
             SdlRect target = new SdlRect(
-                logicalWidth - width - TubeCoProcessorImageRightInset,
+                logicalWidth - TubeCoProcessorImageWidth - TubeCoProcessorImageRightInset,
                 TopMenuHeight + TubeCoProcessorImageTopInset,
-                width,
-                height);
+                TubeCoProcessorImageWidth,
+                TubeCoProcessorImageHeight);
             _ = SDL_RenderCopy(renderer, tubeCoProcessorTexture, IntPtr.Zero, ref target);
         }
 
