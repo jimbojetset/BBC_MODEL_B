@@ -80,6 +80,8 @@ namespace BBC
         private double sampleCycleRemainder;
         private double chipSampleRemainder;
         private long emulatedCycle;
+        private int scheduledEventCount;
+        private int emulatedOutputActive;
         private byte slowDataBus;
         private bool writeEnableActive;
         private bool writeEnableSampleScheduled;
@@ -136,9 +138,11 @@ namespace BBC
                 Array.Fill(tonePolarity, -1);
                 Array.Clear(generatedSamples);
                 scheduledEvents.Clear();
+                Volatile.Write(ref scheduledEventCount, 0);
                 sampleCycleRemainder = 0;
                 chipSampleRemainder = 0;
                 emulatedCycle = 0;
+                Volatile.Write(ref emulatedOutputActive, 0);
                 slowDataBus = 0;
                 writeEnableActive = false;
                 writeEnableSampleScheduled = false;
@@ -216,12 +220,14 @@ namespace BBC
                 latchedVolume = reader.ReadBoolean();
 
                 scheduledEvents.Clear();
+                Volatile.Write(ref scheduledEventCount, 0);
                 generatedReadIndex = 0;
                 generatedWriteIndex = 0;
                 generatedCount = 0;
                 lastGeneratedSample = 0;
                 cassetteToneHz = 0;
                 cassetteTonePhase = 0;
+                Volatile.Write(ref emulatedOutputActive, 0);
                 discDriveSound?.Reset();
             }
 
@@ -421,6 +427,7 @@ namespace BBC
                 cassetteToneHz = clampedFrequency;
                 if (cassetteToneHz == 0)
                     cassetteTonePhase = 0;
+                UpdateEmulatedOutputActiveLocked();
             }
         }
 
@@ -720,6 +727,7 @@ namespace BBC
             lock (syncRoot)
             {
                 scheduledEvents.Enqueue(ScheduledPsgEvent.ForLatchedValue(emulatedCycle + PsgWriteEnableDelayCycles, value));
+                Volatile.Write(ref scheduledEventCount, scheduledEvents.Count);
             }
         }
 
@@ -734,6 +742,7 @@ namespace BBC
                 if (active && !writeEnableSampleScheduled)
                 {
                     scheduledEvents.Enqueue(ScheduledPsgEvent.ForSlowBusSample(emulatedCycle + PsgWriteEnableDelayCycles));
+                    Volatile.Write(ref scheduledEventCount, scheduledEvents.Count);
                     writeEnableSampleScheduled = true;
                 }
             }
@@ -753,6 +762,7 @@ namespace BBC
                     while (scheduledEvents.Count > 0 && scheduledEvents.Peek().Cycle <= targetCycle)
                     {
                         ScheduledPsgEvent scheduledEvent = scheduledEvents.Dequeue();
+                        Volatile.Write(ref scheduledEventCount, scheduledEvents.Count);
                         emulatedCycle = scheduledEvent.Cycle;
                         ApplyScheduledEvent(scheduledEvent);
                     }
@@ -765,6 +775,16 @@ namespace BBC
                 return;
             }
 
+            if (Volatile.Read(ref scheduledEventCount) == 0
+                && Volatile.Read(ref emulatedOutputActive) == 0
+                && discDriveSound?.HasActiveOutput != true)
+            {
+                emulatedCycle += cycles;
+                sampleCycleRemainder = 0;
+                chipSampleRemainder = 0;
+                return;
+            }
+
             WaitForGeneratedHeadroom();
 
             lock (syncRoot)
@@ -773,6 +793,7 @@ namespace BBC
                 while (scheduledEvents.Count > 0 && scheduledEvents.Peek().Cycle <= targetCycle)
                 {
                     ScheduledPsgEvent scheduledEvent = scheduledEvents.Dequeue();
+                    Volatile.Write(ref scheduledEventCount, scheduledEvents.Count);
                     GenerateSamplesForCycles((int)(scheduledEvent.Cycle - emulatedCycle));
                     emulatedCycle = scheduledEvent.Cycle;
                     ApplyScheduledEvent(scheduledEvent);
@@ -886,9 +907,38 @@ namespace BBC
             double exactSamples = ((cycles * (double)SampleRate) / CpuClockHz) + sampleCycleRemainder;
             int samplesToGenerate = (int)exactSamples;
             sampleCycleRemainder = exactSamples - samplesToGenerate;
+            if (samplesToGenerate <= 0)
+                return;
+
+            if (!IsEmulatedOutputActive())
+            {
+                chipSampleRemainder = 0;
+                return;
+            }
 
             for (int i = 0; i < samplesToGenerate; i++)
                 EnqueueGeneratedSample(GenerateSample());
+        }
+
+        private bool IsEmulatedOutputActive()
+        {
+            return cassetteToneHz > 0
+                || volumes[0] < 15
+                || volumes[1] < 15
+                || volumes[2] < 15
+                || volumes[3] < 15
+                || discDriveSound?.HasActiveOutput == true;
+        }
+
+        private void UpdateEmulatedOutputActiveLocked()
+        {
+            bool active = cassetteToneHz > 0
+                || volumes[0] < 15
+                || volumes[1] < 15
+                || volumes[2] < 15
+                || volumes[3] < 15;
+
+            Volatile.Write(ref emulatedOutputActive, active ? 1 : 0);
         }
 
         private void ApplyWriteData(byte value)
@@ -911,6 +961,7 @@ namespace BBC
                     tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x3F0) | (value & 0x0F);
                 }
 
+                UpdateEmulatedOutputActiveLocked();
                 return;
             }
 
@@ -926,6 +977,8 @@ namespace BBC
             {
                 tonePeriods[latchedChannel] = (tonePeriods[latchedChannel] & 0x0F) | ((value & 0x3F) << 4);
             }
+
+            UpdateEmulatedOutputActiveLocked();
         }
 
         private void ApplyScheduledEvent(ScheduledPsgEvent scheduledEvent)

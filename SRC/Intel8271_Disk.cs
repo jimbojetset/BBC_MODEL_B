@@ -80,7 +80,7 @@ namespace BBC
         {
         }
 
-        public bool HasMountedDisc => driveMounted.Any(mounted => mounted);
+        public bool HasMountedDisc => AnyDriveMounted;
 
         public string? MountedPath => mountedPath;
 
@@ -100,6 +100,21 @@ namespace BBC
         }
 
         public bool TransferActive => readData.Count > 0 || pendingWrite is not null;
+
+        public bool TickRequired =>
+            AnyDriveMounted
+            || motorIdleCycles > 0
+            || nmiDelayCycles > 0
+            || busy
+            || nmiPending
+            || readData.Count > 0
+            || pendingWrite is not null;
+
+        private bool AnyDriveMounted =>
+            driveMounted[0]
+            || driveMounted[1]
+            || driveMounted[2]
+            || driveMounted[3];
 
         public bool ReadLedActive => driveActivityLedActive.Any(active => active);
 

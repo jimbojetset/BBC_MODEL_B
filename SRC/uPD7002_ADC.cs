@@ -44,6 +44,8 @@ namespace BBC
 
         public static bool IsAddress(ushort address) => address >= BaseAddress && address <= EndAddress;
 
+        public bool ConversionActive => conversionCountdown > 0;
+
         public void SetChannel(int channel, ushort value)
         {
             if ((uint)channel < 4) channels[channel] = value;

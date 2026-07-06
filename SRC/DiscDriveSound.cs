@@ -29,6 +29,7 @@ namespace BBC
         private double motorPosition;
         private double seekPosition;
         private bool motorRunning;
+        private int activeOutput;
 
         private DiscDriveSound(string directory)
         {
@@ -61,8 +62,11 @@ namespace BBC
                 motorPosition = 0;
                 seekPosition = 0;
                 motorRunning = false;
+                UpdateActiveOutputLocked();
             }
         }
+
+        public bool HasActiveOutput => Volatile.Read(ref activeOutput) != 0;
 
         public void MotorStarted()
         {
@@ -74,6 +78,7 @@ namespace BBC
                 activeMotor = motorOn;
                 motorPosition = 0;
                 motorRunning = true;
+                UpdateActiveOutputLocked();
             }
         }
 
@@ -87,6 +92,7 @@ namespace BBC
                 activeMotor = motorOff;
                 motorPosition = 0;
                 motorRunning = false;
+                UpdateActiveOutputLocked();
             }
         }
 
@@ -108,6 +114,7 @@ namespace BBC
             {
                 activeSeek = sample;
                 seekPosition = 0;
+                UpdateActiveOutputLocked();
             }
         }
 
@@ -150,6 +157,7 @@ namespace BBC
             else
             {
                 activeMotor = null;
+                UpdateActiveOutputLocked();
             }
 
             return sample;
@@ -167,9 +175,15 @@ namespace BBC
             {
                 activeSeek = null;
                 seekPosition = 0;
+                UpdateActiveOutputLocked();
             }
 
             return sample;
+        }
+
+        private void UpdateActiveOutputLocked()
+        {
+            Volatile.Write(ref activeOutput, activeMotor is not null || activeSeek is not null ? 1 : 0);
         }
 
         private static IEnumerable<string> GetDefaultDirectories()

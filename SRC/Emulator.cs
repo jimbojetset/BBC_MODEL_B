@@ -517,6 +517,7 @@ namespace BBC
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
         private bool tapePlayerEnabled = true;
+        private volatile bool tapeMounted;
         private bool drive0Enabled = true;
         private bool drive1Enabled;
         private string? configuredTubeHostRomPath;
@@ -920,6 +921,7 @@ namespace BBC
                 throw new InvalidDataException("Only UEF tape images can be loaded into the cassette player.");
 
             tape.Mount(path);
+            tapeMounted = true;
             hostFilingSystem.Unmount();
 
             Console.WriteLine($"Mounted UEF: {tape.MountedFileName}");
@@ -935,6 +937,7 @@ namespace BBC
 
             string? fileName = tape.MountedFileName;
             tape.Unmount();
+            tapeMounted = false;
             Console.WriteLine(fileName is null ? "Tape ejected" : $"Tape ejected: {fileName}");
             Display?.ShowNotification("Tape ejected", string.Empty, 1500);
         }
@@ -1134,11 +1137,14 @@ namespace BBC
             systemVia.Tick(cycles);
             Video.Tick(cycles);
             userVia.Tick(cycles);
-            discController.Tick(cycles);
-            if (tapePlayerEnabled)
+            if (discController.TickRequired)
+                discController.Tick(cycles);
+            if (tapePlayerEnabled && tapeMounted)
                 tape.Tick(cycles);
-            adc.Tick(cycles);
-            TickCapsLockTap(cycles);
+            if (adc.ConversionActive)
+                adc.Tick(cycles);
+            if (capsLockTapPressed)
+                TickCapsLockTap(cycles);
             tube6502?.AdvanceHostCycles(cycles);
 
             UpdateCpuIrqLine();
@@ -1214,7 +1220,10 @@ namespace BBC
         private void SetTapePlayerEnabled(bool enabled, Display? display = null)
         {
             if (!enabled)
+            {
                 tape.Unmount();
+                tapeMounted = false;
+            }
 
             tapePlayerEnabled = enabled;
             display?.ShowNotification(
@@ -2220,6 +2229,7 @@ namespace BBC
                 serialAcia.LoadState(reader);
                 tapePlayerEnabled = reader.ReadBoolean();
                 tape.LoadState(reader);
+                tapeMounted = tape.HasTape;
                 bool saveHasHayesModem = reader.ReadBoolean();
                 if (saveHasHayesModem)
                 {
