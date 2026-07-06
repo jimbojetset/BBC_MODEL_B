@@ -40,6 +40,10 @@ namespace BBC
         private const int TubeCoProcessorImageRightInset = 12;
         private const int TubeCoProcessorImageTopInset = 4;
         private const string TubeCoProcessorImageResourceName = "BBC.TubeCoProcessor.png";
+        private const int BbcLogoLeftInset = 8;
+        private const int BbcLogoTopInset = 10;
+        private const byte BbcLogoAlpha = 128;
+        private const string BbcLogoImageResourceName = "BBC.BBC_Logo.png";
         private const int CassetteLoadedScalePercent = 130;
         private const int CassetteLoadedOffsetX = 10;
         private const int CassetteLoadedOffsetY = 12;
@@ -174,6 +178,9 @@ namespace BBC
         private IntPtr texture;
         private IntPtr scanlineTexture;
         private IntPtr tubeCoProcessorTexture;
+        private IntPtr bbcLogoTexture;
+        private int bbcLogoTextureWidth;
+        private int bbcLogoTextureHeight;
         private IntPtr cassetteTexture;
         private int cassetteTextureWidth;
         private int cassetteTextureHeight;
@@ -188,6 +195,7 @@ namespace BBC
         private IntPtr joystick;
         private int activeJoystickInstanceId = -1;
         private bool scanlinesEnabled;
+        private bool showBbcLogo = true;
         private bool disposed;
         private bool hostCapsLockEnabled;
         private bool bbcShiftLockEnabled;
@@ -366,6 +374,7 @@ namespace BBC
 
             scanlineTexture = CreateScanlineTexture(width, height);
             tubeCoProcessorTexture = CreateTubeCoProcessorTexture();
+            bbcLogoTexture = CreateBbcLogoTexture();
             cassetteTexture = CreateCassetteTexture();
             cassetteLoadedTexture = CreateCassetteLoadedTexture();
             emptyDriveGlyphTexture = CreateDriveGlyphTexture(0xFF404040);
@@ -738,6 +747,7 @@ namespace BBC
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
             DrawTopBorderStatusMessage();
+            DrawBbcLogo();
             DrawTubeCoProcessorImage();
             DrawDriveGlyphs();
             DrawMenuBar();
@@ -846,6 +856,19 @@ namespace BBC
                 TubeCoProcessorImageWidth,
                 TubeCoProcessorImageHeight);
             _ = SDL_RenderCopy(renderer, tubeCoProcessorTexture, IntPtr.Zero, ref target);
+        }
+
+        private void DrawBbcLogo()
+        {
+            if (!showBbcLogo || bbcLogoTexture == IntPtr.Zero)
+                return;
+
+            SdlRect target = new SdlRect(
+                BbcLogoLeftInset,
+                TopMenuHeight + BbcLogoTopInset,
+                bbcLogoTextureWidth,
+                bbcLogoTextureHeight);
+            _ = SDL_RenderCopy(renderer, bbcLogoTexture, IntPtr.Zero, ref target);
         }
 
         private void DrawCassetteImage()
@@ -2748,6 +2771,9 @@ namespace BBC
                 case MenuCommand.ToggleScanlines:
                     scanlinesEnabled = !scanlinesEnabled;
                     break;
+                case MenuCommand.ToggleBbcLogo:
+                    showBbcLogo = !showBbcLogo;
+                    break;
                 case MenuCommand.ToggleFullScreen:
                     SetFullScreen(!fullScreenEnabled);
                     break;
@@ -2899,6 +2925,7 @@ namespace BBC
             return command switch
             {
                 MenuCommand.ToggleScanlines => scanlinesEnabled,
+                MenuCommand.ToggleBbcLogo => showBbcLogo,
                 MenuCommand.ToggleFullScreen => fullScreenEnabled,
                 MenuCommand.TogglePause => EmulationPaused,
                 MenuCommand.ToggleSoundOutput => SoundOutputEnabled,
@@ -3872,12 +3899,54 @@ namespace BBC
             return image;
         }
 
+        private IntPtr CreateBbcLogoTexture()
+        {
+            if (!TryLoadBbcLogoPng(out uint[] pixels, out int width, out int height))
+                return IntPtr.Zero;
+
+            IntPtr image = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, height);
+            if (image == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            bbcLogoTextureWidth = width;
+            bbcLogoTextureHeight = height;
+            _ = SDL_SetTextureBlendMode(image, SDL_BLENDMODE_BLEND);
+            _ = SDL_SetTextureAlphaMod(image, BbcLogoAlpha);
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                _ = SDL_UpdateTexture(image, IntPtr.Zero, handle.AddrOfPinnedObject(), width * sizeof(uint));
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return image;
+        }
+
         private static bool TryLoadTubeCoProcessorPng(out uint[] pixels, out int width, out int height)
         {
             pixels = [];
             width = 0;
             height = 0;
             using Stream? resource = typeof(Display).Assembly.GetManifestResourceStream(TubeCoProcessorImageResourceName);
+            if (resource is null)
+                return false;
+
+            using MemoryStream pngStream = new MemoryStream();
+            resource.CopyTo(pngStream);
+            byte[] png = pngStream.ToArray();
+            return TryReadPng(png, out pixels, out width, out height);
+        }
+
+        private static bool TryLoadBbcLogoPng(out uint[] pixels, out int width, out int height)
+        {
+            pixels = [];
+            width = 0;
+            height = 0;
+            using Stream? resource = typeof(Display).Assembly.GetManifestResourceStream(BbcLogoImageResourceName);
             if (resource is null)
                 return false;
 
@@ -4186,6 +4255,12 @@ namespace BBC
             {
                 SDL_DestroyTexture(cassetteTexture);
                 cassetteTexture = IntPtr.Zero;
+            }
+
+            if (bbcLogoTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(bbcLogoTexture);
+                bbcLogoTexture = IntPtr.Zero;
             }
 
             if (cassetteLoadedTexture != IntPtr.Zero)
@@ -4938,6 +5013,7 @@ namespace BBC
             ToggleHayesLoopback,
             ResetHayesModem,
             ToggleScanlines,
+            ToggleBbcLogo,
             ToggleFullScreen,
             OpenRomManager,
             OpenInputMapper
@@ -4970,7 +5046,8 @@ namespace BBC
                 new MenuDefinition("View",
                 [
                     new MenuItem("Fullscreen", "Ctrl+Shift+F", MenuCommand.ToggleFullScreen),
-                    new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines)
+                    new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines),
+                    new MenuItem("BBC logo", "", MenuCommand.ToggleBbcLogo)
                 ])
             ];
         }
@@ -5855,6 +5932,9 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_SetTextureBlendMode(IntPtr texture, int blendMode);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int SDL_SetTextureAlphaMod(IntPtr texture, byte alpha);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_UpdateTexture(IntPtr texture, IntPtr rect, IntPtr pixels, int pitch);
