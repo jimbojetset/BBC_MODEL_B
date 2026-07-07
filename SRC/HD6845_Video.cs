@@ -750,6 +750,8 @@ namespace BBC
                 beamCursorDrawIndex = 3 - beamCursorDisplaySkew;
             }
 
+            //if ((uint)beamBitmapX >= BeamFramebufferWidth || (uint)beamBitmapY >= BeamFramebufferHeight)
+            //    return;
 
             bool doubledLines = false;
             int y = beamBitmapY;
