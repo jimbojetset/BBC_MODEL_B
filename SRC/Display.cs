@@ -287,6 +287,10 @@ namespace BBC
 
         public bool TapeMounted { get; set; }
 
+        public bool TapeRecordable { get; set; }
+
+        public bool TapeRecording { get; set; }
+
         public bool TapePlaying { get; set; }
 
         public bool TapeFastTransportActive { get; set; }
@@ -2740,8 +2744,10 @@ namespace BBC
                     EnqueueSelectedTape();
                     break;
                 case MenuCommand.CreateUefTape:
+                    EnqueueBlankUefTape();
                     break;
                 case MenuCommand.RecordTape:
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Record, string.Empty));
                     break;
                 case MenuCommand.PlayTape:
                     pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Play, string.Empty));
@@ -2987,6 +2993,7 @@ namespace BBC
                 MenuCommand.TogglePause => EmulationPaused,
                 MenuCommand.ToggleSoundOutput => SoundOutputEnabled,
                 MenuCommand.ToggleTapePause => TapePaused,
+                MenuCommand.RecordTape => TapeRecording,
                 MenuCommand.PlayTape => TapePlaying,
                 MenuCommand.PauseTape => TapePaused,
                 MenuCommand.ToggleTapePlayer => TapePlayerEnabled,
@@ -3028,9 +3035,9 @@ namespace BBC
                 MenuCommand.EjectDrive0 => Drive0Enabled && Drive0Mounted,
                 MenuCommand.EjectDrive1 => Drive1Enabled && Drive1Mounted,
                 MenuCommand.LoadTape => TapePlayerEnabled && !TapeMounted,
-                MenuCommand.CreateUefTape => false,
-                MenuCommand.RecordTape => false,
-                MenuCommand.PlayTape => TapePlayerEnabled && TapeMounted && !TapePlaying,
+                MenuCommand.CreateUefTape => TapePlayerEnabled && !TapeMounted,
+                MenuCommand.RecordTape => TapePlayerEnabled && TapeMounted && TapeRecordable,
+                MenuCommand.PlayTape => TapePlayerEnabled && TapeMounted && !TapePlaying && !TapeRecording,
                 MenuCommand.PauseTape => TapePlayerEnabled && TapeMounted,
                 MenuCommand.StopTape => TapeMounted,
                 MenuCommand.RewindTape => TapePlayerEnabled && TapeMounted,
@@ -5092,12 +5099,12 @@ namespace BBC
         private static readonly MenuDefinition EmptyCassetteMenu = new MenuDefinition("Cassette",
         [
             new MenuItem("LOAD", "", MenuCommand.LoadTape),
-            new MenuItem("CREATE UEF", "", MenuCommand.CreateUefTape, Enabled: false)
+            new MenuItem("CREATE UEF", "", MenuCommand.CreateUefTape)
         ]);
 
         private static readonly MenuDefinition LoadedCassetteMenu = new MenuDefinition("Cassette",
         [
-            new MenuItem("REC", "", MenuCommand.RecordTape, Enabled: false, Symbol: TransportSymbol.Record),
+            new MenuItem("REC", "", MenuCommand.RecordTape, Symbol: TransportSymbol.Record),
             new MenuItem("PLAY", "", MenuCommand.PlayTape, Symbol: TransportSymbol.Play),
             new MenuItem("REW", "", MenuCommand.RewindTape, Symbol: TransportSymbol.Rewind),
             new MenuItem("CUE", "", MenuCommand.FastForwardTape, Symbol: TransportSymbol.Cue),
@@ -5300,6 +5307,27 @@ namespace BBC
                 pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Mount, path));
         }
 
+        private void EnqueueBlankUefTape()
+        {
+            if (!TapePlayerEnabled || TapeMounted)
+                return;
+
+            string? path = SelectNativeUefSaveFile();
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                string uefPath = EnsureUefExtension(path);
+                try
+                {
+                    UefTape.CreateBlankTape(uefPath, overwrite: true);
+                    pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.Mount, uefPath));
+                }
+                catch (Exception ex)
+                {
+                    ShowNotification("Create UEF failed", ex.Message, 5000);
+                }
+            }
+        }
+
         private void EnqueueBlankSsd(int drive)
         {
             if (drive is < 0 or > 1)
@@ -5403,6 +5431,32 @@ namespace BBC
 
                 if (OperatingSystem.IsLinux())
                     return RunProcessForSingleLine("zenity", "--file-selection", "--save", "--confirm-overwrite", "--title=Create blank DFS SSD", "--filename=Blank.ssd");
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string? SelectNativeUefSaveFile()
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.SaveFileDialog; $dialog.Title = 'Create blank UEF tape'; $dialog.Filter = 'UEF tape (*.uef)|*.uef'; $dialog.DefaultExt = 'uef'; $dialog.FileName = 'Blank.uef'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+
+                if (OperatingSystem.IsMacOS())
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file name with prompt \"Create blank UEF tape\" default name \"Blank.uef\")");
+
+                if (OperatingSystem.IsLinux())
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--save", "--confirm-overwrite", "--title=Create blank UEF tape", "--filename=Blank.uef");
             }
             catch
             {
@@ -5597,6 +5651,11 @@ namespace BBC
         private static string EnsureSaveStateExtension(string path)
         {
             return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".sav");
+        }
+
+        private static string EnsureUefExtension(string path)
+        {
+            return Path.HasExtension(path) ? path : Path.ChangeExtension(path, ".uef");
         }
 
         private static string EnsureInputProfileExtension(string path)
@@ -6200,6 +6259,7 @@ namespace BBC
     public enum HostTapeActionKind
     {
         Mount,
+        Record,
         Play,
         TogglePause,
         Stop,

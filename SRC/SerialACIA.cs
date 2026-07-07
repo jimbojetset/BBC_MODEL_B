@@ -93,6 +93,8 @@ namespace BBC
 
         public event Action<byte>? ByteTransmitted;
 
+        public event Action<bool>? MotorChanged;
+
         public event Action<bool>? IrqChanged;
 
         public event Action? ByteReceived;
@@ -132,12 +134,15 @@ namespace BBC
                 return;
             }
 
+            bool previousMotorRunning = MotorRunning;
             serialUlaControl = value;
             DecodeSerialUla(value);
 
             // The BBC Serial ULA also handles cassette routing and motor state.
             // Bit 7 is the observable motor control used by the front-panel LED.
             MotorRunning = (value & 0x80) != 0;
+            if (MotorRunning != previousMotorRunning)
+                MotorChanged?.Invoke(MotorRunning);
             Trace($"serial ULA <= ${value:X2} RX {ReceiveBaudRate} TX {TransmitBaudRate}");
         }
 
@@ -200,7 +205,7 @@ namespace BBC
                 lastTracedReads.Clear();
             }
 
-            MotorRunning = false;
+            SetMotorRunning(false);
             TapePlaying = false;
             SetInterruptLine(false);
         }
@@ -234,7 +239,7 @@ namespace BBC
         public void StopTape()
         {
             TapePlaying = false;
-            MotorRunning = false;
+            SetMotorRunning(false);
             SetCarrierPresent(true);
             ClearTapeReadRequest();
         }
@@ -426,6 +431,15 @@ namespace BBC
 
             IrqAsserted = asserted;
             IrqChanged?.Invoke(asserted);
+        }
+
+        private void SetMotorRunning(bool running)
+        {
+            if (MotorRunning == running)
+                return;
+
+            MotorRunning = running;
+            MotorChanged?.Invoke(running);
         }
 
         private bool TransmitDataEmpty()

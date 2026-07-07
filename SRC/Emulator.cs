@@ -522,7 +522,7 @@ namespace BBC
         private StreamWriter? exileRamTraceWriter;
         private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 18;
+        private const int SaveStateVersion = 23;
         private int runtimeTraceActive;
         private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
@@ -585,6 +585,8 @@ namespace BBC
             Cpu.OnAccessStretch = ComputeBusStretchCycles;
             serialAcia.ByteReceived += Cpu.SetOverflowInput;
             serialAcia.IrqChanged += _ => UpdateCpuIrqLine();
+            serialAcia.ByteTransmitted += tape.RecordByte;
+            serialAcia.MotorChanged += tape.CassetteMotorChanged;
             adc.EndOfConversionChanged += eocActive =>
             {
                 systemVia.SignalAdcEndOfConversion(eocActive);
@@ -712,6 +714,8 @@ namespace BBC
                 Display.SoundOutputEnabled = !Sound.HostOutputMuted;
                 Display.TapePaused = tape.Paused;
                 Display.TapeMounted = tape.HasTape;
+                Display.TapeRecordable = tape.Recordable;
+                Display.TapeRecording = tape.Recording;
                 Display.TapePlaying = tape.Playing;
                 Display.TapeFastTransportActive = tape.FastTransportActive;
                 Display.TapeLabel = tape.MountedFileName;
@@ -1225,6 +1229,33 @@ namespace BBC
             }
 
             display.ShowNotification("Tape playing", "Waiting for BBC motor", 1500);
+        }
+
+        private void RecordTape(Display display)
+        {
+            if (!tapePlayerEnabled)
+            {
+                display.ShowNotification("Tape Player disabled", "Enable it from Machine", 3000);
+                return;
+            }
+
+            if (!tape.HasTape)
+            {
+                display.ShowNotification("No tape mounted", string.Empty, 1500);
+                return;
+            }
+
+            if (!tape.Recordable)
+            {
+                display.ShowNotification("Tape is write-protected", "Record tab missing", 2000);
+                return;
+            }
+
+            bool recording = tape.ToggleRecording();
+            display.ShowNotification(
+                recording ? "Tape recording" : "Recording stopped",
+                recording ? "Waiting for BBC motor" : string.Empty,
+                1500);
         }
 
         private void StopTape(Display display)
@@ -1987,6 +2018,9 @@ namespace BBC
                     {
                         case HostTapeActionKind.Mount:
                             MountTapeFile(action.Path);
+                            break;
+                        case HostTapeActionKind.Record:
+                            RecordTape(display);
                             break;
                         case HostTapeActionKind.Play:
                             PlayTape(display);

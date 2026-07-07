@@ -11,11 +11,14 @@
 // ============================================================================
 
 using System.IO.Compression;
+using System.Text;
 
 namespace BBC
 {
     public sealed class UefTape
     {
+        public const string RecordableOrigin = "BBC_MODEL_B_RECORDABLE_TAPE";
+
         private const int BbcClockHz = 2_000_000;
         private const int UefCarrierCyclesPerSecond = 1200;
         private const int TapeZeroToneHz = 1200;
@@ -23,6 +26,8 @@ namespace BBC
         private const int TapeBitCycles = BbcClockHz / UefCarrierCyclesPerSecond;
         private const int CounterStepCycles = BbcClockHz * 6 / 5;
         private const int FastTransportMultiplier = 20;
+        private const int RecordedBlockCarrierCycles = BbcClockHz;
+        private const float BlankTapeSeconds = 10 * 60;
         private const ushort OriginChunk = 0x0000;
         private const ushort ImplicitDataChunk = 0x0100;
         private const ushort DefinedDataChunk = 0x0104;
@@ -49,6 +54,10 @@ namespace BBC
         private bool reachedEnd;
         private bool transportPlaying;
         private bool paused;
+        private bool recording;
+        private bool recordingDataRunActive;
+        private bool recordable;
+        private bool dirty;
         private FastTapeTransport fastTransport;
         private byte characterToneByte;
         private int characterToneBitCount;
@@ -57,6 +66,9 @@ namespace BBC
         private long tapePositionCycles;
         private long counterResetPositionCycles;
         private long totalTapeCycles;
+        private long pendingRecordedCarrierCycles;
+        private long recordingWritePositionCycles;
+        private readonly List<byte> recordingBlockBytes = new List<byte>();
         private bool tapePositionSeekNeeded;
         private string? lastTraceState;
 
@@ -71,7 +83,7 @@ namespace BBC
             get
             {
                 lock (sync)
-                    return events.Count > 0;
+                    return mountedPath is not null;
             }
         }
 
@@ -93,12 +105,30 @@ namespace BBC
             }
         }
 
+        public bool Recordable
+        {
+            get
+            {
+                lock (sync)
+                    return recordable;
+            }
+        }
+
+        public bool Recording
+        {
+            get
+            {
+                lock (sync)
+                    return recording;
+            }
+        }
+
         public bool Playing
         {
             get
             {
                 lock (sync)
-                    return transportPlaying && fastTransport == FastTapeTransport.None && !paused && !reachedEnd;
+                    return transportPlaying && !recording && fastTransport == FastTapeTransport.None && !paused && !reachedEnd;
             }
         }
 
@@ -125,22 +155,50 @@ namespace BBC
             get
             {
                 lock (sync)
-                    return events.Count > 0 && !reachedEnd;
+                    return mountedPath is not null && !reachedEnd;
             }
+        }
+
+        public static void CreateBlankTape(string path, bool overwrite = false)
+        {
+            string fullPath = Path.GetFullPath(path);
+            if (!overwrite && File.Exists(fullPath))
+                return;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath) ?? ".");
+            using FileStream file = new FileStream(fullPath, FileMode.Create, FileAccess.Write, FileShare.Read, 4096, FileOptions.WriteThrough);
+            using BinaryWriter writer = new BinaryWriter(file);
+            writer.Write("UEF File!\0"u8);
+            writer.Write((byte)0x05);
+            writer.Write((byte)0x00);
+
+            byte[] origin = Encoding.ASCII.GetBytes(RecordableOrigin);
+            writer.Write(OriginChunk);
+            writer.Write(origin.Length);
+            writer.Write(origin);
+
+            writer.Write(FloatingGapChunk);
+            writer.Write(sizeof(float));
+            writer.Write(BlankTapeSeconds);
+            writer.Flush();
+            file.Flush(flushToDisk: true);
         }
 
         public void Mount(string path)
         {
-            List<TapeEvent> loadedEvents = ReadEvents(path);
-            if (loadedEvents.Count == 0)
-                throw new InvalidDataException("UEF image does not contain any supported tape data.");
+            ParsedUefTape loadedTape = ReadTape(path);
 
             lock (sync)
             {
                 events.Clear();
-                events.AddRange(loadedEvents);
+                events.AddRange(loadedTape.Events);
                 mountedPath = Path.GetFullPath(path);
                 mountedFileName = Path.GetFileName(path);
+                recordable = loadedTape.Recordable;
+                recording = false;
+                recordingDataRunActive = false;
+                recordingBlockBytes.Clear();
+                dirty = false;
                 eventIndex = 0;
                 delayCyclesRemaining = 0;
                 delayToneHz = 0;
@@ -149,16 +207,22 @@ namespace BBC
                 reachedEnd = false;
                 transportPlaying = false;
                 paused = false;
+                recording = false;
+                recordingDataRunActive = false;
+                recordingBlockBytes.Clear();
+                dirty = false;
                 fastTransport = FastTapeTransport.None;
                 tapePositionCycles = 0;
                 counterResetPositionCycles = 0;
                 totalTapeCycles = GetTotalCycles(events);
+                pendingRecordedCarrierCycles = 0;
+                recordingWritePositionCycles = 0;
                 tapePositionSeekNeeded = false;
                 ResetCharacterTone();
                 lastTraceState = null;
             }
 
-            Trace($"mounted {Path.GetFileName(path)} events={loadedEvents.Count}");
+            Trace($"mounted {Path.GetFileName(path)} events={loadedTape.Events.Count} recordable={(loadedTape.Recordable ? 1 : 0)}");
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetCarrierPresent(true);
             serialAcia.SetTapePlaying(false);
@@ -167,11 +231,18 @@ namespace BBC
 
         public void Unmount()
         {
+            FlushRecording();
+
             lock (sync)
             {
                 events.Clear();
                 mountedPath = null;
                 mountedFileName = null;
+                recordable = false;
+                recording = false;
+                recordingDataRunActive = false;
+                recordingBlockBytes.Clear();
+                dirty = false;
                 eventIndex = 0;
                 delayCyclesRemaining = 0;
                 delayToneHz = 0;
@@ -184,6 +255,8 @@ namespace BBC
                 tapePositionCycles = 0;
                 counterResetPositionCycles = 0;
                 totalTapeCycles = 0;
+                pendingRecordedCarrierCycles = 0;
+                recordingWritePositionCycles = 0;
                 tapePositionSeekNeeded = false;
                 ResetCharacterTone();
                 lastTraceState = null;
@@ -217,6 +290,55 @@ namespace BBC
                     return;
                 }
 
+                if (recording)
+                {
+                    if (reachedEnd)
+                    {
+                        recording = false;
+                        recordingDataRunActive = false;
+                        recordingBlockBytes.Clear();
+                        transportPlaying = false;
+                        serialAcia.SetTapePlaying(false);
+                        SilenceTapeTone();
+                        FlushRecording(reloadTape: true);
+                        return;
+                    }
+
+                    if (paused || !serialAcia.MotorRunning)
+                    {
+                        TraceStateOnce(paused ? "record paused" : "record motor-off");
+                        serialAcia.SetTapePlaying(false);
+                        SilenceTapeTone();
+                        if (!paused)
+                        {
+                            FlushRecording(reloadTape: true);
+                            recordingDataRunActive = false;
+                            recordingBlockBytes.Clear();
+                        }
+                        return;
+                    }
+
+                    TraceStateOnce("record running");
+                    serialAcia.SetTapePlaying(false);
+                    SilenceTapeTone();
+                    if (!recordingDataRunActive)
+                    {
+                        pendingRecordedCarrierCycles += cycles;
+                        dirty = true;
+                    }
+                    AdvanceTapeCounter(cycles);
+                    if (tapePositionCycles >= totalTapeCycles)
+                    {
+                        reachedEnd = true;
+                        recording = false;
+                        recordingDataRunActive = false;
+                        recordingBlockBytes.Clear();
+                        transportPlaying = false;
+                        FlushRecording(reloadTape: true);
+                    }
+                    return;
+                }
+
                 if (reachedEnd)
                 {
                     TraceStateOnce("idle no-events-or-end");
@@ -238,6 +360,7 @@ namespace BBC
                     TraceStateOnce("blocked motor-off");
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
+                    AdvanceTapeSilently(cycles);
                     return;
                 }
 
@@ -246,7 +369,7 @@ namespace BBC
                 TraceStateOnce("running");
 
                 int remainingCycles = cycles;
-                while (remainingCycles > 0 && eventIndex < events.Count)
+                while (remainingCycles > 0 && (eventIndex < events.Count || delayCyclesRemaining > 0 || characterCyclesRemaining > 0))
                 {
                     if (delayCyclesRemaining > 0)
                     {
@@ -270,6 +393,9 @@ namespace BBC
                         if (characterCyclesRemaining > 0)
                             return;
                     }
+
+                    if (eventIndex >= events.Count)
+                        break;
 
                     TapeEvent tapeEvent = events[eventIndex];
                     if (tapeEvent.Kind == TapeEventKind.Trace)
@@ -332,10 +458,11 @@ namespace BBC
                     StartCharacterTone(tapeEvent.Byte, tapeEvent.BitCount);
                 }
 
-                if (eventIndex >= events.Count)
+                if (eventIndex >= events.Count && delayCyclesRemaining == 0 && characterCyclesRemaining == 0)
                 {
                     Trace("reached end");
                     reachedEnd = true;
+                    transportPlaying = false;
                     playbackStarted = false;
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
@@ -385,10 +512,18 @@ namespace BBC
                 writer.Write(reachedEnd);
                 writer.Write(transportPlaying);
                 writer.Write(paused);
+                writer.Write(recording);
+                writer.Write(recordingDataRunActive);
+                writer.Write(recordable);
+                writer.Write(recordingBlockBytes.Count);
+                foreach (byte value in recordingBlockBytes)
+                    writer.Write(value);
                 writer.Write((int)fastTransport);
                 writer.Write(tapePositionCycles);
                 writer.Write(counterResetPositionCycles);
                 writer.Write(totalTapeCycles);
+                writer.Write(pendingRecordedCarrierCycles);
+                writer.Write(recordingWritePositionCycles);
                 writer.Write(tapePositionSeekNeeded);
             }
         }
@@ -406,10 +541,17 @@ namespace BBC
             bool savedReachedEnd = reader.ReadBoolean();
             bool savedTransportPlaying = reader.ReadBoolean();
             bool savedPaused = reader.ReadBoolean();
+            bool savedRecording = reader.ReadBoolean();
+            bool savedRecordingDataRunActive = reader.ReadBoolean();
+            bool savedRecordable = reader.ReadBoolean();
+            int savedRecordingBlockByteCount = reader.ReadInt32();
+            byte[] savedRecordingBlockBytes = reader.ReadBytes(Math.Max(0, savedRecordingBlockByteCount));
             FastTapeTransport savedFastTransport = (FastTapeTransport)reader.ReadInt32();
             long savedTapePositionCycles = reader.ReadInt64();
             long savedCounterResetPositionCycles = reader.ReadInt64();
             long savedTotalTapeCycles = reader.ReadInt64();
+            long savedPendingRecordedCarrierCycles = reader.ReadInt64();
+            long savedRecordingWritePositionCycles = reader.ReadInt64();
             bool savedTapePositionSeekNeeded = reader.ReadBoolean();
 
             lock (sync)
@@ -425,10 +567,17 @@ namespace BBC
                 reachedEnd = false;
                 transportPlaying = false;
                 paused = false;
+                recordable = false;
+                recording = false;
+                recordingDataRunActive = false;
+                recordingBlockBytes.Clear();
+                dirty = false;
                 fastTransport = FastTapeTransport.None;
                 tapePositionCycles = 0;
                 counterResetPositionCycles = 0;
                 totalTapeCycles = 0;
+                pendingRecordedCarrierCycles = 0;
+                recordingWritePositionCycles = 0;
                 tapePositionSeekNeeded = false;
                 ResetCharacterTone();
                 lastTraceState = null;
@@ -441,30 +590,38 @@ namespace BBC
                 return;
             }
 
-            List<TapeEvent> loadedEvents = ReadEvents(path);
+            ParsedUefTape loadedTape = ReadTape(path);
             lock (sync)
             {
-                events.AddRange(loadedEvents);
+                events.AddRange(loadedTape.Events);
                 mountedPath = path;
                 mountedFileName = string.IsNullOrWhiteSpace(fileName) ? Path.GetFileName(path) : fileName;
+                recordable = loadedTape.Recordable || savedRecordable;
                 eventIndex = Math.Clamp(savedEventIndex, 0, events.Count);
                 delayCyclesRemaining = Math.Max(0, savedDelayCycles);
                 delayToneHz = Math.Max(0, savedDelayToneHz);
                 characterCyclesRemaining = Math.Max(0, savedCharacterCycles);
                 playbackStarted = savedPlaybackStarted;
                 reachedEnd = savedReachedEnd || eventIndex >= events.Count;
+                recording = savedRecording && recordable && !reachedEnd;
+                recordingDataRunActive = savedRecordingDataRunActive && recording;
+                recordingBlockBytes.Clear();
+                if (recordingDataRunActive)
+                    recordingBlockBytes.AddRange(savedRecordingBlockBytes);
                 transportPlaying = savedTransportPlaying && !reachedEnd;
                 paused = savedPaused;
                 fastTransport = Enum.IsDefined(savedFastTransport) ? savedFastTransport : FastTapeTransport.None;
                 totalTapeCycles = savedTotalTapeCycles > 0 ? savedTotalTapeCycles : GetTotalCycles(events);
                 tapePositionCycles = Math.Clamp(savedTapePositionCycles, 0, totalTapeCycles);
                 counterResetPositionCycles = Math.Clamp(savedCounterResetPositionCycles, 0, totalTapeCycles);
+                pendingRecordedCarrierCycles = Math.Max(0, savedPendingRecordedCarrierCycles);
+                recordingWritePositionCycles = Math.Clamp(savedRecordingWritePositionCycles, 0, totalTapeCycles);
                 tapePositionSeekNeeded = savedTapePositionSeekNeeded;
                 ResetCharacterTone();
                 lastTraceState = null;
             }
 
-            Trace($"loaded state events={loadedEvents.Count} index={eventIndex}");
+            Trace($"loaded state events={loadedTape.Events.Count} index={eventIndex}");
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetTapePlaying(false);
             SilenceTapeTone();
@@ -474,7 +631,7 @@ namespace BBC
         {
             lock (sync)
             {
-                if (events.Count == 0 || reachedEnd)
+                if (mountedPath is null || reachedEnd)
                     return false;
 
                 AlignPlaybackToTapePosition();
@@ -489,11 +646,47 @@ namespace BBC
             }
         }
 
+        public bool ToggleRecording()
+        {
+            lock (sync)
+            {
+                if (mountedPath is null || !recordable || reachedEnd)
+                    return false;
+
+                if (recording)
+                {
+                    recording = false;
+                    recordingDataRunActive = false;
+                    recordingBlockBytes.Clear();
+                    transportPlaying = false;
+                    paused = false;
+                    lastTraceState = null;
+                    serialAcia.SetTapePlaying(false);
+                    SilenceTapeTone();
+                    FlushRecording(reloadTape: true);
+                    Trace($"record stop position={tapePositionCycles}/{totalTapeCycles}");
+                    return false;
+                }
+
+                AlignPlaybackToTapePosition();
+                recording = true;
+                recordingDataRunActive = false;
+                recordingBlockBytes.Clear();
+                recordingWritePositionCycles = tapePositionCycles;
+                transportPlaying = true;
+                fastTransport = FastTapeTransport.None;
+                paused = false;
+                lastTraceState = null;
+                Trace($"record position={tapePositionCycles}/{totalTapeCycles}");
+                return true;
+            }
+        }
+
         public bool Play()
         {
             lock (sync)
             {
-                if (events.Count == 0 || reachedEnd)
+                if (mountedPath is null || reachedEnd || recording)
                     return false;
 
                 AlignPlaybackToTapePosition();
@@ -510,17 +703,21 @@ namespace BBC
         {
             lock (sync)
             {
-                if (events.Count == 0)
+                if (mountedPath is null)
                     return false;
 
                 AlignPlaybackToTapePosition();
                 transportPlaying = false;
                 paused = false;
+                recording = false;
+                recordingDataRunActive = false;
+                recordingBlockBytes.Clear();
                 fastTransport = FastTapeTransport.None;
                 playbackStarted = false;
                 lastTraceState = null;
                 serialAcia.SetTapePlaying(false);
                 SilenceTapeTone();
+                FlushRecording(reloadTape: true);
                 Trace($"stop index={eventIndex}/{events.Count}");
                 return true;
             }
@@ -540,7 +737,7 @@ namespace BBC
         {
             lock (sync)
             {
-                if (events.Count == 0)
+                if (mountedPath is null)
                     return false;
 
                 counterResetPositionCycles = tapePositionCycles;
@@ -552,7 +749,7 @@ namespace BBC
         {
             lock (sync)
             {
-                if (events.Count == 0)
+                if (mountedPath is null)
                     return false;
 
                 if (mode == FastTapeTransport.Forward && tapePositionCycles >= totalTapeCycles)
@@ -564,10 +761,14 @@ namespace BBC
                 fastTransport = mode;
                 transportPlaying = false;
                 paused = false;
+                recording = false;
+                recordingDataRunActive = false;
+                recordingBlockBytes.Clear();
                 playbackStarted = false;
                 lastTraceState = null;
                 serialAcia.SetTapePlaying(false);
                 SilenceTapeTone();
+                FlushRecording(reloadTape: true);
                 Trace($"{(mode == FastTapeTransport.Forward ? "fast-forward" : "rewind")} position={tapePositionCycles}/{totalTapeCycles}");
                 return true;
             }
@@ -593,6 +794,82 @@ namespace BBC
                 fastTransport = FastTapeTransport.None;
                 transportPlaying = false;
                 paused = false;
+            }
+        }
+
+        private void AdvanceTapeSilently(int cycles)
+        {
+            int remainingCycles = cycles;
+            while (remainingCycles > 0 && (eventIndex < events.Count || delayCyclesRemaining > 0 || characterCyclesRemaining > 0))
+            {
+                if (delayCyclesRemaining > 0)
+                {
+                    int consumed = Math.Min(remainingCycles, delayCyclesRemaining);
+                    delayCyclesRemaining -= consumed;
+                    remainingCycles -= consumed;
+                    AdvanceTapeCounter(consumed);
+                    if (delayCyclesRemaining > 0)
+                        return;
+                }
+
+                if (characterCyclesRemaining > 0)
+                {
+                    int consumed = Math.Min(remainingCycles, characterCyclesRemaining);
+                    characterCyclesRemaining -= consumed;
+                    remainingCycles -= consumed;
+                    AdvanceTapeCounter(consumed);
+                    if (characterCyclesRemaining > 0)
+                        return;
+                }
+
+                if (eventIndex >= events.Count)
+                    break;
+
+                TapeEvent tapeEvent = events[eventIndex];
+                if (tapeEvent.Kind == TapeEventKind.Trace)
+                {
+                    eventIndex++;
+                    continue;
+                }
+
+                if (tapeEvent.Kind == TapeEventKind.Carrier)
+                {
+                    delayCyclesRemaining = tapeEvent.Cycles;
+                    delayToneHz = TapeOneToneHz;
+                    eventIndex++;
+                    continue;
+                }
+
+                if (tapeEvent.Kind == TapeEventKind.CarrierDetect)
+                {
+                    eventIndex++;
+                    continue;
+                }
+
+                if (tapeEvent.Kind == TapeEventKind.Gap)
+                {
+                    delayCyclesRemaining = tapeEvent.Cycles;
+                    delayToneHz = 0;
+                    eventIndex++;
+                    continue;
+                }
+
+                if (tapeEvent.Cycles > 0)
+                {
+                    delayCyclesRemaining = tapeEvent.Cycles;
+                    delayToneHz = 0;
+                    eventIndex++;
+                    continue;
+                }
+
+                eventIndex++;
+                characterCyclesRemaining = CharacterCycles(tapeEvent.BitCount);
+            }
+
+            if (eventIndex >= events.Count && delayCyclesRemaining == 0 && characterCyclesRemaining == 0)
+            {
+                reachedEnd = true;
+                transportPlaying = false;
             }
         }
 
@@ -659,6 +936,212 @@ namespace BBC
         {
             if (tapePositionSeekNeeded)
                 SetTapePosition(tapePositionCycles);
+        }
+
+        public void RecordByte(byte value)
+        {
+            lock (sync)
+            {
+                if (!recording || !recordable || paused || reachedEnd || mountedPath is null || !serialAcia.MotorRunning)
+                    return;
+
+                if (!recordingDataRunActive)
+                {
+                    if (value != 0x2A)
+                        return;
+
+                    MaterializePendingRecordedCarrier();
+                    recordingWritePositionCycles = tapePositionCycles;
+                    recordingBlockBytes.Clear();
+                    recordingDataRunActive = true;
+                }
+
+                InsertRecordedByte(recordingWritePositionCycles, value);
+                recordingBlockBytes.Add(value);
+                dirty = true;
+                tapePositionSeekNeeded = true;
+                recordingWritePositionCycles = Math.Min(totalTapeCycles, recordingWritePositionCycles + CharacterCycles(10));
+                if (TryGetRecordedBlockLength(recordingBlockBytes, 0, out int blockLength)
+                    && recordingBlockBytes.Count >= blockLength)
+                {
+                    recordingDataRunActive = false;
+                    recordingBlockBytes.Clear();
+                }
+                Trace($"record byte ${value:X2} position={tapePositionCycles}/{totalTapeCycles}");
+            }
+        }
+
+        public void CassetteMotorChanged(bool running)
+        {
+            if (running)
+                return;
+
+            lock (sync)
+            {
+                if (recording)
+                {
+                    FlushRecording(reloadTape: true);
+                    recordingDataRunActive = false;
+                    recordingBlockBytes.Clear();
+                }
+            }
+        }
+
+        private void InsertRecordedByte(long positionCycles, byte value)
+        {
+            InsertRecordedEvent(positionCycles, TapeEvent.ForByte(value));
+        }
+
+        private void InsertRecordedCarrier(long positionCycles, int cycles)
+        {
+            if (cycles <= 0)
+                return;
+
+            InsertRecordedEvent(positionCycles, TapeEvent.ForCarrier(cycles));
+        }
+
+        private void MaterializePendingRecordedCarrier()
+        {
+            if (pendingRecordedCarrierCycles <= 0)
+                return;
+
+            long carrierStartCycles = Math.Max(0, tapePositionCycles - pendingRecordedCarrierCycles);
+            long remainingCycles = pendingRecordedCarrierCycles;
+            while (remainingCycles > 0)
+            {
+                int chunkCycles = (int)Math.Min(int.MaxValue, remainingCycles);
+                InsertRecordedCarrier(carrierStartCycles, chunkCycles);
+                carrierStartCycles += chunkCycles;
+                remainingCycles -= chunkCycles;
+            }
+
+            pendingRecordedCarrierCycles = 0;
+        }
+
+        private void InsertRecordedEvent(long positionCycles, TapeEvent recordedEvent)
+        {
+            int recordedCycles = GetEventCycles(recordedEvent);
+            if (recordedCycles <= 0)
+                return;
+
+            List<TapeEvent> updatedEvents = new List<TapeEvent>(events.Count + 2);
+            long remaining = Math.Clamp(positionCycles, 0, totalTapeCycles);
+            bool inserted = false;
+
+            foreach (TapeEvent tapeEvent in events)
+            {
+                int duration = GetEventCycles(tapeEvent);
+                if (inserted || duration == 0)
+                {
+                    updatedEvents.Add(tapeEvent);
+                    continue;
+                }
+
+                if (remaining >= duration)
+                {
+                    updatedEvents.Add(tapeEvent);
+                    remaining -= duration;
+                    continue;
+                }
+
+                if (tapeEvent.Kind == TapeEventKind.Gap)
+                {
+                    int beforeCycles = (int)remaining;
+                    int afterCycles = Math.Max(0, duration - beforeCycles - recordedCycles);
+                    if (beforeCycles > 0)
+                        updatedEvents.Add(TapeEvent.ForGap(beforeCycles));
+                    updatedEvents.Add(recordedEvent);
+                    if (afterCycles > 0)
+                        updatedEvents.Add(TapeEvent.ForGap(afterCycles));
+                    inserted = true;
+                    continue;
+                }
+
+                updatedEvents.Add(recordedEvent);
+                updatedEvents.Add(tapeEvent);
+                inserted = true;
+            }
+
+            if (!inserted)
+            {
+                long gapCycles = Math.Max(0, remaining);
+                if (gapCycles > 0)
+                    updatedEvents.Add(TapeEvent.ForGap((int)Math.Min(int.MaxValue, gapCycles)));
+                updatedEvents.Add(recordedEvent);
+            }
+
+            events.Clear();
+            CoalesceTapeEvents(updatedEvents, events);
+            totalTapeCycles = Math.Max(totalTapeCycles, GetTotalCycles(events));
+        }
+
+        private static void CoalesceTapeEvents(List<TapeEvent> source, List<TapeEvent> destination)
+        {
+            foreach (TapeEvent tapeEvent in source)
+            {
+                if (destination.Count == 0)
+                {
+                    destination.Add(tapeEvent);
+                    continue;
+                }
+
+                TapeEvent previous = destination[^1];
+                if (previous.Kind == tapeEvent.Kind
+                    && previous.Kind is TapeEventKind.Carrier or TapeEventKind.Gap
+                    && previous.Cycles <= int.MaxValue - tapeEvent.Cycles)
+                {
+                    destination[^1] = previous.Kind == TapeEventKind.Carrier
+                        ? TapeEvent.ForCarrier(previous.Cycles + tapeEvent.Cycles)
+                        : TapeEvent.ForGap(previous.Cycles + tapeEvent.Cycles);
+                    continue;
+                }
+
+                destination.Add(tapeEvent);
+            }
+        }
+
+        private void FlushRecording(bool reloadTape = false)
+        {
+            MaterializePendingRecordedCarrier();
+            if (!dirty || !recordable || mountedPath is null)
+                return;
+
+            string path = mountedPath;
+            WriteTape(path, events);
+            dirty = false;
+
+            if (reloadTape)
+                ReloadWrittenTape(path);
+        }
+
+        private void ReloadWrittenTape(string path)
+        {
+            ParsedUefTape loadedTape = ReadTape(path);
+            long positionCycles = tapePositionCycles;
+            bool wasRecording = recording;
+
+            events.Clear();
+            events.AddRange(loadedTape.Events);
+            recordable = loadedTape.Recordable || recordable;
+            totalTapeCycles = GetTotalCycles(events);
+            tapePositionCycles = Math.Clamp(positionCycles, 0, totalTapeCycles);
+            recordingWritePositionCycles = tapePositionCycles;
+            recordingBlockBytes.Clear();
+            pendingRecordedCarrierCycles = 0;
+            tapePositionSeekNeeded = false;
+            delayCyclesRemaining = 0;
+            delayToneHz = 0;
+            characterCyclesRemaining = 0;
+            playbackStarted = false;
+            reachedEnd = tapePositionCycles >= totalTapeCycles && events.Count > 0;
+            ResetCharacterTone();
+            SetTapePosition(tapePositionCycles);
+            recording = wasRecording && recordable && !reachedEnd;
+            if (!recording)
+            {
+                recordingDataRunActive = false;
+                recordingBlockBytes.Clear();
+            }
         }
 
         private void TraceStateOnce(string state)
@@ -768,13 +1251,14 @@ namespace BBC
             tapeSound.SetCassetteTone(0);
         }
 
-        private static List<TapeEvent> ReadEvents(string path)
+        private static ParsedUefTape ReadTape(string path)
         {
             byte[] image = ReadUefBytes(path);
             if (image.Length < 12 || !image.AsSpan(0, 10).SequenceEqual("UEF File!\0"u8))
                 throw new InvalidDataException("Not a UEF tape image.");
 
             List<TapeEvent> events = new List<TapeEvent>();
+            bool recordable = false;
             int offset = 12;
             while (offset + 6 <= image.Length)
             {
@@ -788,6 +1272,8 @@ namespace BBC
                 switch (chunk)
                 {
                     case OriginChunk:
+                        if (Encoding.ASCII.GetString(data).Contains(RecordableOrigin, StringComparison.Ordinal))
+                            recordable = true;
                         break;
 
                     case ImplicitDataChunk:
@@ -818,7 +1304,150 @@ namespace BBC
                 offset += length;
             }
 
-            return events;
+            return new ParsedUefTape(events, recordable);
+        }
+
+        private static void WriteTape(string path, List<TapeEvent> tapeEvents)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
+            using FileStream file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read, 4096, FileOptions.WriteThrough);
+            using BinaryWriter writer = new BinaryWriter(file);
+            writer.Write("UEF File!\0"u8);
+            writer.Write((byte)0x05);
+            writer.Write((byte)0x00);
+
+            byte[] origin = Encoding.ASCII.GetBytes(RecordableOrigin);
+            writer.Write(OriginChunk);
+            writer.Write(origin.Length);
+            writer.Write(origin);
+
+            List<byte> bytes = new List<byte>();
+            foreach (TapeEvent tapeEvent in tapeEvents)
+            {
+                if (tapeEvent.Kind == TapeEventKind.Byte)
+                {
+                    bytes.Add(tapeEvent.Byte);
+                    continue;
+                }
+
+                WriteImplicitData(writer, bytes);
+
+                if (tapeEvent.Kind == TapeEventKind.Gap && tapeEvent.Cycles > 0)
+                    WriteFloatingGap(writer, tapeEvent.Cycles);
+                else if (tapeEvent.Kind == TapeEventKind.Carrier && tapeEvent.Cycles > 0)
+                    WriteCarrier(writer, tapeEvent.Cycles);
+            }
+
+            WriteImplicitData(writer, bytes);
+            writer.Flush();
+            file.Flush(flushToDisk: true);
+        }
+
+        private static void WriteImplicitData(BinaryWriter writer, List<byte> bytes)
+        {
+            if (bytes.Count == 0)
+                return;
+
+            int offset = 0;
+            bool wroteBlock = false;
+            while (TryFindRecordedBlock(bytes, offset, out int blockStart, out int blockLength))
+            {
+                if (blockStart > offset)
+                    WriteCarrier(writer, Math.Max(RecordedBlockCarrierCycles, CharacterCycles(10) * (blockStart - offset)));
+
+                WriteSyncBytes(writer);
+                WriteCarrier(writer, RecordedBlockCarrierCycles);
+                WriteImplicitDataChunk(writer, bytes, blockStart, blockLength);
+                offset = blockStart + blockLength;
+                wroteBlock = true;
+            }
+
+            if (!wroteBlock)
+                WriteImplicitDataChunk(writer, bytes, 0, bytes.Count);
+            else if (offset < bytes.Count)
+                WriteCarrier(writer, CharacterCycles(10) * (bytes.Count - offset));
+
+            bytes.Clear();
+        }
+
+        private static void WriteImplicitDataChunk(BinaryWriter writer, List<byte> bytes, int offset, int count)
+        {
+            writer.Write(ImplicitDataChunk);
+            writer.Write(count);
+            for (int i = 0; i < count; i++)
+                writer.Write(bytes[offset + i]);
+        }
+
+        private static bool TryFindRecordedBlock(List<byte> bytes, int offset, out int blockStart, out int blockLength)
+        {
+            for (int i = Math.Max(0, offset); i < bytes.Count; i++)
+            {
+                if (bytes[i] != 0x2A)
+                    continue;
+
+                if (TryGetRecordedBlockLength(bytes, i, out blockLength))
+                {
+                    blockStart = i;
+                    return true;
+                }
+            }
+
+            blockStart = -1;
+            blockLength = 0;
+            return false;
+        }
+
+        private static bool TryGetRecordedBlockLength(List<byte> bytes, int blockStart, out int blockLength)
+        {
+            blockLength = 0;
+
+            int nameEnd = blockStart + 1;
+            while (nameEnd < bytes.Count && bytes[nameEnd] != 0x00 && nameEnd - blockStart <= 12)
+                nameEnd++;
+
+            if (nameEnd >= bytes.Count || bytes[nameEnd] != 0x00 || nameEnd == blockStart + 1)
+                return false;
+
+            const int headerBytesAfterName = 19;
+            int dataLengthOffset = nameEnd + 1 + 4 + 4 + 2;
+            int dataOffset = nameEnd + 1 + headerBytesAfterName;
+            if (dataLengthOffset + 1 >= bytes.Count || dataOffset + 2 > bytes.Count)
+                return false;
+
+            int dataLength = bytes[dataLengthOffset] | (bytes[dataLengthOffset + 1] << 8);
+            int totalLength = dataOffset - blockStart + dataLength + 2;
+            if (totalLength <= 0 || blockStart + totalLength > bytes.Count)
+                return false;
+
+            blockLength = totalLength;
+            return true;
+        }
+
+        private static void WriteSyncBytes(BinaryWriter writer)
+        {
+            writer.Write(ImplicitDataChunk);
+            writer.Write(1);
+            writer.Write((byte)0xDC);
+        }
+
+        private static void WriteFloatingGap(BinaryWriter writer, int cycles)
+        {
+            writer.Write(FloatingGapChunk);
+            writer.Write(sizeof(float));
+            writer.Write(cycles / (float)BbcClockHz);
+        }
+
+        private static void WriteCarrier(BinaryWriter writer, int cycles)
+        {
+            long carrierCycles = Math.Max(0, (long)cycles * UefCarrierCyclesPerSecond / BbcClockHz);
+            while (carrierCycles > 0)
+            {
+                ushort chunkCycles = (ushort)Math.Min(ushort.MaxValue, carrierCycles);
+                writer.Write(CarrierToneChunk);
+                writer.Write(sizeof(ushort));
+                writer.Write(chunkCycles);
+                carrierCycles -= chunkCycles;
+            }
         }
 
         private static byte[] ReadUefBytes(string path)
@@ -1043,6 +1672,8 @@ namespace BBC
             Forward,
             Rewind
         }
+
+        private readonly record struct ParsedUefTape(List<TapeEvent> Events, bool Recordable);
 
         private readonly record struct TapeEvent(TapeEventKind Kind, byte Byte, int Cycles, int BitCount, string? Label)
         {

@@ -124,6 +124,7 @@ The SDL window has a small menu bar for the common jobs:
 ```text
 File         Screenshot, save state, open state, quit
 Disc         Mount, eject, or create blank SSD media
+Cassette    Load, create, and control UEF tapes
 Machine      BREAK, tape player, modem, disc drives, Tube, sound, pause
 ROM Manager  Edit sideways ROM banks and import/export ROM layouts
 View         Fullscreen and scanlines
@@ -169,6 +170,8 @@ The emulator supports DFS `.ssd` and `.dsd` images, UEF tapes, and ZIP archives 
 Physical drive 0 maps to DFS drives 0 and 2. Physical drive 1 maps to DFS drives 1 and 3. That matters for double-sided DSD images: mount them with `--drive0` or `--drive1` so both sides stay together.
 
 You can create blank media from the menu or command line. DFS can also catalogue, load, save, delete, copy, verify, and format mounted images from inside the BBC.
+
+Blank UEF tapes created from the cassette menu are recordable 10-minute tapes. Loaded game UEFs are treated like tapes with the record tab removed, so `REC` is disabled for them.
 
 5.25 inch drive sounds are mixed into the main audio path from samples in `Assets/DriveNoise`. The sample source is credited in `THIRD_PARTY_NOTICES.md`.
 
