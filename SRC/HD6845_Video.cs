@@ -104,6 +104,11 @@ namespace BBC
         private int beamCompletedMinY;
         private int beamCompletedMaxX;
         private int beamCompletedMaxY;
+        private bool displayFrameRectValid;
+        private int displayFrameX;
+        private int displayFrameY;
+        private int displayFrameWidth;
+        private int displayFrameHeight;
         private bool beamCompletedVisibleRuptureTimingActive;
         private int beamMode4To5X;
         private int beamMode4To5Y;
@@ -374,6 +379,7 @@ namespace BBC
             {
                 ReadUintArray(reader, beamRenderFrame, "beam render frame");
                 ReadUintArray(reader, beamCompletedFrame, "beam completed frame");
+                displayFrameRectValid = false;
             }
 
             VsyncChanged?.Invoke(beamInVSync);
@@ -471,6 +477,11 @@ namespace BBC
             beamCompletedMinY = 0;
             beamCompletedMaxX = 0;
             beamCompletedMaxY = 0;
+            displayFrameRectValid = false;
+            displayFrameX = 0;
+            displayFrameY = 0;
+            displayFrameWidth = 0;
+            displayFrameHeight = 0;
             beamCompletedVisibleRuptureTimingActive = false;
             beamMode4To5X = -1;
             beamMode4To5Y = -1;
@@ -1250,7 +1261,11 @@ namespace BBC
         public void Render(Display display)
         {
             if (!TryCopyBeamFrameToDisplay(display))
+            {
                 Array.Fill(display.FrameBuffer, Background);
+                display.MarkFrameDirty();
+                displayFrameRectValid = false;
+            }
         }
 
         private bool TryCopyBeamFrameToDisplay(Display display)
@@ -1261,10 +1276,18 @@ namespace BBC
                     return false;
 
                 uint[] destination = display.FrameBuffer;
-                Array.Fill(destination, Background);
 
                 if (beamCompletedMaxX <= beamCompletedMinX || beamCompletedMaxY <= beamCompletedMinY)
+                {
+                    if (displayFrameRectValid)
+                    {
+                        FillDisplayRect(destination, display.Width, displayFrameX, displayFrameY, displayFrameWidth, displayFrameHeight, Background);
+                        display.MarkFrameDirty(displayFrameX, displayFrameY, displayFrameWidth, displayFrameHeight);
+                        displayFrameRectValid = false;
+                    }
+
                     return true;
+                }
 
                 int sourceMinY = beamCompletedMinY & ~1;
                 int sourceMaxY = Math.Min(BeamFramebufferHeight, (beamCompletedMaxY + 1) & ~1);
@@ -1274,6 +1297,21 @@ namespace BBC
                 int copyHeight = Math.Min(display.Height, sourceHeight);
                 int destinationX = Math.Max(0, (display.Width - copyWidth) / 2);
                 int destinationY = Math.Max(0, (display.Height - copyHeight) / 2);
+                int dirtyX = destinationX;
+                int dirtyY = destinationY;
+                int dirtyRight = destinationX + copyWidth;
+                int dirtyBottom = destinationY + copyHeight;
+                if (displayFrameRectValid)
+                {
+                    dirtyX = Math.Min(dirtyX, displayFrameX);
+                    dirtyY = Math.Min(dirtyY, displayFrameY);
+                    dirtyRight = Math.Max(dirtyRight, displayFrameX + displayFrameWidth);
+                    dirtyBottom = Math.Max(dirtyBottom, displayFrameY + displayFrameHeight);
+                }
+
+                int dirtyWidth = dirtyRight - dirtyX;
+                int dirtyHeight = dirtyBottom - dirtyY;
+                FillDisplayRect(destination, display.Width, dirtyX, dirtyY, dirtyWidth, dirtyHeight, Background);
 
                 for (int y = 0; y < copyHeight; y++)
                 {
@@ -1284,8 +1322,20 @@ namespace BBC
                     Array.Copy(beamCompletedFrame, sourceRow + beamCompletedMinX, destination, destinationRow, copyWidth);
                 }
 
+                display.MarkFrameDirty(dirtyX, dirtyY, dirtyWidth, dirtyHeight);
+                displayFrameX = destinationX;
+                displayFrameY = destinationY;
+                displayFrameWidth = copyWidth;
+                displayFrameHeight = copyHeight;
+                displayFrameRectValid = true;
                 return true;
             }
+        }
+
+        private static void FillDisplayRect(uint[] destination, int stride, int x, int y, int width, int height, uint colour)
+        {
+            for (int row = 0; row < height; row++)
+                Array.Fill(destination, colour, ((y + row) * stride) + x, width);
         }
 
         private void HandleBeamDisplayStartRupture(int register)

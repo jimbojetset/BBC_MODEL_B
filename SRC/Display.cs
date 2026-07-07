@@ -171,6 +171,8 @@ namespace BBC
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly HashSet<int> textInputHostKeys = new HashSet<int>();
         private readonly Dictionary<byte, int> activeMatrixKeys = new Dictionary<byte, int>();
+        private readonly Dictionary<CachedTextKey, CachedTextTexture> rendererTextCache = new Dictionary<CachedTextKey, CachedTextTexture>();
+        private readonly Dictionary<CachedTextKey, CachedTextTexture> tinyTextCache = new Dictionary<CachedTextKey, CachedTextTexture>();
         private readonly int pitchBytes;
 
         private IntPtr window;
@@ -233,6 +235,8 @@ namespace BBC
         private string notificationTitle = string.Empty;
         private string notificationBody = string.Empty;
         private long notificationVisibleUntilTicks;
+        private bool frameTextureDirty = true;
+        private SdlRect frameTextureDirtyRect;
 
         static Display()
         {
@@ -316,6 +320,7 @@ namespace BBC
         public bool HayesModemReadyLedActive { get; set; }
 
         public string DefaultSaveStateFileName { get; set; } = "bbc-untitled.sav";
+        public Func<string>? DefaultSaveStateFileNameProvider { get; set; }
 
         public bool RomManagerOpen => romManagerOpen;
 
@@ -341,6 +346,7 @@ namespace BBC
             pitchBytes = width * sizeof(uint);
             frameBuffer = new uint[width * height];
             Array.Fill(frameBuffer, Black);
+            frameTextureDirtyRect = new SdlRect(0, 0, width, height);
             LoadRecentStatePaths();
             menus = CreateMenus();
 
@@ -723,21 +729,43 @@ namespace BBC
                 throw new ArgumentException("Frame length must match display dimensions.", nameof(pixels));
 
             pixels.CopyTo(frameBuffer);
+            MarkFrameDirty();
+        }
+
+        public void MarkFrameDirty()
+        {
+            MarkFrameDirty(0, 0, Width, Height);
+        }
+
+        public void MarkFrameDirty(int x, int y, int width, int height)
+        {
+            int left = Math.Clamp(x, 0, Width);
+            int top = Math.Clamp(y, 0, Height);
+            int right = Math.Clamp(x + width, 0, Width);
+            int bottom = Math.Clamp(y + height, 0, Height);
+            if (right <= left || bottom <= top)
+                return;
+
+            SdlRect rect = new SdlRect(left, top, right - left, bottom - top);
+            if (!frameTextureDirty)
+            {
+                frameTextureDirtyRect = rect;
+                frameTextureDirty = true;
+                return;
+            }
+
+            int unionLeft = Math.Min(frameTextureDirtyRect.X, rect.X);
+            int unionTop = Math.Min(frameTextureDirtyRect.Y, rect.Y);
+            int unionRight = Math.Max(frameTextureDirtyRect.X + frameTextureDirtyRect.W, rect.X + rect.W);
+            int unionBottom = Math.Max(frameTextureDirtyRect.Y + frameTextureDirtyRect.H, rect.Y + rect.H);
+            frameTextureDirtyRect = new SdlRect(unionLeft, unionTop, unionRight - unionLeft, unionBottom - unionTop);
         }
 
         public void Present()
         {
             ObjectDisposedException.ThrowIf(disposed, this);
 
-            GCHandle handle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
-            try
-            {
-                ThrowIfSdlFailed(SDL_UpdateTexture(texture, IntPtr.Zero, handle.AddrOfPinnedObject(), pitchBytes), "SDL_UpdateTexture");
-            }
-            finally
-            {
-                handle.Free();
-            }
+            UpdateFrameTextureIfDirty();
 
             ThrowIfSdlFailed(SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255), "SDL_SetRenderDrawColor");
             ThrowIfSdlFailed(SDL_RenderClear(renderer), "SDL_RenderClear");
@@ -758,6 +786,35 @@ namespace BBC
             DrawInputMapper();
 
             SDL_RenderPresent(renderer);
+        }
+
+        private void UpdateFrameTextureIfDirty()
+        {
+            if (!frameTextureDirty)
+                return;
+
+            GCHandle handle = GCHandle.Alloc(frameBuffer, GCHandleType.Pinned);
+            try
+            {
+                if (frameTextureDirtyRect.X == 0
+                    && frameTextureDirtyRect.Y == 0
+                    && frameTextureDirtyRect.W == Width
+                    && frameTextureDirtyRect.H == Height)
+                {
+                    ThrowIfSdlFailed(SDL_UpdateTexture(texture, IntPtr.Zero, handle.AddrOfPinnedObject(), pitchBytes), "SDL_UpdateTexture");
+                }
+                else
+                {
+                    IntPtr pixels = IntPtr.Add(handle.AddrOfPinnedObject(), ((frameTextureDirtyRect.Y * Width) + frameTextureDirtyRect.X) * sizeof(uint));
+                    ThrowIfSdlFailed(SDL_UpdateTexture(texture, ref frameTextureDirtyRect, pixels, pitchBytes), "SDL_UpdateTexture");
+                }
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            frameTextureDirty = false;
         }
 
         private void DrawTopBorderStatusMessage()
@@ -823,7 +880,7 @@ namespace BBC
 
             DrawTubeMenuStatus();
 
-            if (activeMenuIndex >= 0)
+            if (activeMenuIndex >= 0 && !IsBottomOverlayMenu(activeMenuIndex))
                 DrawOpenMenu(activeMenuIndex);
 
             _ = SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -3003,24 +3060,83 @@ namespace BBC
 
         private void DrawRendererText(string text, int x, int y, byte red, byte green, byte blue)
         {
-            _ = SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+            if (text.Length == 0)
+                return;
+
+            CachedTextTexture cached = GetCachedRendererText(text, red, green, blue);
+            SdlRect destination = new SdlRect(x, y, cached.Width, cached.Height);
+            _ = SDL_RenderCopy(renderer, cached.Texture, IntPtr.Zero, ref destination);
+        }
+
+        private CachedTextTexture GetCachedRendererText(string text, byte red, byte green, byte blue)
+        {
+            CachedTextKey key = new CachedTextKey(text, red, green, blue);
+            if (rendererTextCache.TryGetValue(key, out CachedTextTexture cached))
+                return cached;
+
+            cached = CreateCachedTextTexture(text, red, green, blue, GetRendererTextWidth(text), MenuTextCellWidth, NotificationGlyphWidth, NotificationGlyphHeight, NotificationFont.GetRows);
+            rendererTextCache.Add(key, cached);
+            return cached;
+        }
+
+        private CachedTextTexture GetCachedTinyText(string text, byte red, byte green, byte blue)
+        {
+            CachedTextKey key = new CachedTextKey(text, red, green, blue);
+            if (tinyTextCache.TryGetValue(key, out CachedTextTexture cached))
+                return cached;
+
+            cached = CreateCachedTextTexture(text, red, green, blue, GetTinyTextWidth(text), StatusLabelGlyphWidth + StatusLabelGlyphGap, StatusLabelGlyphWidth, StatusLabelGlyphHeight, TinyOverlayFont.GetRows);
+            tinyTextCache.Add(key, cached);
+            return cached;
+        }
+
+        private CachedTextTexture CreateCachedTextTexture(
+            string text,
+            byte red,
+            byte green,
+            byte blue,
+            int width,
+            int cellWidth,
+            int glyphWidth,
+            int glyphHeight,
+            Func<char, byte[]> getRows)
+        {
+            width = Math.Max(1, width);
+            uint[] pixels = new uint[width * glyphHeight];
+            uint colour = 0xFF000000u | ((uint)red << 16) | ((uint)green << 8) | blue;
+
             for (int i = 0; i < text.Length; i++)
             {
-                byte[] glyph = NotificationFont.GetRows(text[i]);
-                int charX = x + (i * MenuTextCellWidth);
-                for (int row = 0; row < glyph.Length; row++)
+                byte[] glyph = getRows(text[i]);
+                int charX = i * cellWidth;
+                for (int row = 0; row < glyphHeight; row++)
                 {
                     byte mask = glyph[row];
-                    for (int column = 0; column < NotificationGlyphWidth; column++)
+                    for (int column = 0; column < glyphWidth; column++)
                     {
-                        if ((mask & (1 << (NotificationGlyphWidth - 1 - column))) == 0)
+                        if ((mask & (1 << (glyphWidth - 1 - column))) == 0)
                             continue;
 
-                        SdlRect pixel = new SdlRect(charX + column, y + row, 1, 1);
-                        _ = SDL_RenderFillRect(renderer, ref pixel);
+                        pixels[(row * width) + charX + column] = colour;
                     }
                 }
             }
+
+            IntPtr textTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, width, glyphHeight);
+            ThrowIfNull(textTexture, "SDL_CreateTexture");
+            _ = SDL_SetTextureBlendMode(textTexture, SDL_BLENDMODE_BLEND);
+
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                ThrowIfSdlFailed(SDL_UpdateTexture(textTexture, IntPtr.Zero, handle.AddrOfPinnedObject(), width * sizeof(uint)), "SDL_UpdateTexture");
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return new CachedTextTexture(textTexture, width, glyphHeight);
         }
 
         private void DrawRendererTextRotatedCcw(string text, int x, int baselineY, byte red, byte green, byte blue)
@@ -3477,8 +3593,12 @@ namespace BBC
 
         private void DrawTinyText(string text, int x, int y, byte red, byte green, byte blue)
         {
-            for (int i = 0; i < text.Length; i++)
-                DrawTinyGlyph(text[i], x + (i * (StatusLabelGlyphWidth + StatusLabelGlyphGap)), y, red, green, blue);
+            if (text.Length == 0)
+                return;
+
+            CachedTextTexture cached = GetCachedTinyText(text, red, green, blue);
+            SdlRect destination = new SdlRect(x, y, GetTinyTextWidth(text), cached.Height);
+            _ = SDL_RenderCopy(renderer, cached.Texture, IntPtr.Zero, ref destination);
         }
 
         private static int GetTinyTextWidth(string text)
@@ -4239,6 +4359,9 @@ namespace BBC
             if (disposed)
                 return;
 
+            DisposeTextCache(rendererTextCache);
+            DisposeTextCache(tinyTextCache);
+
             if (scanlineTexture != IntPtr.Zero)
             {
                 SDL_DestroyTexture(scanlineTexture);
@@ -4315,6 +4438,14 @@ namespace BBC
             SDL_StopTextInput();
             SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
             disposed = true;
+        }
+
+        private static void DisposeTextCache(Dictionary<CachedTextKey, CachedTextTexture> cache)
+        {
+            foreach (CachedTextTexture cached in cache.Values)
+                SDL_DestroyTexture(cached.Texture);
+
+            cache.Clear();
         }
 
         private void EnqueueKeyDown(int keySym)
@@ -4816,6 +4947,10 @@ namespace BBC
 
         private readonly record struct ActiveHostKey(byte MatrixKey, BbcShiftAdjustment ShiftAdjustment, bool ShiftAdjusted);
 
+        private readonly record struct CachedTextKey(string Text, byte Red, byte Green, byte Blue);
+
+        private readonly record struct CachedTextTexture(IntPtr Texture, int Width, int Height);
+
         private readonly record struct BbcInputKey(byte InternalKey, string Label, int X, int Y, int W = 36, int H = 28);
 
         private static readonly BbcInputKey[] InputKeys =
@@ -5179,7 +5314,8 @@ namespace BBC
 
         private void EnqueueSaveState()
         {
-            string? path = SelectNativeSaveStateFile(DefaultSaveStateFileName);
+            string defaultFileName = DefaultSaveStateFileNameProvider?.Invoke() ?? DefaultSaveStateFileName;
+            string? path = SelectNativeSaveStateFile(defaultFileName);
             if (!string.IsNullOrWhiteSpace(path))
                 pendingStateActions.Enqueue(new HostStateAction(HostStateActionKind.Save, EnsureSaveStateExtension(path)));
         }
@@ -5938,6 +6074,9 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_UpdateTexture(IntPtr texture, IntPtr rect, IntPtr pixels, int pitch);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SDL_UpdateTexture")]
+        private static extern int SDL_UpdateTexture(IntPtr texture, ref SdlRect rect, IntPtr pixels, int pitch);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderClear(IntPtr renderer);

@@ -649,13 +649,15 @@ namespace BBC
             long frameTicks = Math.Max(1, Stopwatch.Frequency / TargetFramesPerSecond);
             long nextFrame = Stopwatch.GetTimestamp() + frameTicks;
             keyboardInputEnabledAtTicks = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
-            Display.DefaultSaveStateFileName = CreateSaveStateFileName();
+            Display.DefaultSaveStateFileNameProvider = CreateSaveStateFileName;
             Display.SetRomSlots(sidewaysRomSlots);
             if (!LoadStartupStateIfRequested(Display))
             {
                 StopCpu();
                 return;
             }
+
+            Display.SetRomSlots(sidewaysRomSlots);
             while (Display.PumpEvents())
             {
                 if (cpuException is not null)
@@ -679,7 +681,8 @@ namespace BBC
                 DrainHostDiscLoads(Display);
                 DrainHostTapeActions(Display);
                 DrainHostStateActions(Display);
-                DrainHostRomActions(Display);
+                if (DrainHostRomActions(Display))
+                    Display.SetRomSlots(sidewaysRomSlots);
                 DrainHostKeyMatrixInput(Display);
                 DrainHostJoystickInput(Display);
                 DrainHostAnalogJoystickInput(Display);
@@ -718,8 +721,6 @@ namespace BBC
                 Display.HayesModemEnabled = hayesModem is not null;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
                 UpdateHayesModemLeds(Display);
-                Display.DefaultSaveStateFileName = CreateSaveStateFileName();
-                Display.SetRomSlots(sidewaysRomSlots);
                 Display.Present();
 
                 DumpTubeDebugStateIfDue();
@@ -773,6 +774,8 @@ namespace BBC
                 return;
             }
 
+            long measuredStartTicks = Stopwatch.GetTimestamp();
+            long measuredStartCycles = Cpu.TotalCycles;
             while (Stopwatch.GetTimestamp() < deadline)
             {
                 long now = Stopwatch.GetTimestamp();
@@ -785,6 +788,8 @@ namespace BBC
                 Thread.Sleep(FrameMilliseconds);
             }
 
+            long measuredEndTicks = Stopwatch.GetTimestamp();
+            long measuredEndCycles = Cpu.TotalCycles;
             StopCpu();
             StopStartupRuntimeTrace();
 
@@ -803,6 +808,9 @@ namespace BBC
                 throw new InvalidOperationException("Tube 6502 execution failed.", tube6502.CpuException);
 
             Console.WriteLine($"Headless PC: ${Cpu.registers.PC:X4}");
+            double measuredSeconds = Math.Max(0.000001, (measuredEndTicks - measuredStartTicks) / (double)Stopwatch.Frequency);
+            long measuredCycles = measuredEndCycles - measuredStartCycles;
+            Console.WriteLine($"Headless cycles: {measuredCycles} in {measuredSeconds:0.000}s = {measuredCycles / measuredSeconds:0} cycles/sec");
             if (tube6502 is not null)
             {
                 Console.WriteLine($"Tube 6502 PC: ${tube6502.Cpu.registers.PC:X4}");
@@ -1410,13 +1418,19 @@ namespace BBC
             Sound.SetHostOutputPaused(inputMapperPreviousPaused);
         }
 
-        private void DrainHostRomActions(Display display)
+        private bool DrainHostRomActions(Display display)
         {
             romActionScratch.Clear();
             display.DrainRomActions(romActionScratch);
+            bool romSlotsMayHaveChanged = false;
 
             foreach (HostRomAction action in romActionScratch)
             {
+                romSlotsMayHaveChanged |= action.Kind is HostRomActionKind.Add
+                    or HostRomActionKind.Remove
+                    or HostRomActionKind.Move
+                    or HostRomActionKind.ImportLayout;
+
                 try
                 {
                     switch (action.Kind)
@@ -1458,6 +1472,8 @@ namespace BBC
                     Console.WriteLine($"ROM manager failed: {ex.Message}");
                 }
             }
+
+            return romSlotsMayHaveChanged;
         }
 
         private void DrainHostFrameAdvanceRequests(Display display)
@@ -2037,6 +2053,7 @@ namespace BBC
                             break;
                         case HostStateActionKind.Load:
                             LoadStateFile(action.Path);
+                            display.SetRomSlots(sidewaysRomSlots);
                             display.AddRecentState(action.Path);
                             display.ShowNotification("State loaded", Path.GetFileName(action.Path), 2000);
                             Console.WriteLine($"Loaded state: {action.Path}");
@@ -2841,6 +2858,7 @@ namespace BBC
             }
 
             Array.Fill(display.FrameBuffer, DisplayBlack);
+            display.MarkFrameDirty();
             display.Present();
             tubeUla.Reset();
             tube6502?.Reset();
@@ -2881,6 +2899,7 @@ namespace BBC
                 serialAcia.Reset();
                 discController.PowerOff();
                 Array.Fill(display.FrameBuffer, DisplayBlack);
+                display.MarkFrameDirty();
                 display.Present();
                 display.ResetInputProfileForPowerCycle();
                 Cpu.ResetNow();
