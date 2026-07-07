@@ -94,7 +94,6 @@ namespace BBC.CPU
         public Func<bool>? OnBeforeInstruction;
         public Func<bool>? NmiLineAsserted;
         private int externalStallCycles;
-        public double SpeedScale { get; set; } = 1.0;
 
         /// <summary>
         /// BBC peripheral pages are slower than main RAM; SHEILA, FRED, and JIM
@@ -233,18 +232,14 @@ namespace BBC.CPU
             running = true;
 
             int sliceCycles = SliceCycles;
-            double activeSpeedScale = 0;
-            long ticksPerSlice = 1;
-            long nextDeadline = Stopwatch.GetTimestamp();
-            RefreshPacing();
+            long ticksPerSlice = Math.Max(1, Stopwatch.Frequency * SliceCycles / Math.Max(1, clockFreq));
+            long nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
 
             bool timerRaised = TryBeginHighResolutionTimer();
             try
             {
                 while (Volatile.Read(ref running))
                 {
-                    RefreshPacing();
-
                     if (Volatile.Read(ref paused))
                     {
                         Thread.Sleep(2);
@@ -360,18 +355,6 @@ namespace BBC.CPU
             finally
             {
                 if (timerRaised) TryEndHighResolutionTimer();
-            }
-
-            void RefreshPacing()
-            {
-                double speedScale = Math.Clamp(SpeedScale, 0.01, 4.0);
-                if (speedScale == activeSpeedScale)
-                    return;
-
-                activeSpeedScale = speedScale;
-                int effectiveClockFreq = Math.Max(1, (int)Math.Round(clockFreq * activeSpeedScale));
-                ticksPerSlice = Math.Max(1, Stopwatch.Frequency * SliceCycles / effectiveClockFreq);
-                nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
             }
         }
 

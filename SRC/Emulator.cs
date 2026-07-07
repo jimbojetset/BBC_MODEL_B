@@ -42,7 +42,6 @@ namespace BBC
                 emulator.ConfigureTube6502(options.TubeHostRomPath, options.Tube6502RomPath);
 
             emulator.Initialise(createDisplay: options.HeadlessMilliseconds == 0);
-            emulator.ConfigureStartupSpeedScale(options.SpeedScale);
 
             if (options.HayesModem)
                 emulator.SetHayesModemEnabled(true, notify: false);
@@ -117,7 +116,6 @@ namespace BBC
             string? printAutoLoadPath = null;
             string? loadStatePath = null;
             string? tapePath = null;
-            double speedScale = 1.0;
             bool autoRunDisc = true;
             bool tube6502 = false;
             bool hayesModem = false;
@@ -179,15 +177,6 @@ namespace BBC
                 {
                     if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out headlessMilliseconds) || headlessMilliseconds <= 0)
                         throw new ArgumentException("--headless-ms requires a positive millisecond value.");
-
-                    i++;
-                    continue;
-                }
-
-                if (string.Equals(args[i], "--speed", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (i + 1 >= args.Length || !TryParseSpeedScale(args[i + 1], out speedScale))
-                        throw new ArgumentException("--speed requires a value such as 0.25 or 25%.");
 
                     i++;
                     continue;
@@ -270,7 +259,7 @@ namespace BBC
                     mounts.Add(new MountRequest(blankImage, null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, speedScale, autoRunDisc, tube6502, hayesModem, tubeHostRomPath, tube6502RomPath, startupCommands);
+            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, autoRunDisc, tube6502, hayesModem, tubeHostRomPath, tube6502RomPath, startupCommands);
         }
 
         private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
@@ -344,22 +333,6 @@ namespace BBC
             return image;
         }
 
-        private static bool TryParseSpeedScale(string value, out double speedScale)
-        {
-            string trimmed = value.Trim();
-            bool percent = trimmed.EndsWith('%');
-            if (percent)
-                trimmed = trimmed[..^1];
-
-            if (!double.TryParse(trimmed, out speedScale))
-                return false;
-
-            if (percent)
-                speedScale /= 100.0;
-
-            return speedScale is >= 0.01 and <= 4.0;
-        }
-
         private static bool IsUserMountException(Exception exception)
         {
             return exception is FileNotFoundException
@@ -389,7 +362,6 @@ namespace BBC
             string? TapePath,
             string? PrintAutoLoadPath,
             string? LoadStatePath,
-            double SpeedScale,
             bool AutoRunDisc,
             bool Tube6502,
             bool HayesModem,
@@ -534,8 +506,6 @@ namespace BBC
         private byte lastMouseY;
         private long keyboardInputEnabledAtTicks;
         private long hostDiscActivityLedUntilTicks;
-        private double requestedStartupSpeedScale = 1.0;
-        private bool startupSpeedScaleApplied = true;
         private string? startupLoadStatePath;
         private int capsLockTapPulseCycles;
         private bool capsLockTapPressed;
@@ -630,15 +600,6 @@ namespace BBC
             tube6502Configured = true;
             configuredTubeHostRomPath = hostRomPath;
             configuredTube6502RomPath = parasiteRomPath;
-        }
-
-        /// <summary>MOS startup remains at real speed so the power-on path sounds and feels like a BBC.</summary>
-        public void ConfigureStartupSpeedScale(double speedScale)
-        {
-            requestedStartupSpeedScale = Math.Clamp(speedScale, 0.01, 4.0);
-            startupSpeedScaleApplied = requestedStartupSpeedScale == 1.0;
-            Cpu.SpeedScale = 1.0;
-            Sound.ThrottleToPlayback = true;
         }
 
         /// <summary>MOS sees RAM, paged ROMs, and SHEILA devices in their BBC Model B address ranges.</summary>
@@ -767,7 +728,6 @@ namespace BBC
                 nextFrame += frameTicks;
 
                 long now = Stopwatch.GetTimestamp();
-                ApplyStartupSpeedScaleIfReady(now);
                 if (nextFrame < now - frameTicks * 4)
                     nextFrame = now + frameTicks;
             }
@@ -816,7 +776,6 @@ namespace BBC
             while (Stopwatch.GetTimestamp() < deadline)
             {
                 long now = Stopwatch.GetTimestamp();
-                ApplyStartupSpeedScaleIfReady(now);
                 if (now >= keyboardInputEnabledAtTicks)
                 {
                     QueuePendingBootScriptLine();
@@ -1066,16 +1025,6 @@ namespace BBC
                 cpuThread.Join(TimeSpan.FromSeconds(2));
 
             cpuThread = null;
-        }
-
-        private void ApplyStartupSpeedScaleIfReady(long now)
-        {
-            if (startupSpeedScaleApplied || now < keyboardInputEnabledAtTicks)
-                return;
-
-            Cpu.SpeedScale = requestedStartupSpeedScale;
-            Sound.ThrottleToPlayback = requestedStartupSpeedScale <= 1.0;
-            startupSpeedScaleApplied = true;
         }
 
         private void ResetDeviceState()
@@ -2929,9 +2878,6 @@ namespace BBC
                 pendingKeyboardInput.Clear();
                 breakContinuationQueued = false;
                 selectedSidewaysRom = BasicRomBank;
-                Cpu.SpeedScale = 1.0;
-                Sound.ThrottleToPlayback = true;
-                startupSpeedScaleApplied = requestedStartupSpeedScale == 1.0;
                 serialAcia.Reset();
                 discController.PowerOff();
                 Array.Fill(display.FrameBuffer, DisplayBlack);

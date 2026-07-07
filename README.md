@@ -95,7 +95,6 @@ Plain paths are accepted. Disc images boot by default, tape images enable the ta
 --no-boot-disc
 --no-autoboot       Mount media and leave the BBC at BASIC.
 
---speed VALUE       Run slower or faster after startup, for example 0.5 or 50%.
 --type TEXT         Type text into the BBC keyboard buffer after boot.
 --load-state PATH   Restore a .sav state before running.
 --headless-ms N     Run without a window for N milliseconds.
@@ -116,7 +115,6 @@ Examples:
 dotnet run --project BBC_MODEL_B.csproj -- --drive0 game.ssd --drive1 data.dsd
 dotnet run --project BBC_MODEL_B.csproj -- --blank-ssd work.ssd --drive1 work.ssd --no-autoboot
 dotnet run --project BBC_MODEL_B.csproj -- --load-state Saves/Elite.sav
-dotnet run --project BBC_MODEL_B.csproj -- --speed 50% game.ssd
 ```
 
 ## Menus

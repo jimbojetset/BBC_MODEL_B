@@ -106,8 +106,6 @@ namespace BBC
         private bool disposed;
         private DiscDriveSound? discDriveSound;
 
-        public bool ThrottleToPlayback { get; set; } = true;
-
         public bool HostOutputMuted => Volatile.Read(ref hostOutputMuted);
 
         public DiscDriveSound? DiscDriveSound
@@ -1021,7 +1019,7 @@ namespace BBC
 
         private void WaitForGeneratedHeadroom()
         {
-            if (!ThrottleToPlayback || audioDevice == 0 || !Volatile.Read(ref running))
+            if (audioDevice == 0 || !Volatile.Read(ref running))
                 return;
 
             lock (syncRoot)
