@@ -32,7 +32,7 @@ namespace BBC
         private const byte InterruptFlagAdcEoc = 0x10;
         private const int VsyncPeripheralCycles = 20_000;
         private const int Timer1ReloadExtraCycles = 4;
-        private const int Timer1LoadExtraCycles = 1;
+        private const int Timer1LoadExtraCycles = 256;
         private const int Timer2LoadExtraCycles = 1;
         private const int TimerExpiredThreshold = -2;
         private const byte InterruptSummary = 0x80;
