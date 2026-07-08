@@ -1343,6 +1343,12 @@ namespace BBC
             if (register != CrtcDisplayStartHighRegister)
                 return;
 
+            // Phoenix.ssd, a modern BBC conversion, abuses late R12/R13 display-start
+            // writes for its playfield/score split. A trial that stopped the late
+            // bitmap R12/R13 value becoming the next frame's start fixed the displaced
+            // playfield and duplicate top score, but also suppressed the lower score
+            // panel. The eventual fix needs to separate frame-start latching from the
+            // lower-screen split rather than simply blocking or accepting the write.
             if (beamInVSync || beamFirstScanline)
                 return;
 
