@@ -360,7 +360,6 @@ namespace BBC
                     TraceStateOnce("blocked motor-off");
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
-                    AdvanceTapeSilently(cycles);
                     return;
                 }
 
@@ -794,82 +793,6 @@ namespace BBC
                 fastTransport = FastTapeTransport.None;
                 transportPlaying = false;
                 paused = false;
-            }
-        }
-
-        private void AdvanceTapeSilently(int cycles)
-        {
-            int remainingCycles = cycles;
-            while (remainingCycles > 0 && (eventIndex < events.Count || delayCyclesRemaining > 0 || characterCyclesRemaining > 0))
-            {
-                if (delayCyclesRemaining > 0)
-                {
-                    int consumed = Math.Min(remainingCycles, delayCyclesRemaining);
-                    delayCyclesRemaining -= consumed;
-                    remainingCycles -= consumed;
-                    AdvanceTapeCounter(consumed);
-                    if (delayCyclesRemaining > 0)
-                        return;
-                }
-
-                if (characterCyclesRemaining > 0)
-                {
-                    int consumed = Math.Min(remainingCycles, characterCyclesRemaining);
-                    characterCyclesRemaining -= consumed;
-                    remainingCycles -= consumed;
-                    AdvanceTapeCounter(consumed);
-                    if (characterCyclesRemaining > 0)
-                        return;
-                }
-
-                if (eventIndex >= events.Count)
-                    break;
-
-                TapeEvent tapeEvent = events[eventIndex];
-                if (tapeEvent.Kind == TapeEventKind.Trace)
-                {
-                    eventIndex++;
-                    continue;
-                }
-
-                if (tapeEvent.Kind == TapeEventKind.Carrier)
-                {
-                    delayCyclesRemaining = tapeEvent.Cycles;
-                    delayToneHz = TapeOneToneHz;
-                    eventIndex++;
-                    continue;
-                }
-
-                if (tapeEvent.Kind == TapeEventKind.CarrierDetect)
-                {
-                    eventIndex++;
-                    continue;
-                }
-
-                if (tapeEvent.Kind == TapeEventKind.Gap)
-                {
-                    delayCyclesRemaining = tapeEvent.Cycles;
-                    delayToneHz = 0;
-                    eventIndex++;
-                    continue;
-                }
-
-                if (tapeEvent.Cycles > 0)
-                {
-                    delayCyclesRemaining = tapeEvent.Cycles;
-                    delayToneHz = 0;
-                    eventIndex++;
-                    continue;
-                }
-
-                eventIndex++;
-                characterCyclesRemaining = CharacterCycles(tapeEvent.BitCount);
-            }
-
-            if (eventIndex >= events.Count && delayCyclesRemaining == 0 && characterCyclesRemaining == 0)
-            {
-                reachedEnd = true;
-                transportPlaying = false;
             }
         }
 
