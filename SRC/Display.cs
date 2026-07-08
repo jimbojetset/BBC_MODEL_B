@@ -4678,6 +4678,19 @@ namespace BBC
             ClearJoystickSource(HostJoystickSource.Keyboard);
         }
 
+        public void ClearInputQueuedBeforeBreak()
+        {
+            pendingInput.Clear();
+            pendingKeyChanges.Clear();
+            pendingJoystickChanges.Clear();
+            activeHostKeys.Clear();
+            textInputHostKeys.Clear();
+            activeMatrixKeys.Clear();
+            suppressedTextInputCharacters = 0;
+            for (int i = 0; i < joystickSources.Length; i++)
+                joystickSources[i] &= ~HostJoystickSource.Keyboard;
+        }
+
         private void SetJoystickSource(JoystickControl control, HostJoystickSource source, bool pressed)
         {
             int index = (int)control;

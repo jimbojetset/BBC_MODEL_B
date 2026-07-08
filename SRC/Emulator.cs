@@ -2894,6 +2894,8 @@ namespace BBC
             Array.Fill(display.FrameBuffer, DisplayBlack);
             display.MarkFrameDirty();
             display.Present();
+            pendingKeyboardInput.Clear();
+            display.ClearInputQueuedBeforeBreak();
             tubeUla.Reset();
             tube6502?.Reset();
             Cpu.RequestReset();
