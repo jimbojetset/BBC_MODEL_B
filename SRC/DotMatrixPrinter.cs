@@ -35,14 +35,15 @@ namespace BBC
         private const int PrinterMenuFileWidth = 30;
         private const int PrinterMenuItemHeight = 20;
         private const int PrinterMenuDropDownWidth = 116;
+        private const int PreviewRefreshIntervalMs = 150;
         private const int WindowWidth = PaperViewWidth + ScrollBarWidth;
         private const int PaperAreaHeight = PaperViewHeight;
         private const int WindowHeight = PrinterMenuHeight + PaperAreaHeight;
-        private const int LeftMarginDots = 32;
+        private const int DefaultLeftMarginDots = 32;
         private const int TopMarginDots = 120;
-        private const int RightMarginDots = PageWidthDots - 32;
+        private const int DefaultRightMarginDots = PageWidthDots - 32;
         private const int BottomMarginDots = PageHeightDots - 120;
-        private const int LineFeedDots = PrinterDpi / 6;
+        private const int DefaultLineFeedDots = PrinterDpi / 6;
         private const int PrinterFontSizeDots = 31;
         private const uint PaperColour = 0xFFF8F8F0;
         private const int SDL_WINDOW_SHOWN = 0x00000004;
@@ -72,18 +73,31 @@ namespace BBC
         private int x;
         private int y;
         private int cpi = 10;
+        private int lineFeedDots = DefaultLineFeedDots;
+        private int leftMarginDots = DefaultLeftMarginDots;
+        private int rightMarginDots = DefaultRightMarginDots;
         private int escCommand = -1;
         private int escParameterCount;
         private int bitImageRemaining;
         private int bitImageBytesPerColumn;
         private int bitImageColumnByte;
+        private readonly byte[] bitImagePreviousColumnBytes = new byte[3];
         private double bitImageAdvanceDots;
+        private double bitImageX;
+        private bool bitImageSuppressAdjacentDots;
+        private bool bitImageDiscarding;
         private int scrollOffset;
-        private bool ignoreNextLineFeed;
         private bool fileMenuOpen;
         private bool fileMenuHover;
         private bool savePngHover;
         private bool clearPaperHover;
+        private bool condensedPrint;
+        private bool expandedPrint;
+        private bool expandedPrintOneLine;
+        private bool emphasizedPrint;
+        private bool doubleStrikePrint;
+        private bool underlinePrint;
+        private List<int> horizontalTabs = DefaultHorizontalTabs();
 
         public bool Enabled => enabled;
 
@@ -123,16 +137,30 @@ namespace BBC
 
             if (escCommand >= 0)
             {
+                if (escParameterCount == 0)
+                {
+                    StartEscCommand(value);
+                    return;
+                }
+
                 escParameters.Add(value);
-                if (escParameters.Count == escParameterCount)
+                if (escParameterCount < 0)
+                {
+                    if (value == 0)
+                        FinishEscCommand();
+                }
+                else if (escParameters.Count == escParameterCount)
+                {
                     FinishEscCommand();
+                }
+
                 return;
             }
 
             if (value == 0x1B)
             {
                 escCommand = 0;
-                escParameterCount = 1;
+                escParameterCount = 0;
                 escParameters.Clear();
                 return;
             }
@@ -240,27 +268,35 @@ namespace BBC
             switch (value)
             {
                 case 0x08:
-                    x = Math.Max(LeftMarginDots, x - CharacterAdvanceDots());
+                    x = Math.Max(leftMarginDots, x - CharacterAdvanceDots());
                     return;
                 case 0x09:
-                    x = Math.Min(RightMarginDots, ((x - LeftMarginDots + CharacterAdvanceDots() * 8) / (CharacterAdvanceDots() * 8)) * CharacterAdvanceDots() * 8 + LeftMarginDots);
+                    HorizontalTab();
+                    return;
+                case 0x0E:
+                    SelectExpandedPrintOneLine();
                     return;
                 case 0x0A:
-                    if (ignoreNextLineFeed)
-                    {
-                        ignoreNextLineFeed = false;
-                        return;
-                    }
-
                     LineFeed();
+                    expandedPrintOneLine = false;
+                    renderedGlyphs.Clear();
+                    return;
+                case 0x0F:
+                    SelectCondensedPrint();
                     return;
                 case 0x0C:
                     NewPage();
                     return;
                 case 0x0D:
-                    x = LeftMarginDots;
-                    LineFeed();
-                    ignoreNextLineFeed = true;
+                    x = leftMarginDots;
+                    expandedPrintOneLine = false;
+                    renderedGlyphs.Clear();
+                    return;
+                case 0x12:
+                    CancelCondensedPrint();
+                    return;
+                case 0x14:
+                    CancelExpandedPrint();
                     return;
             }
 
@@ -268,9 +304,9 @@ namespace BBC
                 return;
 
             int advance = CharacterAdvanceDots();
-            if (x + advance > RightMarginDots)
+            if (x + advance > rightMarginDots)
             {
-                x = LeftMarginDots;
+                x = leftMarginDots;
                 LineFeed();
             }
 
@@ -280,15 +316,15 @@ namespace BBC
 
         private void LineFeed()
         {
-            y += LineFeedDots;
-            if (y + LineFeedDots > BottomMarginDots)
+            y += lineFeedDots;
+            if (y + lineFeedDots > BottomMarginDots)
                 NewPage();
         }
 
         private void NewPage()
         {
             pages.Add(new Page());
-            x = LeftMarginDots;
+            x = leftMarginDots;
             y = TopMarginDots;
             scrollOffset = Math.Max(0, DocumentHeight() - PaperAreaHeight);
         }
@@ -296,26 +332,58 @@ namespace BBC
         private void FinishEscCommand()
         {
             byte command = escParameters[0];
-            if (escParameterCount == 1)
-            {
-                StartEscCommand(command);
-                return;
-            }
-
             switch (command)
             {
                 case (byte)'@':
                     ResetPrintState();
                     break;
+                case (byte)'0':
+                    SelectEightLinesPerInch();
+                    break;
+                case (byte)'2':
+                    SelectSixLinesPerInch();
+                    break;
+                case (byte)'4':
+                    SelectItalicPrint();
+                    break;
+                case (byte)'5':
+                    CancelItalicPrint();
+                    break;
+                case (byte)'-':
+                    SetUnderlineMode(GetEscParameter(1));
+                    break;
+                case (byte)'A':
+                    SetLineSpacing72(GetEscParameter(1));
+                    break;
+                case (byte)'D':
+                    SetHorizontalTabs(escParameters);
+                    break;
+                case (byte)'E':
+                    SetEmphasizedPrint();
+                    break;
+                case (byte)'F':
+                    CancelEmphasizedPrint();
+                    break;
+                case (byte)'G':
+                    SetDoubleStrikePrint();
+                    break;
+                case (byte)'H':
+                    CancelDoubleStrikePrint();
+                    break;
                 case (byte)'P':
-                    cpi = 10;
+                    SetCpi(10);
                     break;
                 case (byte)'M':
-                    cpi = 12;
+                    SetCpi(12);
+                    break;
+                case (byte)'Q':
+                    SetRightMargin(GetEscParameter(1));
+                    break;
+                case (byte)'W':
+                    SetExpandedPrint(GetEscParameter(1));
                     break;
                 case (byte)'3':
-                    if (escParameters.Count >= 2)
-                        y += Math.Clamp((int)escParameters[1], 1, 255);
+                    SetLineSpacing216(GetEscParameter(1));
                     break;
                 case (byte)'J':
                     if (escParameters.Count >= 2)
@@ -328,13 +396,16 @@ namespace BBC
                     SetupBitImage(120, 1);
                     break;
                 case (byte)'Y':
-                    SetupBitImage(120, 1);
+                    SetupBitImage(120, 1, suppressAdjacentDots: true);
                     break;
                 case (byte)'Z':
-                    SetupBitImage(240, 1);
+                    SetupBitImage(240, 1, suppressAdjacentDots: true);
                     break;
                 case (byte)'*':
                     SetupEscStarBitImage();
+                    break;
+                case (byte)'l':
+                    SetLeftMargin(GetEscParameter(1));
                     break;
             }
 
@@ -349,33 +420,226 @@ namespace BBC
             escParameters.Add(command);
             escParameterCount = command switch
             {
-                (byte)'3' => 2,
-                (byte)'J' => 2,
+                (byte)'@'
+                or (byte)'0'
+                or (byte)'2'
+                or (byte)'4'
+                or (byte)'5'
+                or (byte)'E'
+                or (byte)'F'
+                or (byte)'G'
+                or (byte)'H'
+                or (byte)'P'
+                or (byte)'M' => 1,
+                (byte)'-'
+                or (byte)'3'
+                or (byte)'A'
+                or (byte)'J'
+                or (byte)'Q'
+                or (byte)'W'
+                or (byte)'l' => 2,
+                (byte)'D' => -1,
                 (byte)'K' or (byte)'L' or (byte)'Y' or (byte)'Z' => 3,
                 (byte)'*' => 4,
                 _ => 2
             };
 
-            if (escParameterCount == 2 && command is (byte)'@' or (byte)'P' or (byte)'M' or (byte)'2')
+            if (escParameterCount == 1)
                 FinishEscCommand();
+        }
+
+        private int GetEscParameter(int index)
+        {
+            return escParameters.Count > index ? escParameters[index] : 0;
+        }
+
+        private void SelectExpandedPrintOneLine()
+        {
+            expandedPrintOneLine = true;
+            renderedGlyphs.Clear();
+        }
+
+        private void SelectCondensedPrint()
+        {
+            condensedPrint = true;
+            renderedGlyphs.Clear();
+        }
+
+        private void CancelCondensedPrint()
+        {
+            condensedPrint = false;
+            renderedGlyphs.Clear();
+        }
+
+        private void CancelExpandedPrint()
+        {
+            expandedPrint = false;
+            expandedPrintOneLine = false;
+            renderedGlyphs.Clear();
+        }
+
+        private void SelectEightLinesPerInch()
+        {
+            SetLineFeedDots(PrinterDpi / 8);
+        }
+
+        private void SelectSixLinesPerInch()
+        {
+            SetLineFeedDots(DefaultLineFeedDots);
+        }
+
+        private void SelectItalicPrint()
+        {
+        }
+
+        private void CancelItalicPrint()
+        {
+        }
+
+        private void SetUnderlineMode(int mode)
+        {
+            underlinePrint = (mode & 1) != 0;
+            renderedGlyphs.Clear();
+        }
+
+        private void SetLineSpacing72(int lineSpacing)
+        {
+            SetLineFeedDots(Math.Clamp((int)Math.Round(lineSpacing * PrinterDpi / 72.0), 1, 255));
+        }
+
+        private void SetHorizontalTabs(IReadOnlyList<byte> tabStops)
+        {
+            List<int> stops = new List<int>();
+            int previous = 0;
+            for (int i = 1; i < tabStops.Count; i++)
+            {
+                int stop = tabStops[i];
+                if (stop == 0)
+                    break;
+
+                if (stop <= previous)
+                    break;
+
+                stops.Add(stop);
+                previous = stop;
+            }
+
+            horizontalTabs = stops;
+        }
+
+        private void SetEmphasizedPrint()
+        {
+            emphasizedPrint = true;
+            renderedGlyphs.Clear();
+        }
+
+        private void CancelEmphasizedPrint()
+        {
+            emphasizedPrint = false;
+            renderedGlyphs.Clear();
+        }
+
+        private void SetDoubleStrikePrint()
+        {
+            doubleStrikePrint = true;
+            renderedGlyphs.Clear();
+        }
+
+        private void CancelDoubleStrikePrint()
+        {
+            doubleStrikePrint = false;
+            renderedGlyphs.Clear();
+        }
+
+        private void SetRightMargin(int columns)
+        {
+            int margin = DefaultLeftMarginDots + Math.Max(1, columns) * CharacterAdvanceDots();
+            rightMarginDots = Math.Clamp(margin, leftMarginDots + CharacterAdvanceDots(), DefaultRightMarginDots);
+            if (x > rightMarginDots)
+                x = rightMarginDots;
+        }
+
+        private void SetExpandedPrint(int mode)
+        {
+            expandedPrint = (mode & 1) != 0;
+            renderedGlyphs.Clear();
+        }
+
+        private void SetLeftMargin(int columns)
+        {
+            int margin = DefaultLeftMarginDots + Math.Max(0, columns) * CharacterAdvanceDots();
+            leftMarginDots = Math.Clamp(margin, DefaultLeftMarginDots, rightMarginDots - CharacterAdvanceDots());
+            if (x < leftMarginDots)
+                x = leftMarginDots;
+        }
+
+        private void SetLineSpacing216(int lineSpacing)
+        {
+            SetLineFeedDots(Math.Clamp((int)Math.Round(lineSpacing * PrinterDpi / 216.0), 1, 255));
+        }
+
+        private void SetLineFeedDots(int dots)
+        {
+            lineFeedDots = Math.Clamp(dots, 1, 255);
+            renderedGlyphs.Clear();
+        }
+
+        private void SetCpi(int charactersPerInch)
+        {
+            cpi = charactersPerInch;
+            renderedGlyphs.Clear();
+        }
+
+        private bool IsExpandedPrint()
+        {
+            return expandedPrint || expandedPrintOneLine;
+        }
+
+        private void HorizontalTab()
+        {
+            int currentColumn = Math.Max(0, (x - leftMarginDots + CharacterAdvanceDots() - 1) / CharacterAdvanceDots());
+            foreach (int tab in horizontalTabs)
+            {
+                if (tab <= currentColumn)
+                    continue;
+
+                x = Math.Min(rightMarginDots, leftMarginDots + tab * CharacterAdvanceDots());
+                return;
+            }
+
+            x = rightMarginDots;
+        }
+
+        private static List<int> DefaultHorizontalTabs()
+        {
+            List<int> tabs = new List<int>();
+            for (int column = 8; column < 160; column += 8)
+                tabs.Add(column);
+            return tabs;
         }
 
         private void SetupEscStarBitImage()
         {
             int mode = escParameters[1];
-            int horizontalDensity = mode switch
+            (int horizontalDensity, bool suppressAdjacentDots) = mode switch
             {
-                0 or 4 or 6 => 60,
-                1 or 5 => 120,
-                2 => 120,
-                3 => 240,
-                _ => 60
+                0 => (60, false),
+                1 => (120, false),
+                2 => (120, true),
+                3 => (240, true),
+                4 => (80, false),
+                5 => (72, false),
+                6 => (90, false),
+                _ => (0, false)
             };
-            int verticalBytes = mode >= 32 ? 3 : 1;
-            SetupBitImage(horizontalDensity, verticalBytes, parameterOffset: 2);
+
+            if (horizontalDensity == 0)
+                DiscardBitImageData(parameterOffset: 2);
+            else
+                SetupBitImage(horizontalDensity, 1, suppressAdjacentDots, parameterOffset: 2);
         }
 
-        private void SetupBitImage(int horizontalDensity, int verticalBytes, int parameterOffset = 1)
+        private void SetupBitImage(int horizontalDensity, int verticalBytes, bool suppressAdjacentDots = false, int parameterOffset = 1)
         {
             if (escParameters.Count < parameterOffset + 2)
                 return;
@@ -385,43 +649,109 @@ namespace BBC
             bitImageColumnByte = 0;
             bitImageRemaining = count * verticalBytes;
             bitImageAdvanceDots = (double)PrinterDpi / horizontalDensity;
+            bitImageX = x;
+            bitImageSuppressAdjacentDots = suppressAdjacentDots;
+            bitImageDiscarding = false;
+            Array.Clear(bitImagePreviousColumnBytes);
+            escCommand = -1;
+            escParameters.Clear();
+        }
+
+        private void DiscardBitImageData(int parameterOffset)
+        {
+            if (escParameters.Count < parameterOffset + 2)
+                return;
+
+            int count = escParameters[parameterOffset] | (escParameters[parameterOffset + 1] << 8);
+            bitImageBytesPerColumn = 1;
+            bitImageColumnByte = 0;
+            bitImageRemaining = count;
+            bitImageAdvanceDots = 0;
+            bitImageSuppressAdjacentDots = false;
+            bitImageDiscarding = true;
+            Array.Clear(bitImagePreviousColumnBytes);
             escCommand = -1;
             escParameters.Clear();
         }
 
         private void PrintBitImageByte(byte value)
         {
+            if (bitImageDiscarding)
+            {
+                bitImageRemaining--;
+                if (bitImageRemaining == 0)
+                    bitImageDiscarding = false;
+                return;
+            }
+
             int byteRow = bitImageColumnByte;
+            byte dots = bitImageSuppressAdjacentDots
+                ? (byte)(value & ~bitImagePreviousColumnBytes[byteRow])
+                : value;
+
             for (int bit = 0; bit < 8; bit++)
             {
-                if ((value & (0x80 >> bit)) != 0)
+                if ((dots & (0x80 >> bit)) != 0)
                     PlotPrinterDot(x, y + byteRow * 8 + bit);
             }
 
+            bitImagePreviousColumnBytes[byteRow] = dots;
             bitImageRemaining--;
             bitImageColumnByte++;
             if (bitImageColumnByte >= bitImageBytesPerColumn)
             {
                 bitImageColumnByte = 0;
-                x += Math.Max(1, (int)Math.Round(bitImageAdvanceDots));
+                bitImageX += bitImageAdvanceDots;
+                x = Math.Max(x + 1, (int)Math.Round(bitImageX));
             }
         }
 
         private void ResetPrintState()
         {
             cpi = 10;
+            lineFeedDots = DefaultLineFeedDots;
+            leftMarginDots = DefaultLeftMarginDots;
+            rightMarginDots = DefaultRightMarginDots;
+            horizontalTabs = DefaultHorizontalTabs();
+            condensedPrint = false;
+            expandedPrint = false;
+            expandedPrintOneLine = false;
+            emphasizedPrint = false;
+            doubleStrikePrint = false;
+            underlinePrint = false;
             escCommand = -1;
             escParameters.Clear();
             bitImageRemaining = 0;
             bitImageBytesPerColumn = 0;
             bitImageColumnByte = 0;
+            Array.Clear(bitImagePreviousColumnBytes);
             bitImageAdvanceDots = 0;
-            ignoreNextLineFeed = false;
+            bitImageX = 0;
+            bitImageSuppressAdjacentDots = false;
+            bitImageDiscarding = false;
+            renderedGlyphs.Clear();
         }
 
         private int CharacterAdvanceDots()
         {
+            return Math.Max(1, (int)Math.Round(BaseCharacterAdvanceDots() * CharacterWidthScale()));
+        }
+
+        private int BaseCharacterAdvanceDots()
+        {
             return PrinterDpi / cpi;
+        }
+
+        private double CharacterWidthScale()
+        {
+            double scale = condensedPrint
+                ? cpi == 12 ? 12.0 / 20.0 : 10.0 / 17.0
+                : 1.0;
+
+            if (IsExpandedPrint())
+                scale *= 2.0;
+
+            return scale;
         }
 
         private void DrawGlyph(char c, int originX, int originY)
@@ -502,7 +832,7 @@ namespace BBC
                 return;
 
             pages.Add(new Page());
-            x = LeftMarginDots;
+            x = leftMarginDots;
             y = TopMarginDots;
         }
 
@@ -525,15 +855,21 @@ namespace BBC
 
         private void UpdatePageTexture(Page page)
         {
+            long now = Environment.TickCount64;
+
             if (page.Texture == IntPtr.Zero)
             {
                 page.Texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, PaperViewWidth, PaperViewHeight);
                 if (page.Texture == IntPtr.Zero)
                     throw new InvalidOperationException($"SDL_CreateTexture failed: {GetSdlError()}");
                 page.Dirty = true;
+                page.NextPreviewRefreshTicks = now;
             }
 
             if (!page.Dirty)
+                return;
+
+            if (now < page.NextPreviewRefreshTicks)
                 return;
 
             BuildPreview(page);
@@ -548,6 +884,7 @@ namespace BBC
             }
 
             page.Dirty = false;
+            page.NextPreviewRefreshTicks = now + PreviewRefreshIntervalMs;
         }
 
         private static void BuildPreview(Page page)
@@ -795,10 +1132,9 @@ namespace BBC
 
             pages.Clear();
             ResetPrintState();
-            x = LeftMarginDots;
+            x = leftMarginDots;
             y = TopMarginDots;
             scrollOffset = 0;
-            ignoreNextLineFeed = false;
             EnsureFirstPage();
         }
 
@@ -977,7 +1313,7 @@ namespace BBC
         private RenderedGlyph RenderGlyph(char c)
         {
             int width = CharacterAdvanceDots();
-            int height = LineFeedDots;
+            int height = Math.Max(lineFeedDots, PrinterFontSizeDots + 8);
             uint[] pixels = new uint[width * height];
 
             using SKBitmap bitmap = new SKBitmap(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul));
@@ -997,10 +1333,26 @@ namespace BBC
             SKRect bounds = new SKRect();
             paint.MeasureText(text, ref bounds);
             paint.GetFontMetrics(out SKFontMetrics metrics);
-            float textX = MathF.Max(0, ((width - bounds.Width) / 2) - bounds.Left);
+            float horizontalScale = (float)CharacterWidthScale();
+            float textX = MathF.Max(0, ((width - bounds.Width * horizontalScale) / 2) - bounds.Left * horizontalScale);
             float fontHeight = metrics.Descent - metrics.Ascent;
             float baseline = ((height - fontHeight) / 2) - metrics.Ascent;
-            canvas.DrawText(text, textX, baseline, paint);
+            canvas.Save();
+            canvas.Scale(horizontalScale, 1.0f);
+            DrawPrinterText(canvas, text, textX / horizontalScale, baseline, paint);
+            canvas.Restore();
+
+            if (underlinePrint)
+            {
+                using SKPaint underlinePaint = new SKPaint
+                {
+                    Color = new SKColor(16, 16, 16, 255),
+                    IsAntialias = true,
+                    StrokeWidth = 2
+                };
+                float underlineY = MathF.Min(height - 3, baseline + 3);
+                canvas.DrawLine(1, underlineY, width - 2, underlineY, underlinePaint);
+            }
 
             for (int y = 0; y < height; y++)
             {
@@ -1016,6 +1368,21 @@ namespace BBC
             }
 
             return new RenderedGlyph(width, height, pixels);
+        }
+
+        private void DrawPrinterText(SKCanvas canvas, string text, float x, float baseline, SKPaint paint)
+        {
+            canvas.DrawText(text, x, baseline, paint);
+
+            if (emphasizedPrint)
+                canvas.DrawText(text, x + 1, baseline, paint);
+
+            if (doubleStrikePrint)
+            {
+                canvas.DrawText(text, x, baseline + 1, paint);
+                if (emphasizedPrint)
+                    canvas.DrawText(text, x + 1, baseline + 1, paint);
+            }
         }
 
         private SKTypeface GetPrinterTypeface()
@@ -1169,6 +1536,7 @@ namespace BBC
             public readonly uint[] PreviewPixels = new uint[PaperViewWidth * PaperViewHeight];
             public IntPtr Texture;
             public bool Dirty = true;
+            public long NextPreviewRefreshTicks;
 
             private static uint[] CreateBlankPage()
             {

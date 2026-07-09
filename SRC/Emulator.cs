@@ -499,6 +499,11 @@ namespace BBC
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
         private readonly DotMatrixPrinter printer = new DotMatrixPrinter();
+        private byte printerEscCommand;
+        private int printerEscParameterCount;
+        private readonly List<byte> printerEscParameters = new List<byte>();
+        private int printerBitImageRemaining;
+        private bool suppressPrinterLineFeed;
         private bool tapePlayerEnabled = true;
         private volatile bool tapeMounted;
         private bool drive0Enabled = true;
@@ -598,7 +603,7 @@ namespace BBC
             serialAcia.IrqChanged += _ => UpdateCpuIrqLine();
             serialAcia.ByteTransmitted += tape.RecordByte;
             serialAcia.MotorChanged += tape.CassetteMotorChanged;
-            userVia.PrinterByteWritten += printer.Write;
+            userVia.PrinterByteWritten += WriteBbcPrinterByte;
             adc.EndOfConversionChanged += eocActive =>
             {
                 systemVia.SignalAdcEndOfConversion(eocActive);
@@ -3069,6 +3074,7 @@ namespace BBC
             if (enabled == printer.Enabled)
                 return;
 
+            ResetBbcPrinterOutput();
             printer.SetEnabled(enabled);
             userVia.PrinterEnabled = enabled;
 
@@ -3079,6 +3085,132 @@ namespace BBC
                     "BBC user-port printer strobe",
                     3000);
             }
+        }
+
+        private void WriteBbcPrinterByte(byte value)
+        {
+            if (printerBitImageRemaining > 0)
+            {
+                printer.Write(value);
+                printerBitImageRemaining--;
+                return;
+            }
+
+            if (printerEscParameterCount != 0)
+            {
+                TrackPrinterEscParameter(value);
+                printer.Write(value);
+                return;
+            }
+
+            if (value == 0x1B)
+            {
+                printerEscParameterCount = -1;
+                printerEscParameters.Clear();
+                printer.Write(value);
+                suppressPrinterLineFeed = false;
+                return;
+            }
+
+            if (value == 0x0A && suppressPrinterLineFeed)
+            {
+                suppressPrinterLineFeed = false;
+                return;
+            }
+
+            suppressPrinterLineFeed = false;
+            printer.Write(value);
+            if (value == 0x0D)
+            {
+                printer.Write(0x0A);
+                suppressPrinterLineFeed = true;
+            }
+        }
+
+        private void TrackPrinterEscParameter(byte value)
+        {
+            if (printerEscParameterCount == -1)
+            {
+                StartBbcPrinterEscCommand(value);
+                return;
+            }
+
+            printerEscParameters.Add(value);
+            if (printerEscParameterCount == -2)
+            {
+                if (value == 0)
+                    ResetBbcPrinterEscCommand();
+            }
+            else if (printerEscParameters.Count == printerEscParameterCount)
+            {
+                FinishBbcPrinterEscCommand();
+            }
+        }
+
+        private void StartBbcPrinterEscCommand(byte command)
+        {
+            printerEscCommand = command;
+            printerEscParameters.Clear();
+            printerEscParameterCount = command switch
+            {
+                (byte)'@'
+                or (byte)'0'
+                or (byte)'2'
+                or (byte)'4'
+                or (byte)'5'
+                or (byte)'E'
+                or (byte)'F'
+                or (byte)'G'
+                or (byte)'H'
+                or (byte)'P'
+                or (byte)'M' => 0,
+                (byte)'D' => -2,
+                (byte)'-'
+                or (byte)'3'
+                or (byte)'A'
+                or (byte)'J'
+                or (byte)'Q'
+                or (byte)'W'
+                or (byte)'l' => 1,
+                (byte)'K'
+                or (byte)'L'
+                or (byte)'Y'
+                or (byte)'Z' => 2,
+                (byte)'*' => 3,
+                _ => 1
+            };
+
+            if (printerEscParameterCount == 0)
+                ResetBbcPrinterEscCommand();
+        }
+
+        private void FinishBbcPrinterEscCommand()
+        {
+            if (printerEscCommand is (byte)'K' or (byte)'L' or (byte)'Y' or (byte)'Z'
+                && printerEscParameters.Count >= 2)
+            {
+                printerBitImageRemaining = printerEscParameters[0] | (printerEscParameters[1] << 8);
+            }
+            else if (printerEscCommand == (byte)'*' && printerEscParameters.Count >= 3)
+            {
+                printerBitImageRemaining = printerEscParameters[1] | (printerEscParameters[2] << 8);
+            }
+
+            ResetBbcPrinterEscCommand();
+        }
+
+        private void ResetBbcPrinterEscCommand()
+        {
+            printerEscCommand = 0;
+            printerEscParameterCount = 0;
+            printerEscParameters.Clear();
+        }
+
+        private void ResetBbcPrinterOutput()
+        {
+            ResetBbcPrinterEscCommand();
+            printerBitImageRemaining = 0;
+            suppressPrinterLineFeed = false;
         }
 
         private void SetHayesLoopbackEnabled(bool enabled)
