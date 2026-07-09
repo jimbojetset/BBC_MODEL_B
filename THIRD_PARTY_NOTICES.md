@@ -10,3 +10,10 @@ The 5.25 inch disc drive WAV samples in `Assets/*.wav` are from the b-em BBC Mic
 - Source paths: `ddnoise/525/*.wav`
 - Licence: GNU General Public License version 2, as provided by b-em in `COPYING`
 
+## DotMatrix Font
+
+`Assets/DotMatrix-Regular.ttf` is from the DotMatrix font project.
+
+- Project: DotMatrix
+- Repository: https://github.com/Gissio/font_DotMatrix
+- Licence: OFL-GPL

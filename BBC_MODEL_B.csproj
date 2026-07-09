@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <UseAppHost>false</UseAppHost>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -14,6 +14,10 @@
 
   <ItemGroup>
     <PackageReference Include="ppy.SDL2-CS" Version="1.0.82" />
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="2.88.8" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="2.88.8" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.8" />
   </ItemGroup>
 
   <ItemGroup>
@@ -28,6 +32,8 @@
     <EmbeddedResource Include="Assets\CassetteLoaded.png" LogicalName="BBC.CassetteLoaded.png" Condition="Exists('Assets\CassetteLoaded.png')" />
     <None Remove="Assets\BBC_Logo.png" Condition="Exists('Assets\BBC_Logo.png')" />
     <EmbeddedResource Include="Assets\BBC_Logo.png" LogicalName="BBC.BBC_Logo.png" Condition="Exists('Assets\BBC_Logo.png')" />
+    <None Remove="Assets\DotMatrix-Regular.ttf" Condition="Exists('Assets\DotMatrix-Regular.ttf')" />
+    <EmbeddedResource Include="Assets\DotMatrix-Regular.ttf" LogicalName="BBC.DotMatrix-Regular.ttf" Condition="Exists('Assets\DotMatrix-Regular.ttf')" />
     <None Update="ROMS\*.rom">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

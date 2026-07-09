@@ -22,6 +22,7 @@ namespace BBC
     {
         private const byte InterruptFlagTimer1 = 0x40;
         private const byte InterruptFlagTimer2 = 0x20;
+        private const byte InterruptFlagCa1 = 0x02;
         private const byte InterruptSummary = 0x80;
         private const int FloatingInputPeriodCycles = 50_000;
         private const int FloatingInputPollWindowCycles = 2_048;
@@ -64,6 +65,10 @@ namespace BBC
         }
 
         public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;
+
+        public bool PrinterEnabled { get; set; }
+
+        public Action<byte>? PrinterByteWritten { get; set; }
 
         public string TraceState =>
             $"t1c={timer1Counter} t1l={timer1Latch} t2c={timer2Counter} t2l={timer2Latch} justHit={justHit} ifr=${interruptFlags:X2} ier=${interruptEnable:X2}";
@@ -260,6 +265,7 @@ namespace BBC
         public void Write(ushort address, byte value)
         {
             int register = address & 0x0F;
+            byte previousPcr = registers[0xC];
             registers[register] = value;
 
             switch (register)
@@ -322,6 +328,10 @@ namespace BBC
                         timer1HasInterrupted = true;
                     break;
 
+                case 0xC:
+                    MaybeStrobePrinter(previousPcr, value);
+                    break;
+
                 case 0xD:
                     ClearInterrupt((byte)(value & 0x7F));
                     if ((justHit & 0x01) != 0)
@@ -336,6 +346,20 @@ namespace BBC
                     else
                         interruptEnable &= unchecked((byte)~(value & 0x7F));
                     break;
+            }
+        }
+
+        private void MaybeStrobePrinter(byte previousPcr, byte value)
+        {
+            if (!PrinterEnabled || PrinterByteWritten is null)
+                return;
+
+            int previousCa2Mode = (previousPcr >> 1) & 0x07;
+            int ca2Mode = (value >> 1) & 0x07;
+            if (dataDirectionA == 0xFF && previousCa2Mode != ca2Mode && ca2Mode == 0x06)
+            {
+                PrinterByteWritten(portA);
+                SetInterrupt(InterruptFlagCa1);
             }
         }
 

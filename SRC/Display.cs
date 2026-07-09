@@ -163,6 +163,7 @@ namespace BBC
         private int pendingDrive1ToggleRequests;
         private int pendingTube6502ToggleRequests;
         private int pendingHayesModemToggleRequests;
+        private int pendingPrinterToggleRequests;
         private int pendingHayesLoopbackToggleRequests;
         private int pendingHayesResetRequests;
         private int pendingPowerResetRequests;
@@ -174,8 +175,10 @@ namespace BBC
         private readonly Dictionary<CachedTextKey, CachedTextTexture> rendererTextCache = new Dictionary<CachedTextKey, CachedTextTexture>();
         private readonly Dictionary<CachedTextKey, CachedTextTexture> tinyTextCache = new Dictionary<CachedTextKey, CachedTextTexture>();
         private readonly int pitchBytes;
+        private DotMatrixPrinter? printer;
 
         private IntPtr window;
+        private uint windowId;
         private IntPtr renderer;
         private IntPtr texture;
         private IntPtr scanlineTexture;
@@ -305,6 +308,8 @@ namespace BBC
 
         public bool HayesModemEnabled { get; set; }
 
+        public bool PrinterEnabled { get; set; }
+
         public bool HayesLoopbackEnabled { get; set; }
 
         public bool HayesHighSpeedLedActive { get; set; }
@@ -329,6 +334,11 @@ namespace BBC
         public bool RomManagerOpen => romManagerOpen;
 
         public bool InputMapperOpen => inputMapperOpen;
+
+        public void AttachPrinter(DotMatrixPrinter dotMatrixPrinter)
+        {
+            printer = dotMatrixPrinter;
+        }
 
         public void ShowNotification(string title, string body, int durationMilliseconds = NotificationDurationMilliseconds)
         {
@@ -368,6 +378,7 @@ namespace BBC
                 logicalHeight,
                 SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
             ThrowIfNull(window, "SDL_CreateWindow");
+            windowId = SDL_GetWindowID(window);
 
             renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
             if (renderer == IntPtr.Zero)
@@ -412,11 +423,20 @@ namespace BBC
                     continue;
                 }
 
+                if (ev.Type == SDL_WINDOWEVENT && ev.WindowId == windowId && ev.WindowEvent == SDL_WINDOWEVENT_CLOSE)
+                {
+                    QuitRequested = true;
+                    continue;
+                }
+
                 if (ev.Type == SDL_DROPFILE)
                 {
                     EnqueueDroppedFile(ev.DropFile);
                     continue;
                 }
+
+                if (printer?.HandleEvent(ev.Type, ev.WindowId, ev.WindowEvent, ev.MouseButton, ev.MouseX, ev.MouseY, ev.MouseWheelY) == true)
+                    continue;
 
                 if (ev.Type == SDL_TEXTINPUT)
                 {
@@ -706,6 +726,13 @@ namespace BBC
             return count;
         }
 
+        public int DrainPrinterToggleRequests()
+        {
+            int count = pendingPrinterToggleRequests;
+            pendingPrinterToggleRequests = 0;
+            return count;
+        }
+
         public int DrainHayesLoopbackToggleRequests()
         {
             int count = pendingHayesLoopbackToggleRequests;
@@ -790,6 +817,7 @@ namespace BBC
             DrawInputMapper();
 
             SDL_RenderPresent(renderer);
+            printer?.Render();
         }
 
         private void UpdateFrameTextureIfDirty()
@@ -2825,6 +2853,9 @@ namespace BBC
                 case MenuCommand.ToggleHayesModem:
                     pendingHayesModemToggleRequests++;
                     break;
+                case MenuCommand.TogglePrinter:
+                    pendingPrinterToggleRequests++;
+                    break;
                 case MenuCommand.ToggleHayesLoopback:
                     pendingHayesLoopbackToggleRequests++;
                     break;
@@ -3001,6 +3032,7 @@ namespace BBC
                 MenuCommand.ToggleDiscDrive1 => Drive1Enabled,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
+                MenuCommand.TogglePrinter => PrinterEnabled,
                 MenuCommand.ToggleHayesLoopback => HayesLoopbackEnabled,
                 _ => false
             };
@@ -5165,6 +5197,7 @@ namespace BBC
             ToggleDiscDrive1,
             ToggleTube6502,
             ToggleHayesModem,
+            TogglePrinter,
             ToggleHayesLoopback,
             ResetHayesModem,
             ToggleScanlines,
@@ -5189,6 +5222,7 @@ namespace BBC
                     MenuSeparator(),
                     new MenuItem("Tape Player", "Ctrl+Shift+T", MenuCommand.ToggleTapePlayer),
                     new MenuItem("Hayes Modem", "Ctrl+Shift+M", MenuCommand.ToggleHayesModem),
+                    new MenuItem("Printer", "", MenuCommand.TogglePrinter),
                     new MenuItem("Disc Drive 0", "", MenuCommand.ToggleDiscDrive0),
                     new MenuItem("Disc Drive 1", "Ctrl+Shift+D", MenuCommand.ToggleDiscDrive1),
                     new MenuItem("6502 Co-Processor", "Ctrl+Shift+C", MenuCommand.ToggleTube6502),
@@ -5893,6 +5927,8 @@ namespace BBC
         private const int SDL_FALSE = 0;
         private const int SDL_TRUE = 1;
         private const uint SDL_QUIT = 0x100;
+        private const uint SDL_WINDOWEVENT = 0x200;
+        private const byte SDL_WINDOWEVENT_CLOSE = 14;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_KEYUP = 0x301;
         private const uint SDL_TEXTINPUT = 0x303;
@@ -6025,6 +6061,8 @@ namespace BBC
         private struct SdlEvent
         {
             [FieldOffset(0)] public uint Type;
+            [FieldOffset(8)] public uint WindowId;
+            [FieldOffset(12)] public byte WindowEvent;
             [FieldOffset(13)] public byte KeyRepeat;
             [FieldOffset(20)] public int KeySym;
             [FieldOffset(8)] public IntPtr DropFile;
@@ -6095,6 +6133,9 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_DestroyWindow(IntPtr window);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint SDL_GetWindowID(IntPtr window);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern void SDL_GetWindowSize(IntPtr window, out int w, out int h);

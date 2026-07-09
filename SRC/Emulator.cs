@@ -45,6 +45,8 @@ namespace BBC
 
             if (options.HayesModem)
                 emulator.SetHayesModemEnabled(true, notify: false);
+            if (options.Printer)
+                emulator.SetPrinterEnabled(true, notify: false);
 
             foreach (MountRequest mount in options.Mounts)
             {
@@ -119,6 +121,7 @@ namespace BBC
             bool autoRunDisc = true;
             bool tube6502 = false;
             bool hayesModem = false;
+            bool printer = false;
             string? tubeHostRomPath = null;
             string? tube6502RomPath = null;
 
@@ -134,6 +137,12 @@ namespace BBC
                 if (string.Equals(args[i], "--modem", StringComparison.OrdinalIgnoreCase))
                 {
                     hayesModem = true;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--print", StringComparison.OrdinalIgnoreCase))
+                {
+                    printer = true;
                     continue;
                 }
 
@@ -259,7 +268,7 @@ namespace BBC
                     mounts.Add(new MountRequest(blankImage, null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, autoRunDisc, tube6502, hayesModem, tubeHostRomPath, tube6502RomPath, startupCommands);
+            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, autoRunDisc, tube6502, hayesModem, printer, tubeHostRomPath, tube6502RomPath, startupCommands);
         }
 
         private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
@@ -365,6 +374,7 @@ namespace BBC
             bool AutoRunDisc,
             bool Tube6502,
             bool HayesModem,
+            bool Printer,
             string? TubeHostRomPath,
             string? Tube6502RomPath,
             IReadOnlyList<string> StartupCommands);
@@ -488,6 +498,7 @@ namespace BBC
         private readonly TubeUla tubeUla = new TubeUla();
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
+        private readonly DotMatrixPrinter printer = new DotMatrixPrinter();
         private bool tapePlayerEnabled = true;
         private volatile bool tapeMounted;
         private bool drive0Enabled = true;
@@ -587,6 +598,7 @@ namespace BBC
             serialAcia.IrqChanged += _ => UpdateCpuIrqLine();
             serialAcia.ByteTransmitted += tape.RecordByte;
             serialAcia.MotorChanged += tape.CassetteMotorChanged;
+            userVia.PrinterByteWritten += printer.Write;
             adc.EndOfConversionChanged += eocActive =>
             {
                 systemVia.SignalAdcEndOfConversion(eocActive);
@@ -641,6 +653,7 @@ namespace BBC
             {
                 Display = new Display();
             }
+            Display.AttachPrinter(printer);
 
             Sound.Start();
             Sound.QueuePowerOnBeep();
@@ -676,6 +689,7 @@ namespace BBC
                 DrainHostDriveToggleRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
                 DrainHostHayesModemToggleRequests(Display);
+                DrainHostPrinterToggleRequests(Display);
                 DrainHostHayesLoopbackToggleRequests(Display);
                 DrainHostHayesResetRequests(Display);
                 DrainHostPowerResetRequests(Display);
@@ -723,6 +737,7 @@ namespace BBC
                 Display.TapeCounter = tape.Counter;
                 Display.Tube6502Enabled = tube6502 is not null;
                 Display.HayesModemEnabled = hayesModem is not null;
+                Display.PrinterEnabled = printer.Enabled;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
                 UpdateHayesModemLeds(Display);
                 Display.Present();
@@ -995,6 +1010,7 @@ namespace BBC
             StopExileRamTrace();
             DisposeHayesModem();
             tube6502?.Dispose();
+            printer.Dispose();
             Sound.Dispose();
             Display?.Dispose();
         }
@@ -1338,6 +1354,13 @@ namespace BBC
             int count = display.DrainHayesModemToggleRequests();
             for (int i = 0; i < count; i++)
                 SetHayesModemEnabled(hayesModem is null);
+        }
+
+        private void DrainHostPrinterToggleRequests(Display display)
+        {
+            int count = display.DrainPrinterToggleRequests();
+            for (int i = 0; i < count; i++)
+                SetPrinterEnabled(!printer.Enabled);
         }
 
         private void DrainHostHayesLoopbackToggleRequests(Display display)
@@ -3037,6 +3060,23 @@ namespace BBC
                 Display?.ShowNotification(
                     enabled ? "Hayes Modem enabled" : "Hayes Modem disabled",
                     "BBC RS423 serial port",
+                    3000);
+            }
+        }
+
+        private void SetPrinterEnabled(bool enabled, bool notify = true)
+        {
+            if (enabled == printer.Enabled)
+                return;
+
+            printer.SetEnabled(enabled);
+            userVia.PrinterEnabled = enabled;
+
+            if (notify)
+            {
+                Display?.ShowNotification(
+                    enabled ? "Printer enabled" : "Printer disabled",
+                    "BBC user-port printer strobe",
                     3000);
             }
         }

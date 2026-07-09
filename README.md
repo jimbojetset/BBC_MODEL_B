@@ -12,7 +12,7 @@ It emulates the 6502, OS 1.20, BASIC II, DFS, the 8271 disc controller, the VIAs
 
 ## Requirements
 
-- .NET 9 SDK
+- .NET 10 SDK
 - SDL2 runtime support through `ppy.SDL2-CS`
 - BBC ROM images in `ROMS/`
 
@@ -70,6 +70,7 @@ Run with the Tube or modem enabled:
 ```bash
 dotnet run --project BBC_MODEL_B.csproj -- --tube-6502 Games/Elite-SRR_B/Elite-SRR_B.uef
 dotnet run --project BBC_MODEL_B.csproj -- --modem
+dotnet run --project BBC_MODEL_B.csproj -- --print
 ```
 
 ## Command Line
@@ -107,6 +108,7 @@ Plain paths are accepted. Disc images boot by default, tape images enable the ta
                    Use non-default Tube ROMs.
 
 --modem             Start with the Hayes modem enabled.
+--print             Start with the dot-matrix printer enabled.
 ```
 
 Examples:
@@ -125,7 +127,7 @@ The SDL window has a small menu bar for the common jobs:
 File         Screenshot, save state, open state, quit
 Disc         Mount, eject, or create blank SSD media
 Cassette    Load, create, and control UEF tapes
-Machine      BREAK, tape player, modem, disc drives, Tube, sound, pause
+Machine      BREAK, tape player, modem, printer, disc drives, Tube, sound, pause
 ROM Manager  Edit sideways ROM banks and import/export ROM layouts
 View         Fullscreen and scanlines
 Input        Paste text, Shift Lock, keyboard mapper
@@ -136,6 +138,7 @@ A few useful details:
 - Disc menu loads accept `.ssd`, `.dsd`, and `.zip`. ZIP files are browsed without extracting them.
 - Drive 0 is on by default. Drive 1 is off until enabled from `Machine` or used from the command line.
 - The tape player is on by default. The Hayes modem is off until enabled from `Machine` or started with `--modem`.
+- The printer opens a separate paper window. Use its `File` menu to save the printed pages as a PNG.
 - Menu disc mounts behave like inserting a disc. They do not auto-boot; use `Shift-BREAK` when you want to boot.
 - Save states use `.sav` files and are opened or saved from the `File` menu.
 - Screenshots go into `Screenshots/`.
