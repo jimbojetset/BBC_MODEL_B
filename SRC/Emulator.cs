@@ -714,6 +714,7 @@ namespace BBC
 
                 DrainHostFrameAdvanceRequests(Display);
                 RenderDisplayFrame(Display);
+                DrainHostPrintScreenRequests(Display);
                 DrainHostScreenshotRequests(Display);
                 DrainHostTraceToggleRequests(Display);
                 Display.Drive0Enabled = drive0Enabled;
@@ -2481,6 +2482,30 @@ namespace BBC
             }
         }
 
+        private void DrainHostPrintScreenRequests(Display display)
+        {
+            int count = display.DrainPrintScreenRequests();
+            for (int i = 0; i < count; i++)
+            {
+                if (!printer.Enabled)
+                {
+                    display.ShowNotification("Printer disabled", "Enable it from Machine", 3000);
+                    continue;
+                }
+
+                if (printer.Busy)
+                {
+                    display.ShowNotification("Printer busy", "Screen print in progress", 2000);
+                    continue;
+                }
+
+                foreach (byte value in printer.CreatePrintScreenBytes(display.FrameBuffer, display.Width, display.Height))
+                    printer.Write(value);
+
+                display.ShowNotification("Printing screen", "Epson FX-80 graphics", 2000);
+            }
+        }
+
         private void DrainHostTraceToggleRequests(Display display)
         {
             int count = display.DrainTraceToggleRequests();
@@ -3091,7 +3116,7 @@ namespace BBC
         {
             if (printerBitImageRemaining > 0)
             {
-                printer.Write(value);
+                WritePrinterByte(value);
                 printerBitImageRemaining--;
                 return;
             }
@@ -3099,7 +3124,7 @@ namespace BBC
             if (printerEscParameterCount != 0)
             {
                 TrackPrinterEscParameter(value);
-                printer.Write(value);
+                WritePrinterByte(value);
                 return;
             }
 
@@ -3107,7 +3132,7 @@ namespace BBC
             {
                 printerEscParameterCount = -1;
                 printerEscParameters.Clear();
-                printer.Write(value);
+                WritePrinterByte(value);
                 suppressPrinterLineFeed = false;
                 return;
             }
@@ -3119,12 +3144,17 @@ namespace BBC
             }
 
             suppressPrinterLineFeed = false;
-            printer.Write(value);
+            WritePrinterByte(value);
             if (value == 0x0D)
             {
-                printer.Write(0x0A);
+                WritePrinterByte(0x0A);
                 suppressPrinterLineFeed = true;
             }
+        }
+
+        private void WritePrinterByte(byte value)
+        {
+            printer.Write(value);
         }
 
         private void TrackPrinterEscParameter(byte value)

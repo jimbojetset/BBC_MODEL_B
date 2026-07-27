@@ -152,6 +152,7 @@ namespace BBC
         private readonly List<ArchiveDiscEntry> archiveEntries = new List<ArchiveDiscEntry>();
         private string[] archiveFolders = [];
         private int pendingScreenshotRequests;
+        private int pendingPrintScreenRequests;
         private int suppressedTextInputCharacters;
         private int pendingTraceToggleRequests;
         private int pendingSoundToggleRequests;
@@ -653,6 +654,13 @@ namespace BBC
         {
             int count = pendingScreenshotRequests;
             pendingScreenshotRequests = 0;
+            return count;
+        }
+
+        public int DrainPrintScreenRequests()
+        {
+            int count = pendingPrintScreenRequests;
+            pendingPrintScreenRequests = 0;
             return count;
         }
 
@@ -2800,6 +2808,9 @@ namespace BBC
                     break;
                 case MenuCommand.SaveScreenshot:
                     pendingScreenshotRequests++;
+                    break;
+                case MenuCommand.PrintScreen:
+                    pendingPrintScreenRequests++;
                     break;
                 case MenuCommand.SaveState:
                     EnqueueSaveState();
@@ -5177,6 +5188,7 @@ namespace BBC
             ResetTapeCounter,
             EjectTape,
             SaveScreenshot,
+            PrintScreen,
             SaveState,
             LoadState,
             LoadRecentState1,
@@ -5246,6 +5258,7 @@ namespace BBC
             List<MenuItem> items =
             [
                 new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
+                new MenuItem("Print screen", "", MenuCommand.PrintScreen),
                 new MenuItem("Open state...", "Ctrl+Shift+O", MenuCommand.LoadState),
                 new MenuItem("Save state...", "Ctrl+Shift+V", MenuCommand.SaveState)
             ];

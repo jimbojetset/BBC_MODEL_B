@@ -45,6 +45,12 @@ namespace BBC
         private const int BottomMarginDots = PageHeightDots - 120;
         private const int DefaultLineFeedDots = PrinterDpi / 6;
         private const int PrinterFontSizeDots = 31;
+        private const int PrintScreenBitImageMode = 1;
+        private const int PrintScreenHorizontalDensity = 120;
+        private const int PrintScreenDitherSize = 8;
+        private const double PrintHeadDotsPerSecond = DefaultRightMarginDots - DefaultLeftMarginDots;
+        private const double MaxPrintHeadBudgetDots = PrintHeadDotsPerSecond;
+        private const double PinStrikeDotCost = 0.5;
         private const uint PaperColour = 0xFFF8F8F0;
         private const int SDL_WINDOW_SHOWN = 0x00000004;
         private const uint SDL_RENDERER_ACCELERATED = 0x00000002;
@@ -62,7 +68,21 @@ namespace BBC
         private const uint SDL_MOUSEWHEEL = 0x403;
         private const byte SDL_BUTTON_LEFT = 1;
 
+        private static readonly byte[] Bayer8x8 =
+        [
+            0, 48, 12, 60, 3, 51, 15, 63,
+            32, 16, 44, 28, 35, 19, 47, 31,
+            8, 56, 4, 52, 11, 59, 7, 55,
+            40, 24, 36, 20, 43, 27, 39, 23,
+            2, 50, 14, 62, 1, 49, 13, 61,
+            34, 18, 46, 30, 33, 17, 45, 29,
+            10, 58, 6, 54, 9, 57, 5, 53,
+            42, 26, 38, 22, 41, 25, 37, 21
+        ];
+
+        private readonly object inputFifoLock = new object();
         private readonly List<Page> pages = new List<Page>();
+        private readonly Queue<byte> inputFifo = new Queue<byte>();
         private readonly List<byte> escParameters = new List<byte>();
         private readonly Dictionary<char, RenderedGlyph> renderedGlyphs = new Dictionary<char, RenderedGlyph>();
         private SKTypeface? printerTypeface;
@@ -97,11 +117,78 @@ namespace BBC
         private bool emphasizedPrint;
         private bool doubleStrikePrint;
         private bool underlinePrint;
+        private long printHeadLastTicks;
+        private double printHeadBudgetDots;
         private List<int> horizontalTabs = DefaultHorizontalTabs();
 
         public bool Enabled => enabled;
 
+        public bool Busy
+        {
+            get
+            {
+                lock (inputFifoLock)
+                    return inputFifo.Count > 0 || bitImageRemaining > 0;
+            }
+        }
+
         public uint WindowId { get; private set; }
+
+        public byte[] CreatePrintScreenBytes(ReadOnlySpan<uint> argbPixels, int width, int height)
+        {
+            if (width <= 0 || height <= 0 || argbPixels.Length != width * height)
+                throw new ArgumentException("Frame size does not match pixel data.", nameof(argbPixels));
+
+            int printableWidthDots = DefaultRightMarginDots - DefaultLeftMarginDots;
+            int targetColumns = Math.Max(1, printableWidthDots * PrintScreenHorizontalDensity / PrinterDpi);
+            int targetHeight = Math.Max(8, (int)Math.Round((double)height * printableWidthDots / width));
+            targetHeight = ((targetHeight + 7) / 8) * 8;
+
+            List<byte> bytes = new List<byte>((targetHeight / 8) * (targetColumns + 8) + 8);
+            if (y + targetHeight > BottomMarginDots)
+                bytes.Add(0x0C);
+
+            bytes.Add(0x0D);
+
+            byte[] rowBytes = new byte[targetColumns];
+            for (int row = 0; row < targetHeight; row += 8)
+            {
+                int lastInkColumn = -1;
+                for (int column = 0; column < targetColumns; column++)
+                {
+                    byte columnDots = BuildPrintScreenColumn(argbPixels, width, height, column, row, targetColumns, targetHeight);
+                    rowBytes[column] = columnDots;
+                    if (columnDots != 0)
+                        lastInkColumn = column;
+                }
+
+                if (lastInkColumn < 0)
+                {
+                    bytes.Add(0x1B);
+                    bytes.Add((byte)'J');
+                    bytes.Add(8);
+                    continue;
+                }
+
+                int columnsToPrint = lastInkColumn + 1;
+                bytes.Add(0x1B);
+                bytes.Add((byte)'*');
+                bytes.Add(PrintScreenBitImageMode);
+                bytes.Add((byte)(columnsToPrint & 0xFF));
+                bytes.Add((byte)(columnsToPrint >> 8));
+
+                for (int column = 0; column < columnsToPrint; column++)
+                    bytes.Add(rowBytes[column]);
+
+                bytes.Add(0x0D);
+                bytes.Add(0x1B);
+                bytes.Add((byte)'J');
+                bytes.Add(8);
+            }
+
+            bytes.Add(0x0A);
+            return bytes.ToArray();
+        }
 
         public void SetEnabled(bool enabled)
         {
@@ -116,9 +203,11 @@ namespace BBC
                 if (window != IntPtr.Zero)
                     SDL_ShowWindow(window);
             }
-            else if (window != IntPtr.Zero)
+            else
             {
-                SDL_HideWindow(window);
+                ResetInputFifo();
+                if (window != IntPtr.Zero)
+                    SDL_HideWindow(window);
             }
         }
 
@@ -127,6 +216,16 @@ namespace BBC
             if (!enabled)
                 return;
 
+            lock (inputFifoLock)
+            {
+                inputFifo.Enqueue(value);
+                if (printHeadLastTicks == 0)
+                    printHeadLastTicks = Stopwatch.GetTimestamp();
+            }
+        }
+
+        private void ProcessQueuedByte(byte value)
+        {
             EnsureFirstPage();
 
             if (bitImageRemaining > 0)
@@ -217,6 +316,7 @@ namespace BBC
                 return;
 
             EnsureFirstPage();
+            DrainInputFifo();
             UpdateScrollBounds();
 
             SDL_SetRenderDrawColor(renderer, 188, 190, 190, 255);
@@ -239,6 +339,67 @@ namespace BBC
             if (fileMenuOpen)
                 DrawFileMenu();
             SDL_RenderPresent(renderer);
+        }
+
+        private void DrainInputFifo()
+        {
+            lock (inputFifoLock)
+            {
+                if (inputFifo.Count == 0)
+                {
+                    printHeadLastTicks = 0;
+                    printHeadBudgetDots = 0;
+                    return;
+                }
+
+                long now = Stopwatch.GetTimestamp();
+                if (printHeadLastTicks == 0)
+                    printHeadLastTicks = now;
+
+                double elapsedSeconds = Math.Max(0, (now - printHeadLastTicks) / (double)Stopwatch.Frequency);
+                printHeadLastTicks = now;
+                printHeadBudgetDots = Math.Min(
+                    printHeadBudgetDots + elapsedSeconds * PrintHeadDotsPerSecond,
+                    MaxPrintHeadBudgetDots);
+
+                while (inputFifo.Count > 0)
+                {
+                    byte value = inputFifo.Peek();
+                    double cost = GetPrintHeadCost(value);
+                    if (cost > printHeadBudgetDots)
+                        break;
+
+                    ProcessQueuedByte(inputFifo.Dequeue());
+                    printHeadBudgetDots -= cost;
+                }
+            }
+        }
+
+        private double GetPrintHeadCost(byte value)
+        {
+            if (bitImageRemaining > 0)
+                return GetBitImageByteCost(value);
+
+            if (escCommand >= 0)
+                return 1.0;
+
+            return value switch
+            {
+                0x08 => CharacterAdvanceDots(),
+                0x09 => Math.Max(1, GetNextTabX() - x),
+                0x0D => Math.Max(1, x - leftMarginDots),
+                >= 32 => CharacterAdvanceDots() + (value == (byte)' ' ? 0 : PinStrikeDotCost),
+                _ => 1.0
+            };
+        }
+
+        private double GetBitImageByteCost(byte value)
+        {
+            double pinCost = CountBits(value) * PinStrikeDotCost;
+            if (bitImageBytesPerColumn <= 1 || bitImageColumnByte + 1 >= bitImageBytesPerColumn)
+                return bitImageAdvanceDots + pinCost;
+
+            return Math.Max(1.0, pinCost);
         }
 
         public void Dispose()
@@ -597,17 +758,21 @@ namespace BBC
 
         private void HorizontalTab()
         {
+            x = GetNextTabX();
+        }
+
+        private int GetNextTabX()
+        {
             int currentColumn = Math.Max(0, (x - leftMarginDots + CharacterAdvanceDots() - 1) / CharacterAdvanceDots());
             foreach (int tab in horizontalTabs)
             {
                 if (tab <= currentColumn)
                     continue;
 
-                x = Math.Min(rightMarginDots, leftMarginDots + tab * CharacterAdvanceDots());
-                return;
+                return Math.Min(rightMarginDots, leftMarginDots + tab * CharacterAdvanceDots());
             }
 
-            x = rightMarginDots;
+            return rightMarginDots;
         }
 
         private static List<int> DefaultHorizontalTabs()
@@ -706,6 +871,54 @@ namespace BBC
             }
         }
 
+        private static byte BuildPrintScreenColumn(
+            ReadOnlySpan<uint> argbPixels,
+            int sourceWidth,
+            int sourceHeight,
+            int targetX,
+            int targetY,
+            int targetWidth,
+            int targetHeight)
+        {
+            byte dots = 0;
+            for (int bit = 0; bit < 8; bit++)
+            {
+                int y = targetY + bit;
+                if (y >= targetHeight)
+                    continue;
+
+                int sourceX = Math.Min(sourceWidth - 1, targetX * sourceWidth / targetWidth);
+                int sourceY = Math.Min(sourceHeight - 1, y * sourceHeight / targetHeight);
+                uint pixel = argbPixels[(sourceY * sourceWidth) + sourceX];
+                if (IsDitheredBlack(pixel, targetX, y))
+                    dots |= (byte)(0x80 >> bit);
+            }
+
+            return dots;
+        }
+
+        private static bool IsDitheredBlack(uint argb, int x, int y)
+        {
+            int red = (int)((argb >> 16) & 0xFF);
+            int green = (int)((argb >> 8) & 0xFF);
+            int blue = (int)(argb & 0xFF);
+            int luminance = (red * 299 + green * 587 + blue * 114) / 1000;
+            int threshold = (Bayer8x8[(y & 7) * PrintScreenDitherSize + (x & 7)] * 4) + 2;
+            return luminance > threshold;
+        }
+
+        private static int CountBits(byte value)
+        {
+            int count = 0;
+            while (value != 0)
+            {
+                count += value & 1;
+                value >>= 1;
+            }
+
+            return count;
+        }
+
         private void ResetPrintState()
         {
             cpi = 10;
@@ -730,6 +943,16 @@ namespace BBC
             bitImageSuppressAdjacentDots = false;
             bitImageDiscarding = false;
             renderedGlyphs.Clear();
+        }
+
+        private void ResetInputFifo()
+        {
+            lock (inputFifoLock)
+            {
+                inputFifo.Clear();
+                printHeadLastTicks = 0;
+                printHeadBudgetDots = 0;
+            }
         }
 
         private int CharacterAdvanceDots()
@@ -1132,6 +1355,7 @@ namespace BBC
 
             pages.Clear();
             ResetPrintState();
+            ResetInputFifo();
             x = leftMarginDots;
             y = TopMarginDots;
             scrollOffset = 0;

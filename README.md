@@ -138,7 +138,7 @@ A few useful details:
 - Disc menu loads accept `.ssd`, `.dsd`, and `.zip`. ZIP files are browsed without extracting them.
 - Drive 0 is on by default. Drive 1 is off until enabled from `Machine` or used from the command line.
 - The tape player is on by default. The Hayes modem is off until enabled from `Machine` or started with `--modem`.
-- The printer opens a separate paper window. Use its `File` menu to save the printed pages as a PNG.
+- The printer opens a separate paper window. Use its `File` menu to save the printed pages as a PNG, or the emulator `File` menu to print the current screen through Epson FX-80 graphics.
 - Menu disc mounts behave like inserting a disc. They do not auto-boot; use `Shift-BREAK` when you want to boot.
 - Save states use `.sav` files and are opened or saved from the `File` menu.
 - Screenshots go into `Screenshots/`.
