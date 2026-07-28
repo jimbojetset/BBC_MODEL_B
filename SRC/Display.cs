@@ -2847,6 +2847,9 @@ namespace BBC
                 case MenuCommand.TogglePrinterSound:
                     printer?.ToggleSound();
                     break;
+                case MenuCommand.ToggleFastPrinterGraphics:
+                    printer?.ToggleFastGraphics();
+                    break;
                 case MenuCommand.SavePrinterPng:
                     printer?.SaveDocumentPng();
                     break;
@@ -3093,6 +3096,7 @@ namespace BBC
                 MenuCommand.TogglePrinter => PrinterEnabled,
                 MenuCommand.TogglePrinterPageInversion => printer?.PageInverted == true,
                 MenuCommand.TogglePrinterSound => printer?.SoundEnabled == true,
+                MenuCommand.ToggleFastPrinterGraphics => printer?.FastGraphicsEnabled == true,
                 MenuCommand.ToggleHayesLoopback => HayesLoopbackEnabled,
                 _ => false
             };
@@ -5242,6 +5246,7 @@ namespace BBC
             PrintSavedScreenshot,
             TogglePrinterPageInversion,
             TogglePrinterSound,
+            ToggleFastPrinterGraphics,
             SavePrinterPng,
             NewPrinterPaper,
             NewPrinterPage,
@@ -5311,6 +5316,7 @@ namespace BBC
                     new MenuItem("Print saved screenshot...", "", MenuCommand.PrintSavedScreenshot),
                     new MenuItem("Invert printer page", "", MenuCommand.TogglePrinterPageInversion),
                     new MenuItem("Printer sound", "", MenuCommand.TogglePrinterSound),
+                    new MenuItem("10x graphics speed", "", MenuCommand.ToggleFastPrinterGraphics),
                     MenuSeparator(),
                     new MenuItem("Save PNG...", "", MenuCommand.SavePrinterPng),
                     MenuSeparator(),

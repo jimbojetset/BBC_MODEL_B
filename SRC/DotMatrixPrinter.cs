@@ -101,9 +101,11 @@ namespace BBC
         private double bitImageX;
         private bool bitImageSuppressAdjacentDots;
         private bool bitImageDiscarding;
+        private bool bitImageRowReturnPending;
         private int scrollOffset;
         private bool pageInverted;
         private bool soundEnabled = true;
+        private bool fastGraphicsEnabled;
         private bool condensedPrint;
         private bool expandedPrint;
         private bool expandedPrintOneLine;
@@ -129,10 +131,13 @@ namespace BBC
 
         public event Action<int, double>? PrintHeadAdvanced;
         public event Action? PrintingCancelled;
+        public event Action? SoundOutputCancelled;
 
         public bool PageInverted => pageInverted;
 
         public bool SoundEnabled => soundEnabled;
+
+        public bool FastGraphicsEnabled => fastGraphicsEnabled;
 
         public byte[] CreatePrintScreenBytes(ReadOnlySpan<uint> argbPixels, int width, int height)
         {
@@ -250,6 +255,15 @@ namespace BBC
         public void ToggleSound()
         {
             soundEnabled = !soundEnabled;
+            if (!soundEnabled)
+                SoundOutputCancelled?.Invoke();
+        }
+
+        public void ToggleFastGraphics()
+        {
+            fastGraphicsEnabled = !fastGraphicsEnabled;
+            if (fastGraphicsEnabled)
+                SoundOutputCancelled?.Invoke();
         }
 
         public void CancelPrinting()
@@ -265,6 +279,7 @@ namespace BBC
             bitImageX = x;
             bitImageSuppressAdjacentDots = false;
             bitImageDiscarding = false;
+            bitImageRowReturnPending = false;
             Array.Clear(bitImagePreviousColumnBytes);
             PrintingCancelled?.Invoke();
         }
@@ -466,17 +481,30 @@ namespace BBC
             {
                 0x08 => CharacterAdvanceDots(),
                 0x09 => Math.Max(1, GetNextTabX() - x),
-                0x0D => Math.Max(1, x - leftMarginDots),
+                0x0D => GetCarriageReturnCost(),
                 >= 32 => CharacterAdvanceDots() + (value == (byte)' ' ? 0 : PinStrikeDotCost),
                 _ => 1.0
             };
+        }
+
+        private double GetCarriageReturnCost()
+        {
+            double cost = Math.Max(1, x - leftMarginDots);
+            return fastGraphicsEnabled && bitImageRowReturnPending ? cost / 10 : cost;
         }
 
         private double GetBitImageByteCost(byte value)
         {
             return GetBitImageHeadCost(value)
                 * DraftPrintHeadDotsPerSecond
-                / GraphicsPrintHeadDotsPerSecond;
+                / EffectiveGraphicsPrintHeadDotsPerSecond();
+        }
+
+        private double EffectiveGraphicsPrintHeadDotsPerSecond()
+        {
+            return fastGraphicsEnabled
+                ? GraphicsPrintHeadDotsPerSecond * 10
+                : GraphicsPrintHeadDotsPerSecond;
         }
 
         private double GetBitImageHeadCost(byte value)
@@ -536,6 +564,7 @@ namespace BBC
                     return;
                 case 0x0D:
                     x = leftMarginDots;
+                    bitImageRowReturnPending = false;
                     expandedPrintOneLine = false;
                     renderedGlyphs.Clear();
                     return;
@@ -903,6 +932,7 @@ namespace BBC
             bitImageX = x;
             bitImageSuppressAdjacentDots = suppressAdjacentDots;
             bitImageDiscarding = false;
+            bitImageRowReturnPending = false;
             Array.Clear(bitImagePreviousColumnBytes);
             escCommand = -1;
             escParameters.Clear();
@@ -920,6 +950,7 @@ namespace BBC
             bitImageAdvanceDots = 0;
             bitImageSuppressAdjacentDots = false;
             bitImageDiscarding = true;
+            bitImageRowReturnPending = false;
             Array.Clear(bitImagePreviousColumnBytes);
             escCommand = -1;
             escParameters.Clear();
@@ -947,15 +978,17 @@ namespace BBC
             }
 
             int pinsStruck = CountBits(dots);
-            if (soundEnabled)
+            if (soundEnabled && !fastGraphicsEnabled)
             {
                 PrintHeadAdvanced?.Invoke(
                     pinsStruck,
-                    GetBitImageHeadCost(value) / GraphicsPrintHeadDotsPerSecond);
+                    GetBitImageHeadCost(value) / EffectiveGraphicsPrintHeadDotsPerSecond());
             }
 
             bitImagePreviousColumnBytes[byteRow] = dots;
             bitImageRemaining--;
+            if (bitImageRemaining == 0)
+                bitImageRowReturnPending = true;
             bitImageColumnByte++;
             if (bitImageColumnByte >= bitImageBytesPerColumn)
             {
@@ -1037,6 +1070,7 @@ namespace BBC
             bitImageX = 0;
             bitImageSuppressAdjacentDots = false;
             bitImageDiscarding = false;
+            bitImageRowReturnPending = false;
             renderedGlyphs.Clear();
         }
 

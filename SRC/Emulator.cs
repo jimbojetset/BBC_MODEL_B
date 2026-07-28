@@ -573,6 +573,7 @@ namespace BBC
             Sound = new SN76489_Sound();
             printer.PrintHeadAdvanced += Sound.QueuePrinterHeadEvent;
             printer.PrintingCancelled += Sound.CancelPrinterOutput;
+            printer.SoundOutputCancelled += Sound.CancelPrinterOutput;
             discDriveSound = DiscDriveSound.TryLoadDefault();
             Sound.DiscDriveSound = discDriveSound;
             systemVia = new System6522Via(Sound);
