@@ -129,6 +129,7 @@ Disc         Mount, eject, or create blank SSD media
 Cassette    Load, create, and control UEF tapes
 Machine      BREAK, tape player, modem, printer, disc drives, Tube, sound, pause
 ROM Manager  Edit sideways ROM banks and import/export ROM layouts
+Printer      Screen printing, saved screenshots, page controls, PNG export, sound
 View         Fullscreen and scanlines
 Input        Paste text, Shift Lock, keyboard mapper
 ```
@@ -138,7 +139,10 @@ A few useful details:
 - Disc menu loads accept `.ssd`, `.dsd`, and `.zip`. ZIP files are browsed without extracting them.
 - Drive 0 is on by default. Drive 1 is off until enabled from `Machine` or used from the command line.
 - The tape player is on by default. The Hayes modem is off until enabled from `Machine` or started with `--modem`.
-- The printer opens a separate paper window. Use its `File` menu to save the printed pages as a PNG, or the emulator `File` menu to print the current screen through Epson FX-80 graphics.
+- Enabling the printer opens the `Epson FX-80 Printer` paper window and adds a `Printer` menu between `Keyboard Mapper` and `View`.
+- The `Printer` menu can print the current screen or a saved PNG from `Screenshots/`, invert screen-to-paper colours, save the paper as PNG, start a new page or sheet, cancel a job, and enable or mute printer sound.
+- Draft text runs at 160 characters per second. ESC/P bit-image graphics use an 80-cps-equivalent head speed.
+- Saved-screenshot printing lists only PNG files directly inside `Screenshots/`; an empty folder produces an on-screen notification.
 - Menu disc mounts behave like inserting a disc. They do not auto-boot; use `Shift-BREAK` when you want to boot.
 - Save states use `.sav` files and are opened or saved from the `File` menu.
 - Screenshots go into `Screenshots/`.

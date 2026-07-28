@@ -41,8 +41,10 @@ namespace BBC
         private const int PrintScreenHorizontalDensity = 120;
         private const int PrintScreenDitherSize = 8;
         private const int DraftCharactersPerSecond = 160;
-        private const double PrintHeadDotsPerSecond = PrinterDpi / 10.0 * DraftCharactersPerSecond;
-        private const double MaxPrintHeadBudgetDots = PrintHeadDotsPerSecond;
+        private const int GraphicsCharactersPerSecond = 80;
+        private const double DraftPrintHeadDotsPerSecond = PrinterDpi / 10.0 * DraftCharactersPerSecond;
+        private const double GraphicsPrintHeadDotsPerSecond = PrinterDpi / 10.0 * GraphicsCharactersPerSecond;
+        private const double MaxPrintHeadBudgetDots = DraftPrintHeadDotsPerSecond;
         private const double PinStrikeDotCost = 0.5;
         private const uint PaperColour = 0xFFF8F8F0;
         private const int SDL_WINDOW_SHOWN = 0x00000004;
@@ -194,6 +196,29 @@ namespace BBC
 
             bytes.Add(0x0A);
             return bytes.ToArray();
+        }
+
+        public byte[] CreatePrintScreenBytes(string path)
+        {
+            using SKBitmap bitmap = SKBitmap.Decode(path)
+                ?? throw new InvalidDataException($"'{Path.GetFileName(path)}' is not a readable PNG image.");
+
+            uint[] pixels = new uint[bitmap.Width * bitmap.Height];
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                int row = y * bitmap.Width;
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    SKColor colour = bitmap.GetPixel(x, y);
+                    pixels[row + x] =
+                        ((uint)colour.Alpha << 24)
+                        | ((uint)colour.Red << 16)
+                        | ((uint)colour.Green << 8)
+                        | colour.Blue;
+                }
+            }
+
+            return CreatePrintScreenBytes(pixels, bitmap.Width, bitmap.Height);
         }
 
         public void SetEnabled(bool enabled)
@@ -413,7 +438,7 @@ namespace BBC
                 double elapsedSeconds = Math.Max(0, (now - printHeadLastTicks) / (double)Stopwatch.Frequency);
                 printHeadLastTicks = now;
                 printHeadBudgetDots = Math.Min(
-                    printHeadBudgetDots + elapsedSeconds * PrintHeadDotsPerSecond,
+                    printHeadBudgetDots + elapsedSeconds * DraftPrintHeadDotsPerSecond,
                     MaxPrintHeadBudgetDots);
 
                 while (inputFifo.Count > 0)
@@ -448,6 +473,13 @@ namespace BBC
         }
 
         private double GetBitImageByteCost(byte value)
+        {
+            return GetBitImageHeadCost(value)
+                * DraftPrintHeadDotsPerSecond
+                / GraphicsPrintHeadDotsPerSecond;
+        }
+
+        private double GetBitImageHeadCost(byte value)
         {
             double pinCost = CountBits(value) * PinStrikeDotCost;
             if (bitImageBytesPerColumn <= 1 || bitImageColumnByte + 1 >= bitImageBytesPerColumn)
@@ -919,7 +951,7 @@ namespace BBC
             {
                 PrintHeadAdvanced?.Invoke(
                     pinsStruck,
-                    GetBitImageByteCost(value) / PrintHeadDotsPerSecond);
+                    GetBitImageHeadCost(value) / GraphicsPrintHeadDotsPerSecond);
             }
 
             bitImagePreviousColumnBytes[byteRow] = dots;
@@ -1089,7 +1121,7 @@ namespace BBC
 
             double characterCost = CharacterAdvanceDots() + (printedColumns > 0 ? PinStrikeDotCost : 0);
             double columnDuration = characterCost
-                / (PrintHeadDotsPerSecond * Math.Max(1, printedColumns));
+                / (DraftPrintHeadDotsPerSecond * Math.Max(1, printedColumns));
             if (printedColumns == 0)
             {
                 if (soundEnabled)

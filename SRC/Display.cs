@@ -144,6 +144,7 @@ namespace BBC
         private readonly Queue<HostTapeAction> pendingTapeActions = new Queue<HostTapeAction>();
         private readonly Queue<HostStateAction> pendingStateActions = new Queue<HostStateAction>();
         private readonly Queue<HostRomAction> pendingRomActions = new Queue<HostRomAction>();
+        private readonly Queue<string> pendingPrinterScreenshotPaths = new Queue<string>();
         private readonly HostJoystickSource[] joystickSources = new HostJoystickSource[Enum.GetValues<JoystickControl>().Length];
         private InputProfile inputProfile = InputProfile.CreateEmulatorDefault();
         private MenuDefinition[] menus = [];
@@ -675,6 +676,18 @@ namespace BBC
             int count = pendingPrintScreenRequests;
             pendingPrintScreenRequests = 0;
             return count;
+        }
+
+        public bool TryDrainPrinterScreenshot(out string path)
+        {
+            if (pendingPrinterScreenshotPaths.Count == 0)
+            {
+                path = string.Empty;
+                return false;
+            }
+
+            path = pendingPrinterScreenshotPaths.Dequeue();
+            return true;
         }
 
         public int DrainTraceToggleRequests()
@@ -2824,6 +2837,9 @@ namespace BBC
                     break;
                 case MenuCommand.PrintScreen:
                     pendingPrintScreenRequests++;
+                    break;
+                case MenuCommand.PrintSavedScreenshot:
+                    EnqueueSavedScreenshot();
                     break;
                 case MenuCommand.TogglePrinterPageInversion:
                     printer?.TogglePageInversion();
@@ -5223,6 +5239,7 @@ namespace BBC
             EjectTape,
             SaveScreenshot,
             PrintScreen,
+            PrintSavedScreenshot,
             TogglePrinterPageInversion,
             TogglePrinterSound,
             SavePrinterPng,
@@ -5291,6 +5308,7 @@ namespace BBC
                 definitions.Add(new MenuDefinition("Printer",
                 [
                     new MenuItem("Print screen", "", MenuCommand.PrintScreen),
+                    new MenuItem("Print saved screenshot...", "", MenuCommand.PrintSavedScreenshot),
                     new MenuItem("Invert printer page", "", MenuCommand.TogglePrinterPageInversion),
                     new MenuItem("Printer sound", "", MenuCommand.TogglePrinterSound),
                     MenuSeparator(),
@@ -5367,6 +5385,31 @@ namespace BBC
                 MenuCommand.LoadRecentState5 => 4,
                 _ => -1
             };
+        }
+
+        private void EnqueueSavedScreenshot()
+        {
+            string directory = Path.Combine(Environment.CurrentDirectory, "Screenshots");
+            string[] paths = Directory.Exists(directory)
+                ? Directory.GetFiles(directory, "*.png", SearchOption.TopDirectoryOnly)
+                : [];
+            Array.Sort(paths, StringComparer.OrdinalIgnoreCase);
+
+            if (paths.Length == 0)
+            {
+                ShowNotification("No saved screenshots", "The Screenshots folder is empty", 3000);
+                return;
+            }
+
+            string[] fileNames = paths.Select(Path.GetFileName).ToArray()!;
+            string? selected = SelectNativeSavedScreenshot(fileNames);
+            if (string.IsNullOrWhiteSpace(selected))
+                return;
+
+            string? path = paths.FirstOrDefault(candidate =>
+                string.Equals(Path.GetFileName(candidate), selected, StringComparison.Ordinal));
+            if (path != null)
+                pendingPrinterScreenshotPaths.Enqueue(path);
         }
 
         private static MenuItem MenuSeparator()
@@ -5505,6 +5548,57 @@ namespace BBC
             }
 
             return null;
+        }
+
+        private static string? SelectNativeSavedScreenshot(IReadOnlyList<string> fileNames)
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    string names = string.Join(",", fileNames.Select(name => $"'{name.Replace("'", "''")}'"));
+                    return RunProcessForSingleLine(
+                        "powershell",
+                        "-NoProfile",
+                        "-STA",
+                        "-Command",
+                        $"Add-Type -AssemblyName System.Windows.Forms; $form=New-Object System.Windows.Forms.Form; $form.Text='Print saved screenshot'; $form.Width=560; $form.Height=420; $list=New-Object System.Windows.Forms.ListBox; $list.Dock='Fill'; $list.Items.AddRange([string[]]@({names})); $form.Controls.Add($list); $ok=New-Object System.Windows.Forms.Button; $ok.Text='Print'; $ok.Dock='Bottom'; $ok.Add_Click({{if($list.SelectedItem){{$list.SelectedItem; $form.Close()}}}}); $form.Controls.Add($ok); $form.AcceptButton=$ok; [void]$form.ShowDialog()");
+                }
+
+                if (OperatingSystem.IsMacOS())
+                {
+                    string names = string.Join(", ", fileNames.Select(name => $"\"{EscapeAppleScriptString(name)}\""));
+                    string result = RunProcessForSingleLine(
+                        "osascript",
+                        "-e",
+                        $"set chosen to choose from list {{{names}}} with title \"Print saved screenshot\" with prompt \"Select a screenshot to print:\" OK button name \"Print\"") ?? string.Empty;
+                    return string.Equals(result, "false", StringComparison.OrdinalIgnoreCase) ? null : result;
+                }
+
+                if (OperatingSystem.IsLinux())
+                {
+                    List<string> arguments =
+                    [
+                        "--list",
+                        "--title=Print saved screenshot",
+                        "--text=Select a screenshot to print:",
+                        "--column=Screenshot"
+                    ];
+                    arguments.AddRange(fileNames);
+                    return RunProcessForSingleLine("zenity", arguments.ToArray());
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        private static string EscapeAppleScriptString(string value)
+        {
+            return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
         private static string? SelectNativeTapeFile()

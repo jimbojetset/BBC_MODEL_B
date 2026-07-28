@@ -718,6 +718,7 @@ namespace BBC
                 DrainHostFrameAdvanceRequests(Display);
                 RenderDisplayFrame(Display);
                 DrainHostPrintScreenRequests(Display);
+                DrainHostSavedScreenshotPrintRequests(Display);
                 DrainHostScreenshotRequests(Display);
                 DrainHostTraceToggleRequests(Display);
                 Display.Drive0Enabled = drive0Enabled;
@@ -2515,6 +2516,35 @@ namespace BBC
                     printer.Write(value);
 
                 display.ShowNotification("Printing screen", "Epson FX-80 graphics", 2000);
+            }
+        }
+
+        private void DrainHostSavedScreenshotPrintRequests(Display display)
+        {
+            while (display.TryDrainPrinterScreenshot(out string path))
+            {
+                if (!printer.Enabled)
+                    continue;
+
+                if (printer.Busy)
+                {
+                    display.ShowNotification("Printer busy", "Screenshot not queued", 2000);
+                    continue;
+                }
+
+                try
+                {
+                    foreach (byte value in printer.CreatePrintScreenBytes(path))
+                        printer.Write(value);
+
+                    display.ShowNotification("Printing screenshot", Path.GetFileName(path), 2000);
+                }
+                catch (Exception ex) when (ex is IOException
+                    or UnauthorizedAccessException
+                    or InvalidDataException)
+                {
+                    display.ShowNotification("Could not print screenshot", ex.Message, 3000);
+                }
             }
         }
 
