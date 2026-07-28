@@ -27,18 +27,10 @@ namespace BBC
         private const int PaperViewHeight = 842;
         private const int ScrollBarWidth = 18;
         private const int PageGap = 6;
-        private const int PrinterMenuHeight = 24;
-        private const int PrinterMenuTextScale = 1;
-        private const int PrinterMenuGlyphAdvance = 7;
-        private const int PrinterMenuTextX = 10;
-        private const int PrinterMenuTextY = 8;
-        private const int PrinterMenuFileWidth = 30;
-        private const int PrinterMenuItemHeight = 20;
-        private const int PrinterMenuDropDownWidth = 116;
-        private const int PreviewRefreshIntervalMs = 150;
+        private const int PreviewRefreshIntervalMs = 16;
         private const int WindowWidth = PaperViewWidth + ScrollBarWidth;
         private const int PaperAreaHeight = PaperViewHeight;
-        private const int WindowHeight = PrinterMenuHeight + PaperAreaHeight;
+        private const int WindowHeight = PaperAreaHeight;
         private const int DefaultLeftMarginDots = 32;
         private const int TopMarginDots = 120;
         private const int DefaultRightMarginDots = PageWidthDots - 32;
@@ -48,7 +40,8 @@ namespace BBC
         private const int PrintScreenBitImageMode = 1;
         private const int PrintScreenHorizontalDensity = 120;
         private const int PrintScreenDitherSize = 8;
-        private const double PrintHeadDotsPerSecond = DefaultRightMarginDots - DefaultLeftMarginDots;
+        private const int DraftCharactersPerSecond = 160;
+        private const double PrintHeadDotsPerSecond = PrinterDpi / 10.0 * DraftCharactersPerSecond;
         private const double MaxPrintHeadBudgetDots = PrintHeadDotsPerSecond;
         private const double PinStrikeDotCost = 0.5;
         private const uint PaperColour = 0xFFF8F8F0;
@@ -107,10 +100,8 @@ namespace BBC
         private bool bitImageSuppressAdjacentDots;
         private bool bitImageDiscarding;
         private int scrollOffset;
-        private bool fileMenuOpen;
-        private bool fileMenuHover;
-        private bool savePngHover;
-        private bool clearPaperHover;
+        private bool pageInverted;
+        private bool soundEnabled = true;
         private bool condensedPrint;
         private bool expandedPrint;
         private bool expandedPrintOneLine;
@@ -134,6 +125,13 @@ namespace BBC
 
         public uint WindowId { get; private set; }
 
+        public event Action<int, double>? PrintHeadAdvanced;
+        public event Action? PrintingCancelled;
+
+        public bool PageInverted => pageInverted;
+
+        public bool SoundEnabled => soundEnabled;
+
         public byte[] CreatePrintScreenBytes(ReadOnlySpan<uint> argbPixels, int width, int height)
         {
             if (width <= 0 || height <= 0 || argbPixels.Length != width * height)
@@ -156,7 +154,15 @@ namespace BBC
                 int lastInkColumn = -1;
                 for (int column = 0; column < targetColumns; column++)
                 {
-                    byte columnDots = BuildPrintScreenColumn(argbPixels, width, height, column, row, targetColumns, targetHeight);
+                    byte columnDots = BuildPrintScreenColumn(
+                        argbPixels,
+                        width,
+                        height,
+                        column,
+                        row,
+                        targetColumns,
+                        targetHeight,
+                        pageInverted);
                     rowBytes[column] = columnDots;
                     if (columnDots != 0)
                         lastInkColumn = column;
@@ -209,6 +215,65 @@ namespace BBC
                 if (window != IntPtr.Zero)
                     SDL_HideWindow(window);
             }
+        }
+
+        public void TogglePageInversion()
+        {
+            pageInverted = !pageInverted;
+        }
+
+        public void ToggleSound()
+        {
+            soundEnabled = !soundEnabled;
+        }
+
+        public void CancelPrinting()
+        {
+            ResetInputFifo();
+            escCommand = -1;
+            escParameterCount = 0;
+            escParameters.Clear();
+            bitImageRemaining = 0;
+            bitImageBytesPerColumn = 0;
+            bitImageColumnByte = 0;
+            bitImageAdvanceDots = 0;
+            bitImageX = x;
+            bitImageSuppressAdjacentDots = false;
+            bitImageDiscarding = false;
+            Array.Clear(bitImagePreviousColumnBytes);
+            PrintingCancelled?.Invoke();
+        }
+
+        public void SaveDocumentPng()
+        {
+            EnsureFirstPage();
+
+            string? path = SelectNativePrinterPngFile(CreatePngFileName());
+            if (path != null)
+                SavePages(path);
+        }
+
+        public void NewPaper()
+        {
+            foreach (Page page in pages)
+            {
+                if (page.Texture != IntPtr.Zero)
+                    SDL_DestroyTexture(page.Texture);
+            }
+
+            pages.Clear();
+            ResetPrintState();
+            ResetInputFifo();
+            x = leftMarginDots;
+            y = TopMarginDots;
+            scrollOffset = 0;
+            EnsureFirstPage();
+        }
+
+        public void StartNewPage()
+        {
+            EnsureFirstPage();
+            NewPage();
         }
 
         public void Write(byte value)
@@ -279,18 +344,10 @@ namespace BBC
             }
 
             if (type == SDL_MOUSEMOTION)
-            {
-                fileMenuHover = IsInFileMenu(mouseX, mouseY);
-                savePngHover = fileMenuOpen && IsInSavePngItem(mouseX, mouseY);
-                clearPaperHover = fileMenuOpen && IsInClearPaperItem(mouseX, mouseY);
                 return true;
-            }
 
             if (type == SDL_MOUSEBUTTONDOWN && mouseButton == SDL_BUTTON_LEFT)
-            {
-                HandleMouseClick(mouseX, mouseY);
                 return true;
-            }
 
             if (type == SDL_MOUSEBUTTONUP || type == SDL_KEYDOWN || type == SDL_KEYUP || type == SDL_TEXTINPUT || type == SDL_WINDOWEVENT)
                 return true;
@@ -321,11 +378,10 @@ namespace BBC
 
             SDL_SetRenderDrawColor(renderer, 188, 190, 190, 255);
             SDL_RenderClear(renderer);
-            DrawMenuBar();
 
             for (int i = 0; i < pages.Count; i++)
             {
-                int top = PrinterMenuHeight + (i * (PaperViewHeight + PageGap)) - scrollOffset;
+                int top = (i * (PaperViewHeight + PageGap)) - scrollOffset;
                 if (top > WindowHeight || top + PaperViewHeight < 0)
                     continue;
 
@@ -336,8 +392,6 @@ namespace BBC
             }
 
             DrawScrollBar();
-            if (fileMenuOpen)
-                DrawFileMenu();
             SDL_RenderPresent(renderer);
         }
 
@@ -860,6 +914,14 @@ namespace BBC
                     PlotPrinterDot(x, y + byteRow * 8 + bit);
             }
 
+            int pinsStruck = CountBits(dots);
+            if (soundEnabled)
+            {
+                PrintHeadAdvanced?.Invoke(
+                    pinsStruck,
+                    GetBitImageByteCost(value) / PrintHeadDotsPerSecond);
+            }
+
             bitImagePreviousColumnBytes[byteRow] = dots;
             bitImageRemaining--;
             bitImageColumnByte++;
@@ -878,7 +940,8 @@ namespace BBC
             int targetX,
             int targetY,
             int targetWidth,
-            int targetHeight)
+            int targetHeight,
+            bool inverted)
         {
             byte dots = 0;
             for (int bit = 0; bit < 8; bit++)
@@ -890,7 +953,7 @@ namespace BBC
                 int sourceX = Math.Min(sourceWidth - 1, targetX * sourceWidth / targetWidth);
                 int sourceY = Math.Min(sourceHeight - 1, y * sourceHeight / targetHeight);
                 uint pixel = argbPixels[(sourceY * sourceWidth) + sourceX];
-                if (IsDitheredBlack(pixel, targetX, y))
+                if (IsDitheredBlack(pixel, targetX, y) != inverted)
                     dots |= (byte)(0x80 >> bit);
             }
 
@@ -981,6 +1044,7 @@ namespace BBC
         {
             RenderedGlyph glyph = GetRenderedGlyph(c);
             Page page = pages[^1];
+            Span<int> pinsByColumn = stackalloc int[glyph.Width];
             for (int glyphY = 0; glyphY < glyph.Height; glyphY++)
             {
                 int dotY = originY + glyphY;
@@ -996,6 +1060,7 @@ namespace BBC
 
                 int pageOffset = dotY * PageWidthDots;
                 int glyphOffset = glyphY * glyph.Width;
+                bool rowPrinted = false;
                 for (int glyphX = 0; glyphX < glyph.Width; glyphX++)
                 {
                     uint pixel = glyph.Pixels[glyphOffset + glyphX];
@@ -1007,8 +1072,38 @@ namespace BBC
                         continue;
 
                     page.Pixels[pageOffset + dotX] = pixel;
-                    page.Dirty = true;
+                    rowPrinted = true;
+                    pinsByColumn[glyphX]++;
                 }
+
+                if (rowPrinted)
+                    page.MarkDirty(dotY);
+            }
+
+            int printedColumns = 0;
+            foreach (int pinsStruck in pinsByColumn)
+            {
+                if (pinsStruck > 0)
+                    printedColumns++;
+            }
+
+            double characterCost = CharacterAdvanceDots() + (printedColumns > 0 ? PinStrikeDotCost : 0);
+            double columnDuration = characterCost
+                / (PrintHeadDotsPerSecond * Math.Max(1, printedColumns));
+            if (printedColumns == 0)
+            {
+                if (soundEnabled)
+                    PrintHeadAdvanced?.Invoke(0, columnDuration);
+                return;
+            }
+
+            if (!soundEnabled)
+                return;
+
+            foreach (int pinsStruck in pinsByColumn)
+            {
+                if (pinsStruck > 0)
+                    PrintHeadAdvanced?.Invoke(pinsStruck, columnDuration);
             }
         }
 
@@ -1038,7 +1133,7 @@ namespace BBC
             Page page = pages[^1];
             int index = (dotY * PageWidthDots) + dotX;
             page.Pixels[index] = Darken(page.Pixels[index], ink);
-            page.Dirty = true;
+            page.MarkDirty(dotY);
         }
 
         private static uint Darken(uint existing, uint ink)
@@ -1064,7 +1159,7 @@ namespace BBC
             if (window != IntPtr.Zero)
                 return;
 
-            window = SDL_CreateWindow("BBC Dot Matrix Printer", 120, 120, WindowWidth, WindowHeight, SDL_WINDOW_SHOWN);
+            window = SDL_CreateWindow("Epson FX-80 Printer", 120, 120, WindowWidth, WindowHeight, SDL_WINDOW_SHOWN);
             if (window == IntPtr.Zero)
                 throw new InvalidOperationException($"SDL_CreateWindow failed: {GetSdlError()}");
 
@@ -1085,7 +1180,6 @@ namespace BBC
                 page.Texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, PaperViewWidth, PaperViewHeight);
                 if (page.Texture == IntPtr.Zero)
                     throw new InvalidOperationException($"SDL_CreateTexture failed: {GetSdlError()}");
-                page.Dirty = true;
                 page.NextPreviewRefreshTicks = now;
             }
 
@@ -1095,24 +1189,33 @@ namespace BBC
             if (now < page.NextPreviewRefreshTicks)
                 return;
 
-            BuildPreview(page);
+            int previewTop = page.DirtyMinY * PaperViewHeight / PageHeightDots;
+            int previewBottom = Math.Min(
+                PaperViewHeight,
+                ((page.DirtyMaxY + 1) * PaperViewHeight + PageHeightDots - 1) / PageHeightDots);
+            BuildPreview(page, previewTop, previewBottom);
+
+            SdlRect dirtyRect = new SdlRect(0, previewTop, PaperViewWidth, previewBottom - previewTop);
             GCHandle handle = GCHandle.Alloc(page.PreviewPixels, GCHandleType.Pinned);
             try
             {
-                SDL_UpdateTexture(page.Texture, IntPtr.Zero, handle.AddrOfPinnedObject(), PaperViewWidth * sizeof(uint));
+                IntPtr pixels = IntPtr.Add(
+                    handle.AddrOfPinnedObject(),
+                    previewTop * PaperViewWidth * sizeof(uint));
+                SDL_UpdateTexture(page.Texture, ref dirtyRect, pixels, PaperViewWidth * sizeof(uint));
             }
             finally
             {
                 handle.Free();
             }
 
-            page.Dirty = false;
+            page.ClearDirty();
             page.NextPreviewRefreshTicks = now + PreviewRefreshIntervalMs;
         }
 
-        private static void BuildPreview(Page page)
+        private static void BuildPreview(Page page, int previewTop, int previewBottom)
         {
-            for (int y = 0; y < PaperViewHeight; y++)
+            for (int y = previewTop; y < previewBottom; y++)
             {
                 int sourceTop = y * PageHeightDots / PaperViewHeight;
                 int sourceBottom = Math.Max(sourceTop + 1, (y + 1) * PageHeightDots / PaperViewHeight);
@@ -1157,14 +1260,14 @@ namespace BBC
         private void DrawScrollBar()
         {
             SDL_SetRenderDrawColor(renderer, 68, 70, 74, 255);
-            SdlRect track = new SdlRect(PaperViewWidth, PrinterMenuHeight, ScrollBarWidth, PaperAreaHeight);
+            SdlRect track = new SdlRect(PaperViewWidth, 0, ScrollBarWidth, PaperAreaHeight);
             SDL_RenderFillRect(renderer, ref track);
 
             int documentHeight = DocumentHeight();
             int thumbHeight = Math.Max(32, PaperAreaHeight * PaperAreaHeight / Math.Max(PaperAreaHeight, documentHeight));
             int thumbTop = documentHeight <= PaperAreaHeight ? 0 : scrollOffset * (PaperAreaHeight - thumbHeight) / (documentHeight - PaperAreaHeight);
             SDL_SetRenderDrawColor(renderer, 188, 190, 194, 255);
-            SdlRect thumb = new SdlRect(PaperViewWidth + 3, PrinterMenuHeight + thumbTop + 3, ScrollBarWidth - 6, Math.Max(8, thumbHeight - 6));
+            SdlRect thumb = new SdlRect(PaperViewWidth + 3, thumbTop + 3, ScrollBarWidth - 6, Math.Max(8, thumbHeight - 6));
             SDL_RenderFillRect(renderer, ref thumb);
         }
 
@@ -1182,184 +1285,6 @@ namespace BBC
         private int DocumentHeight()
         {
             return pages.Count * PaperViewHeight + Math.Max(0, pages.Count - 1) * PageGap;
-        }
-
-        private void HandleMouseClick(int mouseX, int mouseY)
-        {
-            if (IsInFileMenu(mouseX, mouseY))
-            {
-                fileMenuOpen = !fileMenuOpen;
-                fileMenuHover = true;
-                savePngHover = false;
-                clearPaperHover = false;
-                return;
-            }
-
-            if (fileMenuOpen && IsInSavePngItem(mouseX, mouseY))
-            {
-                fileMenuOpen = false;
-                SaveDocumentPng();
-                return;
-            }
-
-            if (fileMenuOpen && IsInClearPaperItem(mouseX, mouseY))
-            {
-                fileMenuOpen = false;
-                ClearPaper();
-                return;
-            }
-
-            fileMenuOpen = false;
-            savePngHover = false;
-            clearPaperHover = false;
-        }
-
-        private static bool IsInFileMenu(int mouseX, int mouseY)
-        {
-            return mouseX >= PrinterMenuTextX
-                && mouseX < PrinterMenuTextX + PrinterMenuFileWidth
-                && mouseY >= 0
-                && mouseY < PrinterMenuHeight;
-        }
-
-        private static bool IsInSavePngItem(int mouseX, int mouseY)
-        {
-            return IsInFileMenuItem(mouseX, mouseY, 0);
-        }
-
-        private static bool IsInClearPaperItem(int mouseX, int mouseY)
-        {
-            return IsInFileMenuItem(mouseX, mouseY, 1);
-        }
-
-        private static bool IsInFileMenuItem(int mouseX, int mouseY, int index)
-        {
-            return mouseX >= PrinterMenuTextX - 4
-                && mouseX < PrinterMenuTextX - 4 + PrinterMenuDropDownWidth
-                && mouseY >= PrinterMenuHeight + index * PrinterMenuItemHeight
-                && mouseY < PrinterMenuHeight + (index + 1) * PrinterMenuItemHeight;
-        }
-
-        private void DrawMenuBar()
-        {
-            SDL_SetRenderDrawColor(renderer, 18, 18, 18, 255);
-            SdlRect bar = new SdlRect(0, 0, WindowWidth, PrinterMenuHeight);
-            SDL_RenderFillRect(renderer, ref bar);
-
-            SDL_SetRenderDrawColor(renderer, 72, 72, 72, 255);
-            SdlRect line = new SdlRect(0, PrinterMenuHeight - 1, WindowWidth, 1);
-            SDL_RenderFillRect(renderer, ref line);
-
-            if (fileMenuOpen || fileMenuHover)
-            {
-                SDL_SetRenderDrawColor(renderer, 42, 42, 42, 255);
-                SdlRect hover = new SdlRect(PrinterMenuTextX - 4, 3, PrinterMenuFileWidth + 8, PrinterMenuHeight - 6);
-                SDL_RenderFillRect(renderer, ref hover);
-                SDL_SetRenderDrawColor(renderer, 96, 96, 96, 255);
-                DrawRectOutline(hover);
-            }
-
-            byte colour = fileMenuOpen || fileMenuHover ? (byte)245 : (byte)190;
-            DrawText("File", PrinterMenuTextX, PrinterMenuTextY, colour, colour, colour);
-        }
-
-        private void DrawFileMenu()
-        {
-            SDL_SetRenderDrawColor(renderer, 28, 28, 28, 245);
-            SdlRect menu = new SdlRect(PrinterMenuTextX - 4, PrinterMenuHeight, PrinterMenuDropDownWidth, PrinterMenuItemHeight * 2 + 8);
-            SDL_RenderFillRect(renderer, ref menu);
-
-            SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
-            SdlRect top = new SdlRect(PrinterMenuTextX - 4, PrinterMenuHeight, PrinterMenuDropDownWidth, 1);
-            SDL_RenderFillRect(renderer, ref top);
-
-            DrawFileMenuItemHighlight(0, savePngHover);
-            DrawFileMenuItemHighlight(1, clearPaperHover);
-
-            DrawText("Save PNG...", PrinterMenuTextX + 10, PrinterMenuHeight + 7, 224, 224, 224);
-            DrawText("Clear paper", PrinterMenuTextX + 10, PrinterMenuHeight + PrinterMenuItemHeight + 7, 224, 224, 224);
-        }
-
-        private void DrawFileMenuItemHighlight(int index, bool active)
-        {
-            if (!active)
-                return;
-
-            SDL_SetRenderDrawColor(renderer, 58, 58, 58, 255);
-            SdlRect item = new SdlRect(
-                PrinterMenuTextX - 1,
-                PrinterMenuHeight + index * PrinterMenuItemHeight + 4,
-                PrinterMenuDropDownWidth - 8,
-                PrinterMenuItemHeight - 1);
-            SDL_RenderFillRect(renderer, ref item);
-        }
-
-        private void DrawRectOutline(SdlRect rect)
-        {
-            SdlRect top = new SdlRect(rect.X, rect.Y, rect.W, 1);
-            SdlRect bottom = new SdlRect(rect.X, rect.Y + rect.H - 1, rect.W, 1);
-            SdlRect left = new SdlRect(rect.X, rect.Y, 1, rect.H);
-            SdlRect right = new SdlRect(rect.X + rect.W - 1, rect.Y, 1, rect.H);
-            SDL_RenderFillRect(renderer, ref top);
-            SDL_RenderFillRect(renderer, ref bottom);
-            SDL_RenderFillRect(renderer, ref left);
-            SDL_RenderFillRect(renderer, ref right);
-        }
-
-        private void DrawText(string text, int x, int y, byte red, byte green, byte blue)
-        {
-            SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
-            for (int i = 0; i < text.Length; i++)
-                DrawMenuGlyph(text[i], x + i * PrinterMenuGlyphAdvance, y);
-        }
-
-        private void DrawMenuGlyph(char c, int x, int y)
-        {
-            byte[] rows = GetGlyphRows(c);
-            for (int row = 0; row < rows.Length; row++)
-            {
-                byte bits = rows[row];
-                for (int col = 0; col < 5; col++)
-                {
-                    if ((bits & (1 << (4 - col))) == 0)
-                        continue;
-
-                    SdlRect pixel = new SdlRect(
-                        x + col * PrinterMenuTextScale,
-                        y + row * PrinterMenuTextScale,
-                        PrinterMenuTextScale,
-                        PrinterMenuTextScale);
-                    SDL_RenderFillRect(renderer, ref pixel);
-                }
-            }
-        }
-
-        private void SaveDocumentPng()
-        {
-            EnsureFirstPage();
-
-            string? path = SelectNativePrinterPngFile(CreatePngFileName());
-            if (path == null)
-                return;
-
-            SavePages(path);
-        }
-
-        private void ClearPaper()
-        {
-            foreach (Page page in pages)
-            {
-                if (page.Texture != IntPtr.Zero)
-                    SDL_DestroyTexture(page.Texture);
-            }
-
-            pages.Clear();
-            ResetPrintState();
-            ResetInputFifo();
-            x = leftMarginDots;
-            y = TopMarginDots;
-            scrollOffset = 0;
-            EnsureFirstPage();
         }
 
         private void SavePages(string selectedPath)
@@ -1760,7 +1685,30 @@ namespace BBC
             public readonly uint[] PreviewPixels = new uint[PaperViewWidth * PaperViewHeight];
             public IntPtr Texture;
             public bool Dirty = true;
+            public int DirtyMinY;
+            public int DirtyMaxY = PageHeightDots - 1;
             public long NextPreviewRefreshTicks;
+
+            public void MarkDirty(int dotY)
+            {
+                if (!Dirty)
+                {
+                    Dirty = true;
+                    DirtyMinY = dotY;
+                    DirtyMaxY = dotY;
+                    return;
+                }
+
+                DirtyMinY = Math.Min(DirtyMinY, dotY);
+                DirtyMaxY = Math.Max(DirtyMaxY, dotY);
+            }
+
+            public void ClearDirty()
+            {
+                Dirty = false;
+                DirtyMinY = PageHeightDots;
+                DirtyMaxY = -1;
+            }
 
             private static uint[] CreateBlankPage()
             {
@@ -1796,7 +1744,7 @@ namespace BBC
         [DllImport("SDL2")] private static extern void SDL_DestroyRenderer(IntPtr renderer);
         [DllImport("SDL2")] private static extern IntPtr SDL_CreateTexture(IntPtr renderer, uint format, int access, int w, int h);
         [DllImport("SDL2")] private static extern void SDL_DestroyTexture(IntPtr texture);
-        [DllImport("SDL2")] private static extern int SDL_UpdateTexture(IntPtr texture, IntPtr rect, IntPtr pixels, int pitch);
+        [DllImport("SDL2")] private static extern int SDL_UpdateTexture(IntPtr texture, ref SdlRect rect, IntPtr pixels, int pitch);
         [DllImport("SDL2")] private static extern int SDL_SetRenderDrawColor(IntPtr renderer, byte r, byte g, byte b, byte a);
         [DllImport("SDL2")] private static extern int SDL_RenderClear(IntPtr renderer);
         [DllImport("SDL2")] private static extern int SDL_RenderCopy(IntPtr renderer, IntPtr texture, IntPtr source, ref SdlRect destination);

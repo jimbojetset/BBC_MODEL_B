@@ -471,6 +471,7 @@ namespace BBC
         private readonly HostJoystickChange[] joystickChangeScratch = new HostJoystickChange[16];
         private readonly HostAnalogJoystickChange[] analogJoystickChangeScratch = new HostAnalogJoystickChange[16];
         private readonly BreakKeyPress[] breakScratch = new BreakKeyPress[4];
+        private int breakResetPending;
         private readonly List<HostDiscAction> discActionScratch = new List<HostDiscAction>();
         private readonly List<HostTapeAction> tapeActionScratch = new List<HostTapeAction>();
         private readonly List<HostStateAction> stateActionScratch = new List<HostStateAction>();
@@ -570,6 +571,8 @@ namespace BBC
         public Emulator()
         {
             Sound = new SN76489_Sound();
+            printer.PrintHeadAdvanced += Sound.QueuePrinterHeadEvent;
+            printer.PrintingCancelled += Sound.CancelPrinterOutput;
             discDriveSound = DiscDriveSound.TryLoadDefault();
             Sound.DiscDriveSound = discDriveSound;
             systemVia = new System6522Via(Sound);
@@ -1099,10 +1102,19 @@ namespace BBC
                 QueueBootScript(pendingBootExecScript);
                 pendingBootExecScript = null;
             }
+
+            Volatile.Write(ref breakResetPending, 0);
         }
 
         private void RenderDisplayFrame(Display display)
         {
+            if (Volatile.Read(ref breakResetPending) != 0)
+            {
+                Array.Fill(display.FrameBuffer, DisplayBlack);
+                display.MarkFrameDirty();
+                return;
+            }
+
             Video.Render(display);
             if (Volatile.Read(ref runtimeTraceActive) != 0)
                 TraceRuntimeFrame();
@@ -2944,6 +2956,7 @@ namespace BBC
                 pendingBreak = new BreakKeyPress(false, pendingBreak.Control);
             }
 
+            Volatile.Write(ref breakResetPending, 1);
             Array.Fill(display.FrameBuffer, DisplayBlack);
             display.MarkFrameDirty();
             display.Present();

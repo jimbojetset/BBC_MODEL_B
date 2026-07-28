@@ -67,6 +67,8 @@ namespace BBC
         private const int V32BisScrambledOnesMilliseconds = 180;
         private const int ModemFinalNoiseMilliseconds = 1000;
         private const double CassetteToneAmplitude = 0.055;
+        private const double PrinterClickDecay = 0.96;
+        private const double PrinterClickAmplitude = 0.18;
         private const int PsgWriteEnableDelayCycles = 14;
         private const ushort AudioFormatS16 = 0x8010;
         private readonly object syncRoot = new object();
@@ -77,12 +79,14 @@ namespace BBC
         private readonly short[] sampleBuffer = new short[SamplesPerBuffer];
         private readonly short[] generatedSamples = new short[GeneratedQueueSamples];
         private readonly Queue<ScheduledPsgEvent> scheduledEvents = new Queue<ScheduledPsgEvent>();
+        private readonly Queue<PrinterHeadEvent> printerHeadEvents = new Queue<PrinterHeadEvent>();
         private static readonly double[] VolumeTable = CreateVolumeTable();
         private double sampleCycleRemainder;
         private double chipSampleRemainder;
         private long emulatedCycle;
         private int scheduledEventCount;
         private int emulatedOutputActive;
+        private int printerOutputActive;
         private byte slowDataBus;
         private bool writeEnableActive;
         private bool writeEnableSampleScheduled;
@@ -98,6 +102,12 @@ namespace BBC
         private bool latchedVolume;
         private int cassetteToneHz;
         private double cassetteTonePhase;
+        private int printerClickSamplesUntilNext;
+        private double printerClickEnvelope;
+        private uint printerClickNoise = 0x6D2B79F5;
+        private double printerClickFastNoise;
+        private double printerClickSlowNoise;
+        private double printerClickResonancePhase;
         private uint audioDevice;
         private Thread? audioThread;
         private bool running;
@@ -157,6 +167,14 @@ namespace BBC
                 latchedVolume = false;
                 cassetteToneHz = 0;
                 cassetteTonePhase = 0;
+                printerHeadEvents.Clear();
+                printerClickSamplesUntilNext = 0;
+                printerClickEnvelope = 0;
+                printerClickNoise = 0x6D2B79F5;
+                printerClickFastNoise = 0;
+                printerClickSlowNoise = 0;
+                printerClickResonancePhase = 0;
+                Volatile.Write(ref printerOutputActive, 0);
                 discDriveSound?.Reset();
             }
         }
@@ -226,6 +244,14 @@ namespace BBC
                 lastGeneratedSample = 0;
                 cassetteToneHz = 0;
                 cassetteTonePhase = 0;
+                printerHeadEvents.Clear();
+                printerClickSamplesUntilNext = 0;
+                printerClickEnvelope = 0;
+                printerClickNoise = 0x6D2B79F5;
+                printerClickFastNoise = 0;
+                printerClickSlowNoise = 0;
+                printerClickResonancePhase = 0;
+                Volatile.Write(ref printerOutputActive, 0);
                 Volatile.Write(ref emulatedOutputActive, 0);
                 discDriveSound?.Reset();
             }
@@ -333,6 +359,36 @@ namespace BBC
             }
 
             WaitForGeneratedDrain();
+        }
+
+        public void QueuePrinterHeadEvent(int pinCount, double durationSeconds)
+        {
+            if (pinCount < 0 || durationSeconds <= 0)
+                return;
+
+            lock (syncRoot)
+            {
+                if (printerHeadEvents.Count < 4096)
+                {
+                    int durationSamples = Math.Max(1, (int)Math.Round(durationSeconds * SampleRate));
+                    printerHeadEvents.Enqueue(new PrinterHeadEvent(Math.Min(pinCount, 9), durationSamples));
+                }
+
+                Volatile.Write(ref printerOutputActive, 1);
+            }
+        }
+
+        public void CancelPrinterOutput()
+        {
+            lock (syncRoot)
+            {
+                printerHeadEvents.Clear();
+                printerClickSamplesUntilNext = 0;
+                printerClickEnvelope = 0;
+                printerClickFastNoise = 0;
+                printerClickSlowNoise = 0;
+                Volatile.Write(ref printerOutputActive, 0);
+            }
         }
 
         public void PlayModemConnectionSequence(Action? remoteAnswered = null)
@@ -770,6 +826,10 @@ namespace BBC
                     sampleCycleRemainder = 0;
                     chipSampleRemainder = 0;
                     emulatedCycle = targetCycle;
+                    printerHeadEvents.Clear();
+                    printerClickEnvelope = 0;
+                    printerClickSamplesUntilNext = 0;
+                    Volatile.Write(ref printerOutputActive, 0);
                 }
 
                 return;
@@ -777,6 +837,7 @@ namespace BBC
 
             if (Volatile.Read(ref scheduledEventCount) == 0
                 && Volatile.Read(ref emulatedOutputActive) == 0
+                && Volatile.Read(ref printerOutputActive) == 0
                 && discDriveSound?.HasActiveOutput != true)
             {
                 emulatedCycle += cycles;
@@ -884,7 +945,53 @@ namespace BBC
             mixed /= chipSamples;
             mixed += discDriveSound?.GenerateSample() ?? 0;
             mixed += GenerateCassetteToneSample();
+            mixed += GeneratePrinterClickSample();
             return (short)Math.Clamp(mixed * short.MaxValue, short.MinValue, short.MaxValue);
+        }
+
+        private double GeneratePrinterClickSample()
+        {
+            if (printerClickSamplesUntilNext > 0)
+                printerClickSamplesUntilNext--;
+
+            if (printerClickSamplesUntilNext == 0 && printerHeadEvents.Count > 0)
+            {
+                PrinterHeadEvent headEvent = printerHeadEvents.Dequeue();
+                if (headEvent.PinCount > 0)
+                {
+                    printerClickEnvelope = Math.Min(
+                        0.36,
+                        printerClickEnvelope + PrinterClickAmplitude * Math.Sqrt(headEvent.PinCount / 9.0));
+                }
+
+                printerClickSamplesUntilNext = headEvent.DurationSamples;
+            }
+
+            printerClickNoise ^= printerClickNoise << 13;
+            printerClickNoise ^= printerClickNoise >> 17;
+            printerClickNoise ^= printerClickNoise << 5;
+            double noise = ((printerClickNoise & 0xFFFF) / 32767.5) - 1.0;
+            printerClickFastNoise += (noise - printerClickFastNoise) * 0.62;
+            printerClickSlowNoise += (noise - printerClickSlowNoise) * 0.10;
+            double paperImpact = printerClickFastNoise - printerClickSlowNoise;
+            double headResonance = Math.Sin(printerClickResonancePhase);
+            printerClickResonancePhase += Math.Tau * 3200 / SampleRate;
+            if (printerClickResonancePhase >= Math.Tau)
+                printerClickResonancePhase -= Math.Tau;
+
+            double sample = printerClickEnvelope * (paperImpact * 0.8 + headResonance * 0.2);
+            printerClickEnvelope *= PrinterClickDecay;
+
+            if (printerHeadEvents.Count == 0
+                && printerClickSamplesUntilNext == 0
+                && printerClickEnvelope < 0.0001)
+            {
+                printerClickEnvelope = 0;
+                Volatile.Write(ref printerOutputActive, 0);
+                return 0;
+            }
+
+            return sample;
         }
 
         private double GenerateCassetteToneSample()
@@ -927,6 +1034,7 @@ namespace BBC
                 || volumes[1] < 15
                 || volumes[2] < 15
                 || volumes[3] < 15
+                || Volatile.Read(ref printerOutputActive) != 0
                 || discDriveSound?.HasActiveOutput == true;
         }
 
@@ -1120,6 +1228,8 @@ namespace BBC
                 return new ScheduledPsgEvent(cycle, 0, SampleSlowBus: true);
             }
         }
+
+        private readonly record struct PrinterHeadEvent(int PinCount, int DurationSamples);
 
         private static void ThrowIfSdlFailed(int result, string operation)
         {

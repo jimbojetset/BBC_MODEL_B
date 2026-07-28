@@ -170,6 +170,7 @@ namespace BBC
         private int pendingPowerResetRequests;
         private HostMouseState mouseState;
         private bool relativeMouseMode;
+        private bool printerEnabled;
         private readonly Dictionary<int, ActiveHostKey> activeHostKeys = new Dictionary<int, ActiveHostKey>();
         private readonly HashSet<int> textInputHostKeys = new HashSet<int>();
         private readonly Dictionary<byte, int> activeMatrixKeys = new Dictionary<byte, int>();
@@ -309,7 +310,19 @@ namespace BBC
 
         public bool HayesModemEnabled { get; set; }
 
-        public bool PrinterEnabled { get; set; }
+        public bool PrinterEnabled
+        {
+            get => printerEnabled;
+            set
+            {
+                if (printerEnabled == value)
+                    return;
+
+                printerEnabled = value;
+                activeMenuIndex = -1;
+                menus = CreateMenus();
+            }
+        }
 
         public bool HayesLoopbackEnabled { get; set; }
 
@@ -2812,6 +2825,24 @@ namespace BBC
                 case MenuCommand.PrintScreen:
                     pendingPrintScreenRequests++;
                     break;
+                case MenuCommand.TogglePrinterPageInversion:
+                    printer?.TogglePageInversion();
+                    break;
+                case MenuCommand.TogglePrinterSound:
+                    printer?.ToggleSound();
+                    break;
+                case MenuCommand.SavePrinterPng:
+                    printer?.SaveDocumentPng();
+                    break;
+                case MenuCommand.NewPrinterPaper:
+                    printer?.NewPaper();
+                    break;
+                case MenuCommand.NewPrinterPage:
+                    printer?.StartNewPage();
+                    break;
+                case MenuCommand.CancelPrinterActivity:
+                    printer?.CancelPrinting();
+                    break;
                 case MenuCommand.SaveState:
                     EnqueueSaveState();
                     break;
@@ -3044,6 +3075,8 @@ namespace BBC
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
                 MenuCommand.TogglePrinter => PrinterEnabled,
+                MenuCommand.TogglePrinterPageInversion => printer?.PageInverted == true,
+                MenuCommand.TogglePrinterSound => printer?.SoundEnabled == true,
                 MenuCommand.ToggleHayesLoopback => HayesLoopbackEnabled,
                 _ => false
             };
@@ -3092,6 +3125,7 @@ namespace BBC
                     or MenuCommand.LoadRecentState3
                     or MenuCommand.LoadRecentState4
                     or MenuCommand.LoadRecentState5 => IsRecentStateAvailable(item.Command),
+                MenuCommand.CancelPrinterActivity => printer?.Busy == true,
                 _ => true
             };
         }
@@ -5189,6 +5223,12 @@ namespace BBC
             EjectTape,
             SaveScreenshot,
             PrintScreen,
+            TogglePrinterPageInversion,
+            TogglePrinterSound,
+            SavePrinterPng,
+            NewPrinterPaper,
+            NewPrinterPage,
+            CancelPrinterActivity,
             SaveState,
             LoadState,
             LoadRecentState1,
@@ -5221,7 +5261,7 @@ namespace BBC
 
         private MenuDefinition[] CreateMenus()
         {
-            return
+            List<MenuDefinition> definitions =
             [
                 new MenuDefinition("File",
                     CreateFileMenuItems()),
@@ -5243,14 +5283,34 @@ namespace BBC
                     new MenuItem("Pause Emulator", "Ctrl+P", MenuCommand.TogglePause)
                 ]),
                 new MenuDefinition("ROM Manager", [], MenuCommand.OpenRomManager),
-                new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper),
-                new MenuDefinition("View",
+                new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper)
+            ];
+
+            if (PrinterEnabled)
+            {
+                definitions.Add(new MenuDefinition("Printer",
+                [
+                    new MenuItem("Print screen", "", MenuCommand.PrintScreen),
+                    new MenuItem("Invert printer page", "", MenuCommand.TogglePrinterPageInversion),
+                    new MenuItem("Printer sound", "", MenuCommand.TogglePrinterSound),
+                    MenuSeparator(),
+                    new MenuItem("Save PNG...", "", MenuCommand.SavePrinterPng),
+                    MenuSeparator(),
+                    new MenuItem("New paper", "", MenuCommand.NewPrinterPaper),
+                    new MenuItem("New page", "", MenuCommand.NewPrinterPage),
+                    MenuSeparator(),
+                    new MenuItem("Cancel printing", "", MenuCommand.CancelPrinterActivity)
+                ]));
+            }
+
+            definitions.Add(new MenuDefinition("View",
                 [
                     new MenuItem("Fullscreen", "Ctrl+Shift+F", MenuCommand.ToggleFullScreen),
                     new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines),
                     new MenuItem("BBC logo", "", MenuCommand.ToggleBbcLogo)
-                ])
-            ];
+                ]));
+
+            return definitions.ToArray();
         }
 
         private MenuItem[] CreateFileMenuItems()
@@ -5258,7 +5318,6 @@ namespace BBC
             List<MenuItem> items =
             [
                 new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
-                new MenuItem("Print screen", "", MenuCommand.PrintScreen),
                 new MenuItem("Open state...", "Ctrl+Shift+O", MenuCommand.LoadState),
                 new MenuItem("Save state...", "Ctrl+Shift+V", MenuCommand.SaveState)
             ];
