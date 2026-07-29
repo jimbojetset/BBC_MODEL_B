@@ -1233,7 +1233,7 @@ namespace BBC
         {
             if (!tapePlayerEnabled)
             {
-                display.ShowNotification("Tape Player disabled", "Enable it from Machine", 3000);
+                display.ShowNotification("Tape Player disabled", "Enable it from Peripherals", 3000);
                 return;
             }
 
@@ -1254,7 +1254,7 @@ namespace BBC
         {
             if (!tapePlayerEnabled)
             {
-                display.ShowNotification("Tape Player disabled", "Enable it from Machine", 3000);
+                display.ShowNotification("Tape Player disabled", "Enable it from Peripherals", 3000);
                 return;
             }
 
@@ -1271,7 +1271,7 @@ namespace BBC
         {
             if (!tapePlayerEnabled)
             {
-                display.ShowNotification("Tape Player disabled", "Enable it from Machine", 3000);
+                display.ShowNotification("Tape Player disabled", "Enable it from Peripherals", 3000);
                 return;
             }
 
@@ -2503,7 +2503,7 @@ namespace BBC
             {
                 if (!printer.Enabled)
                 {
-                    display.ShowNotification("Printer disabled", "Enable it from Machine", 3000);
+                    display.ShowNotification("Printer disabled", "Enable it from Peripherals", 3000);
                     continue;
                 }
 

@@ -127,7 +127,8 @@ The SDL window has a small menu bar for the common jobs:
 File         Screenshot, save state, open state, quit
 Disc         Mount, eject, or create blank SSD media
 Cassette    Load, create, and control UEF tapes
-Machine      BREAK, tape player, modem, printer, disc drives, Tube, sound, pause
+Machine      BREAK, reset, sound, pause
+Peripherals  Tape player, modem, printer, disc drives, Tube
 ROM Manager  Edit sideways ROM banks and import/export ROM layouts
 Printer      Screen printing, saved screenshots, page controls, PNG export, sound
 View         Fullscreen and scanlines
@@ -137,8 +138,8 @@ Input        Paste text, Shift Lock, keyboard mapper
 A few useful details:
 
 - Disc menu loads accept `.ssd`, `.dsd`, and `.zip`. ZIP files are browsed without extracting them.
-- Drive 0 is on by default. Drive 1 is off until enabled from `Machine` or used from the command line.
-- The tape player is on by default. The Hayes modem is off until enabled from `Machine` or started with `--modem`.
+- Drive 0 is on by default. Drive 1 is off until enabled from `Peripherals` or used from the command line.
+- The tape player is on by default. The Hayes modem is off until enabled from `Peripherals` or started with `--modem`.
 - Enabling the printer opens the `Epson FX-80 Printer` paper window and adds a `Printer` menu between `Keyboard Mapper` and `View`.
 - The `Printer` menu can print the current screen or a saved PNG from `Screenshots/`, invert screen-to-paper colours, save the paper as PNG, start a new page or sheet, cancel a job, and enable or mute printer sound.
 - Draft text runs at 160 characters per second. ESC/P bit-image graphics use an 80-cps-equivalent head speed.
@@ -161,6 +162,7 @@ F11                     Toggle scanlines
 Ctrl+S / Cmd+S          Save screenshot
 Ctrl+L / Cmd+L          Open the disc picker
 Ctrl+V / Cmd+V          Paste clipboard text into the BBC
+Ctrl+Shift+P            Toggle printer
 Ctrl+Shift+R            Open the ROM Manager
 Ctrl+Shift+K            Open the Keyboard Mapper
 Left Ctrl+Left Shift    Toggle BBC SHIFT LOCK
@@ -184,7 +186,7 @@ Blank UEF tapes created from the cassette menu are recordable 10-minute tapes. L
 
 ## Optional Hardware
 
-The Machine menu lets you add or remove hardware while the emulator is running:
+The Peripherals menu lets you add or remove hardware while the emulator is running:
 
 - `Tape Player` toggles the cassette hardware and tape controls.
 - `Hayes Modem` enables the modem and its front-panel LEDs.

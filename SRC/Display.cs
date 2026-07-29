@@ -203,7 +203,7 @@ namespace BBC
         private IntPtr joystick;
         private int activeJoystickInstanceId = -1;
         private bool scanlinesEnabled;
-        private bool showBbcLogo = true;
+        private bool showBbcLogo = false;
         private bool disposed;
         private bool hostCapsLockEnabled;
         private bool bbcShiftLockEnabled;
@@ -4618,12 +4618,6 @@ namespace BBC
                 return;
             }
 
-            if (keySym == SDLK_P && (modifiers & KMOD_CTRL) != 0 && (modifiers & KMOD_SHIFT) != 0)
-            {
-                pendingTapePauseToggleRequests++;
-                return;
-            }
-
             if (keySym == SDLK_P && (modifiers & KMOD_CTRL) != 0)
             {
                 pendingPauseToggleRequests++;
@@ -4681,6 +4675,7 @@ namespace BBC
                 SDLK_V => MenuCommand.SaveState,
                 SDLK_T => MenuCommand.ToggleTapePlayer,
                 SDLK_M => MenuCommand.ToggleHayesModem,
+                SDLK_P => MenuCommand.TogglePrinter,
                 SDLK_D => MenuCommand.ToggleDiscDrive1,
                 SDLK_C => MenuCommand.ToggleTube6502,
                 SDLK_F => MenuCommand.ToggleFullScreen,
@@ -5294,15 +5289,17 @@ namespace BBC
                     new MenuItem("Ctrl-BREAK", "Ctrl+F12", MenuCommand.ControlBreak),
                     new MenuItem("Power reset", "", MenuCommand.PowerReset),
                     MenuSeparator(),
-                    new MenuItem("Tape Player", "Ctrl+Shift+T", MenuCommand.ToggleTapePlayer),
-                    new MenuItem("Hayes Modem", "Ctrl+Shift+M", MenuCommand.ToggleHayesModem),
-                    new MenuItem("Printer", "", MenuCommand.TogglePrinter),
-                    new MenuItem("Disc Drive 0", "", MenuCommand.ToggleDiscDrive0),
-                    new MenuItem("Disc Drive 1", "Ctrl+Shift+D", MenuCommand.ToggleDiscDrive1),
-                    new MenuItem("6502 Co-Processor", "Ctrl+Shift+C", MenuCommand.ToggleTube6502),
-                    MenuSeparator(),
                     new MenuItem("Sound output", "Ctrl+Q", MenuCommand.ToggleSoundOutput),
                     new MenuItem("Pause Emulator", "Ctrl+P", MenuCommand.TogglePause)
+                ]),
+                new MenuDefinition("Peripherals",
+                [
+                    new MenuItem("Tape Player", "Ctrl+Shift+T", MenuCommand.ToggleTapePlayer),
+                    new MenuItem("Hayes Modem", "Ctrl+Shift+M", MenuCommand.ToggleHayesModem),
+                    new MenuItem("Printer", "Ctrl+Shift+P", MenuCommand.TogglePrinter),
+                    new MenuItem("Disc Drive 0", "", MenuCommand.ToggleDiscDrive0),
+                    new MenuItem("Disc Drive 1", "Ctrl+Shift+D", MenuCommand.ToggleDiscDrive1),
+                    new MenuItem("6502 Co-Processor", "Ctrl+Shift+C", MenuCommand.ToggleTube6502)
                 ]),
                 new MenuDefinition("ROM Manager", [], MenuCommand.OpenRomManager),
                 new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper)
