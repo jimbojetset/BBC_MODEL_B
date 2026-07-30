@@ -799,7 +799,11 @@ namespace BBC
                     break;
 
                 case 0x2C:
-                    SetPolledResult(IsDriveReady(selectedDrive) ? (byte)0x45 : (byte)0x00);
+                    // Report the selected emulated drive as present even when it has no
+                    // image mounted.  Returning zero here makes Acorn DFS wait forever
+                    // for the drive to become ready, so it never issues the sector read
+                    // which completes with the normal "Disk fault 18" result.
+                    SetPolledResult(0x45);
 
                     if (TraceEnabled)
                         Trace($"DRIVE STATUS result=${result:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive} activeDrive={ActiveDrive}");
