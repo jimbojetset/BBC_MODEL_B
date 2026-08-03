@@ -32,10 +32,6 @@ namespace BBC
         private const byte ControlMask = StatusQ | StatusI | StatusJ | StatusM | StatusV | StatusP | StatusT;
         private const int R1ParasiteToHostSize = 24;
 
-        private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_TRACE") == "1";
-        private static readonly bool DebugEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1";
-        private static readonly bool TraceCaptureEnabled = TraceEnabled || DebugEnabled;
-
         private readonly object sync = new object();
         private readonly byte[] hostStatus = new byte[4];
         private readonly byte[] parasiteStatus = new byte[4];
@@ -44,8 +40,6 @@ namespace BBC
         private readonly byte[] hostToParasite = new byte[4];
         private readonly byte[] parasiteToHostR3 = new byte[2];
         private readonly byte[] hostToParasiteR3 = new byte[2];
-        private readonly byte[] lastTracedStatus = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-        private readonly string[] recentTrace = new string[96];
 
         private byte internalStatus;
         private int parasiteToHostR1Head;
@@ -61,9 +55,6 @@ namespace BBC
         private bool parasiteIrqAsserted;
         private bool parasiteNmiAsserted;
         private bool parasiteResetAsserted;
-        private int recentTraceIndex;
-        private int recentTraceCount;
-        private long parasiteR3NmiRequests;
 
         public event Action<bool>? HostIrqChanged;
 
@@ -152,50 +143,18 @@ namespace BBC
             }
         }
 
-        public string DebugStatus()
-        {
-            lock (sync)
-            {
-                return $"Tube ULA: internal=${internalStatus:X2} "
-                    + $"H=[{FormatStatus(hostStatus)}] P=[{FormatStatus(parasiteStatus)}] "
-                    + $"R1 P->H={parasiteToHostR1Count}/{R1ParasiteToHostSize} "
-                    + $"R3 H->P={hostToParasiteR3Count}/2 P->H={parasiteToHostR3Count}/2 "
-                    + $"IRQ H={(hostIrqAsserted ? 1 : 0)} P={(parasiteIrqAsserted ? 1 : 0)} "
-                    + $"NMI={(parasiteNmiAsserted ? 1 : 0)} RESET={(parasiteResetAsserted ? 1 : 0)} "
-                    + $"R3NMI={parasiteR3NmiRequests}";
-            }
-        }
-
-        public string[] RecentTrace()
-        {
-            lock (sync)
-            {
-                string[] lines = new string[recentTraceCount];
-                for (int i = 0; i < lines.Length; i++)
-                {
-                    int index = (recentTraceIndex - recentTraceCount + i + recentTrace.Length) % recentTrace.Length;
-                    lines[i] = recentTrace[index];
-                }
-
-                return lines;
-            }
-        }
-
         public byte ReadHost(ushort address)
         {
             lock (sync)
             {
                 byte value;
                 int register = RegisterIndex(address);
-                bool status = (address & 1) == 0;
 
                 switch (address & 7)
                 {
                     case 0:
                         value = (byte)((hostStatus[R1] & (DataAvailable | SpaceAvailable))
                             | (internalStatus & ~(DataAvailable | SpaceAvailable)));
-                        if (TraceCaptureEnabled)
-                            TraceStatus("H", "R", address, value, 0);
                         return value;
                     case 1:
                         value = HostReadR1();
@@ -204,8 +163,6 @@ namespace BBC
                     case 4:
                     case 6:
                         value = hostStatus[register];
-                        if (TraceCaptureEnabled)
-                            TraceStatus("H", "R", address, value, register);
                         return value;
                     case 3:
                         value = HostReadSingle(R2, parasiteToHost[R2]);
@@ -221,8 +178,6 @@ namespace BBC
                         break;
                 }
 
-                if (TraceCaptureEnabled)
-                    Trace("H", "R", address, value, register, status);
                 UpdateInterrupts();
                 return value;
             }
@@ -233,9 +188,6 @@ namespace BBC
             lock (sync)
             {
                 int register = RegisterIndex(address);
-                bool status = (address & 1) == 0;
-                if (TraceCaptureEnabled)
-                    Trace("H", "W", address, value, register, status);
 
                 switch (address & 7)
                 {
@@ -268,7 +220,6 @@ namespace BBC
             {
                 byte value;
                 int register = RegisterIndex(address);
-                bool status = (address & 1) == 0;
 
                 switch (address & 7)
                 {
@@ -276,15 +227,11 @@ namespace BBC
                         value = parasiteStatus[R3];
                         if (parasiteToHostR3Count == 0)
                             value |= DataAvailable;
-                        if (TraceCaptureEnabled)
-                            TraceStatus("P", "R", address, value, register + 4);
                         return value;
                     case 0:
                     case 2:
                     case 6:
                         value = parasiteStatus[register];
-                        if (TraceCaptureEnabled)
-                            TraceStatus("P", "R", address, value, register + 4);
                         return value;
                     case 1:
                         value = ParasiteReadSingle(R1, hostToParasite[R1]);
@@ -303,8 +250,6 @@ namespace BBC
                         break;
                 }
 
-                if (TraceCaptureEnabled)
-                    Trace("P", "R", address, value, register, status);
                 UpdateInterrupts();
                 return value;
             }
@@ -315,9 +260,6 @@ namespace BBC
             lock (sync)
             {
                 int register = RegisterIndex(address);
-                bool status = (address & 1) == 0;
-                if (TraceCaptureEnabled)
-                    Trace("P", "W", address, value, register, status);
 
                 switch (address & 7)
                 {
@@ -563,8 +505,6 @@ namespace BBC
                 return;
 
             parasiteNmiAsserted = asserted;
-            if (asserted)
-                parasiteR3NmiRequests++;
             ParasiteNmiChanged?.Invoke(asserted);
         }
 
@@ -578,40 +518,6 @@ namespace BBC
         }
 
         private static int RegisterIndex(ushort address) => (address >> 1) & 0x03;
-
-        private static string FormatStatus(byte[] status) => string.Join(' ', status.Select(value => $"${value:X2}"));
-
-        private void Trace(string side, string operation, ushort address, byte value, int registerIndex, bool status)
-        {
-            if (!TraceEnabled && !DebugEnabled)
-                return;
-
-            string kind = status ? "S" : "D";
-            string line = $"TUBE {side}{operation}{kind} R{registerIndex + 1} ${address:X4}=${value:X2}";
-            RememberTrace(line);
-            if (TraceEnabled)
-                Console.Error.WriteLine(line);
-        }
-
-        private void TraceStatus(string side, string operation, ushort address, byte value, int statusIndex)
-        {
-            if ((!TraceEnabled && !DebugEnabled) || lastTracedStatus[statusIndex] == value)
-                return;
-
-            lastTracedStatus[statusIndex] = value;
-            string line = $"TUBE {side}{operation}S R{(statusIndex & 3) + 1} ${address:X4}=${value:X2}";
-            RememberTrace(line);
-            if (TraceEnabled)
-                Console.Error.WriteLine(line);
-        }
-
-        private void RememberTrace(string line)
-        {
-            recentTrace[recentTraceIndex] = line;
-            recentTraceIndex = (recentTraceIndex + 1) % recentTrace.Length;
-            if (recentTraceCount < recentTrace.Length)
-                recentTraceCount++;
-        }
 
         private static void WriteByteArray(BinaryWriter writer, byte[] bytes)
         {

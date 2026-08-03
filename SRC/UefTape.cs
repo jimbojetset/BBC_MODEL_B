@@ -35,10 +35,6 @@ namespace BBC
         private const ushort CarrierToneChunkNoDummy = 0x0111;
         private const ushort IntegerGapChunk = 0x0112;
         private const ushort FloatingGapChunk = 0x0116;
-        private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_TAPE_TRACE") == "1";
-        private static readonly string TracePath = Environment.GetEnvironmentVariable("BBC_TAPE_TRACE_FILE") ?? "bbc-tape-trace.log";
-        private static readonly object TraceSync = new object();
-        private static bool traceStarted;
 
         private readonly SerialACIA serialAcia;
         private readonly SN76489_Sound tapeSound;
@@ -70,7 +66,6 @@ namespace BBC
         private long recordingWritePositionCycles;
         private readonly List<byte> recordingBlockBytes = new List<byte>();
         private bool tapePositionSeekNeeded;
-        private string? lastTraceState;
 
         public UefTape(SerialACIA serialAcia, SN76489_Sound tapeSound)
         {
@@ -219,10 +214,8 @@ namespace BBC
                 recordingWritePositionCycles = 0;
                 tapePositionSeekNeeded = false;
                 ResetCharacterTone();
-                lastTraceState = null;
             }
 
-            Trace($"mounted {Path.GetFileName(path)} events={loadedTape.Events.Count} recordable={(loadedTape.Recordable ? 1 : 0)}");
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetCarrierPresent(true);
             serialAcia.SetTapePlaying(false);
@@ -259,10 +252,8 @@ namespace BBC
                 recordingWritePositionCycles = 0;
                 tapePositionSeekNeeded = false;
                 ResetCharacterTone();
-                lastTraceState = null;
             }
 
-            Trace("unmounted");
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetCarrierPresent(true);
             serialAcia.SetTapePlaying(false);
@@ -278,7 +269,6 @@ namespace BBC
             {
                 if (events.Count == 0)
                 {
-                    TraceStateOnce("idle no-events-or-end");
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
                     return;
@@ -306,7 +296,6 @@ namespace BBC
 
                     if (paused || !serialAcia.MotorRunning)
                     {
-                        TraceStateOnce(paused ? "record paused" : "record motor-off");
                         serialAcia.SetTapePlaying(false);
                         SilenceTapeTone();
                         if (!paused)
@@ -318,7 +307,6 @@ namespace BBC
                         return;
                     }
 
-                    TraceStateOnce("record running");
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
                     if (!recordingDataRunActive)
@@ -341,7 +329,6 @@ namespace BBC
 
                 if (reachedEnd)
                 {
-                    TraceStateOnce("idle no-events-or-end");
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
                     return;
@@ -349,7 +336,6 @@ namespace BBC
 
                 if (paused || !transportPlaying)
                 {
-                    TraceStateOnce(paused ? "blocked paused" : "blocked transport-stopped");
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
                     return;
@@ -357,7 +343,6 @@ namespace BBC
 
                 if (!serialAcia.MotorRunning)
                 {
-                    TraceStateOnce("blocked motor-off");
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
                     return;
@@ -365,7 +350,6 @@ namespace BBC
 
                 playbackStarted = true;
                 serialAcia.SetTapePlaying(true);
-                TraceStateOnce("running");
 
                 int remainingCycles = cycles;
                 while (remainingCycles > 0 && (eventIndex < events.Count || delayCyclesRemaining > 0 || characterCyclesRemaining > 0))
@@ -397,16 +381,8 @@ namespace BBC
                         break;
 
                     TapeEvent tapeEvent = events[eventIndex];
-                    if (tapeEvent.Kind == TapeEventKind.Trace)
-                    {
-                        Trace($"event {eventIndex}/{events.Count} {tapeEvent.Label}");
-                        eventIndex++;
-                        continue;
-                    }
-
                     if (tapeEvent.Kind == TapeEventKind.Carrier)
                     {
-                        Trace($"event {eventIndex}/{events.Count} carrier cycles={tapeEvent.Cycles} motor={(serialAcia.MotorRunning ? 1 : 0)} carrier={(serialAcia.CarrierPresent ? 1 : 0)}");
                         serialAcia.SetCarrierPresent(true);
                         SetTapeTone(TapeOneToneHz);
                         delayCyclesRemaining = tapeEvent.Cycles;
@@ -417,7 +393,6 @@ namespace BBC
 
                     if (tapeEvent.Kind == TapeEventKind.CarrierDetect)
                     {
-                        Trace($"event {eventIndex}/{events.Count} carrier-detect pulse");
                         serialAcia.PulseTapeCarrierDetect();
                         eventIndex++;
                         return;
@@ -425,7 +400,6 @@ namespace BBC
 
                     if (tapeEvent.Kind == TapeEventKind.Gap)
                     {
-                        Trace($"event {eventIndex}/{events.Count} gap cycles={tapeEvent.Cycles} motor={(serialAcia.MotorRunning ? 1 : 0)} carrier={(serialAcia.CarrierPresent ? 1 : 0)}");
                         serialAcia.SetCarrierPresent(false);
                         SilenceTapeTone();
                         delayCyclesRemaining = tapeEvent.Cycles;
@@ -445,7 +419,6 @@ namespace BBC
 
                     if (!serialAcia.CanReceiveByte)
                     {
-                        TraceStateOnce("blocked acia-full");
                         return;
                     }
 
@@ -459,7 +432,6 @@ namespace BBC
 
                 if (eventIndex >= events.Count && delayCyclesRemaining == 0 && characterCyclesRemaining == 0)
                 {
-                    Trace("reached end");
                     reachedEnd = true;
                     transportPlaying = false;
                     playbackStarted = false;
@@ -467,33 +439,6 @@ namespace BBC
                     SilenceTapeTone();
                 }
             }
-        }
-
-        public void ResetPlayback()
-        {
-            lock (sync)
-            {
-                eventIndex = 0;
-                delayCyclesRemaining = 0;
-                delayToneHz = 0;
-                characterCyclesRemaining = 0;
-                playbackStarted = false;
-                reachedEnd = false;
-                transportPlaying = false;
-                paused = false;
-                fastTransport = FastTapeTransport.None;
-                tapePositionCycles = 0;
-                counterResetPositionCycles = 0;
-                tapePositionSeekNeeded = false;
-                ResetCharacterTone();
-                lastTraceState = null;
-            }
-
-            Trace("reset playback");
-            serialAcia.ClearTapeReadRequest();
-            serialAcia.SetCarrierPresent(true);
-            serialAcia.SetTapePlaying(false);
-            SilenceTapeTone();
         }
 
         public void SaveState(BinaryWriter writer)
@@ -579,7 +524,6 @@ namespace BBC
                 recordingWritePositionCycles = 0;
                 tapePositionSeekNeeded = false;
                 ResetCharacterTone();
-                lastTraceState = null;
             }
 
             if (!hadTape || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -617,10 +561,8 @@ namespace BBC
                 recordingWritePositionCycles = Math.Clamp(savedRecordingWritePositionCycles, 0, totalTapeCycles);
                 tapePositionSeekNeeded = savedTapePositionSeekNeeded;
                 ResetCharacterTone();
-                lastTraceState = null;
             }
 
-            Trace($"loaded state events={loadedTape.Events.Count} index={eventIndex}");
             serialAcia.ClearTapeReadRequest();
             serialAcia.SetTapePlaying(false);
             SilenceTapeTone();
@@ -659,11 +601,9 @@ namespace BBC
                     recordingBlockBytes.Clear();
                     transportPlaying = false;
                     paused = false;
-                    lastTraceState = null;
                     serialAcia.SetTapePlaying(false);
                     SilenceTapeTone();
                     FlushRecording(reloadTape: true);
-                    Trace($"record stop position={tapePositionCycles}/{totalTapeCycles}");
                     return false;
                 }
 
@@ -675,8 +615,6 @@ namespace BBC
                 transportPlaying = true;
                 fastTransport = FastTapeTransport.None;
                 paused = false;
-                lastTraceState = null;
-                Trace($"record position={tapePositionCycles}/{totalTapeCycles}");
                 return true;
             }
         }
@@ -692,8 +630,6 @@ namespace BBC
                 transportPlaying = true;
                 fastTransport = FastTapeTransport.None;
                 paused = false;
-                lastTraceState = null;
-                Trace($"play index={eventIndex}/{events.Count}");
                 return true;
             }
         }
@@ -713,11 +649,9 @@ namespace BBC
                 recordingBlockBytes.Clear();
                 fastTransport = FastTapeTransport.None;
                 playbackStarted = false;
-                lastTraceState = null;
                 serialAcia.SetTapePlaying(false);
                 SilenceTapeTone();
                 FlushRecording(reloadTape: true);
-                Trace($"stop index={eventIndex}/{events.Count}");
                 return true;
             }
         }
@@ -764,11 +698,9 @@ namespace BBC
                 recordingDataRunActive = false;
                 recordingBlockBytes.Clear();
                 playbackStarted = false;
-                lastTraceState = null;
                 serialAcia.SetTapePlaying(false);
                 SilenceTapeTone();
                 FlushRecording(reloadTape: true);
-                Trace($"{(mode == FastTapeTransport.Forward ? "fast-forward" : "rewind")} position={tapePositionCycles}/{totalTapeCycles}");
                 return true;
             }
         }
@@ -890,7 +822,6 @@ namespace BBC
                     recordingDataRunActive = false;
                     recordingBlockBytes.Clear();
                 }
-                Trace($"record byte ${value:X2} position={tapePositionCycles}/{totalTapeCycles}");
             }
         }
 
@@ -1067,21 +998,6 @@ namespace BBC
             }
         }
 
-        private void TraceStateOnce(string state)
-        {
-            if (!TraceEnabled)
-                return;
-
-            string next = eventIndex >= 0 && eventIndex < events.Count
-                ? events[eventIndex].Describe()
-                : "end";
-            string line = $"{state} index={eventIndex}/{events.Count} motor={(serialAcia.MotorRunning ? 1 : 0)} tape={(serialAcia.TapePlaying ? 1 : 0)} carrier={(serialAcia.CarrierPresent ? 1 : 0)} next={next}";
-            if (line == lastTraceState)
-                return;
-
-            lastTraceState = line;
-            Trace(line);
-        }
 
         private static int CharacterCycles(int bits)
         {
@@ -1388,8 +1304,6 @@ namespace BBC
 
         private static void AddBytes(List<TapeEvent> events, ReadOnlySpan<byte> data)
         {
-            events.Add(TapeEvent.ForTrace(DescribeImplicitData(data)));
-
             if (data.Length > 0 && data[0] == 0x2A)
                 events.Add(TapeEvent.ForByte(0xDC));
 
@@ -1407,7 +1321,6 @@ namespace BBC
             int stopBits = data[2] & 0x7F;
             int bitCount = 1 + dataBits + (parity == 'N' ? 0 : 1) + stopBits;
             ReadOnlySpan<byte> bytes = data[3..];
-            events.Add(TapeEvent.ForTrace($"defined-data {dataBits}{parity}{stopBits} bytes={bytes.Length}"));
             foreach (byte value in bytes)
                 events.Add(TapeEvent.ForByte(dataBits == 7 ? (byte)(value & 0x7F) : value, bitCount));
         }
@@ -1431,7 +1344,6 @@ namespace BBC
             if (beforeCycles > 0)
                 AddCarrier(events, beforeCycles);
 
-            events.Add(TapeEvent.ForTrace("carrier dummy byte $AA"));
             events.Add(TapeEvent.ForByte(0xAA));
 
             int afterCycles = CarrierCyclesToCpuCycles(ReadUInt16(data, 2));
@@ -1451,7 +1363,6 @@ namespace BBC
             int cycles = Math.Max(1, BbcClockHz / (2 * gap * UefCarrierCyclesPerSecond));
             if (cycles > 0)
             {
-                events.Add(TapeEvent.ForTrace($"integer-gap raw={gap} cycles={cycles}"));
                 events.Add(TapeEvent.ForGap(cycles));
             }
         }
@@ -1465,7 +1376,6 @@ namespace BBC
             if (seconds > 0)
             {
                 int cycles = (int)Math.Min(int.MaxValue, seconds * BbcClockHz);
-                events.Add(TapeEvent.ForTrace($"floating-gap seconds={seconds:0.000000} cycles={cycles}"));
                 events.Add(TapeEvent.ForGap(cycles));
             }
         }
@@ -1481,51 +1391,10 @@ namespace BBC
             if (cycles <= 0)
                 return;
 
-            events.Add(TapeEvent.ForTrace($"carrier cycles={cycles}"));
             events.Add(TapeEvent.ForCarrierDetect());
             events.Add(TapeEvent.ForCarrier(cycles));
         }
 
-        private static string DescribeImplicitData(ReadOnlySpan<byte> data)
-        {
-            if (data.Length == 0)
-                return "implicit-data bytes=0";
-
-            if (data.Length == 1)
-                return $"implicit-data byte=${data[0]:X2}";
-
-            if (data[0] != 0x2A)
-                return $"implicit-data bytes={data.Length} first=${data[0]:X2}";
-
-            int nameEnd = data[1..].IndexOf((byte)0x00);
-            if (nameEnd < 0)
-                return $"bbc-block bytes={data.Length} unterminated-name";
-
-            nameEnd++;
-            int header = nameEnd + 1;
-            if (header + 19 > data.Length)
-                return $"bbc-block name='{FormatTapeName(data[1..nameEnd])}' bytes={data.Length} short-header";
-
-            uint load = ReadUInt32(data, header);
-            uint exec = ReadUInt32(data, header + 4);
-            ushort block = ReadUInt16(data, header + 8);
-            ushort length = ReadUInt16(data, header + 10);
-            byte flags = data[header + 12];
-            return $"bbc-block name='{FormatTapeName(data[1..nameEnd])}' block={block} len=${length:X4} flags=${flags:X2} load=${load:X8} exec=${exec:X8} chunk-bytes={data.Length}";
-        }
-
-        private static string FormatTapeName(ReadOnlySpan<byte> name)
-        {
-            StringWriter writer = new StringWriter();
-            foreach (byte value in name)
-            {
-                if (value >= 0x20 && value < 0x7F && value != '\\' && value != '\'')
-                    writer.Write((char)value);
-                else
-                    writer.Write($"\\x{value:X2}");
-            }
-            return writer.ToString();
-        }
 
         private static ushort ReadUInt16(ReadOnlySpan<byte> data, int offset)
         {
@@ -1548,25 +1417,6 @@ namespace BBC
                 | (data[offset + 3] << 24));
         }
 
-        private static void Trace(string message)
-        {
-            if (!TraceEnabled)
-                return;
-
-            string line = $"[tape] {message}";
-            lock (TraceSync)
-            {
-                if (!traceStarted)
-                {
-                    File.WriteAllText(TracePath, string.Empty);
-                    traceStarted = true;
-                }
-
-                File.AppendAllText(TracePath, line + Environment.NewLine);
-            }
-
-            Console.WriteLine(line);
-        }
 
         private static void WriteString(BinaryWriter writer, string? value)
         {
@@ -1585,8 +1435,7 @@ namespace BBC
             Byte,
             Carrier,
             CarrierDetect,
-            Gap,
-            Trace
+            Gap
         }
 
         private enum FastTapeTransport
@@ -1598,44 +1447,26 @@ namespace BBC
 
         private readonly record struct ParsedUefTape(List<TapeEvent> Events, bool Recordable);
 
-        private readonly record struct TapeEvent(TapeEventKind Kind, byte Byte, int Cycles, int BitCount, string? Label)
+        private readonly record struct TapeEvent(TapeEventKind Kind, byte Byte, int Cycles, int BitCount)
         {
             public static TapeEvent ForByte(byte value, int bitCount = 10)
             {
-                return new TapeEvent(TapeEventKind.Byte, value, 0, bitCount, null);
+                return new TapeEvent(TapeEventKind.Byte, value, 0, bitCount);
             }
 
             public static TapeEvent ForCarrier(int cycles)
             {
-                return new TapeEvent(TapeEventKind.Carrier, 0, cycles, 0, null);
+                return new TapeEvent(TapeEventKind.Carrier, 0, cycles, 0);
             }
 
             public static TapeEvent ForCarrierDetect()
             {
-                return new TapeEvent(TapeEventKind.CarrierDetect, 0, 0, 0, null);
+                return new TapeEvent(TapeEventKind.CarrierDetect, 0, 0, 0);
             }
 
             public static TapeEvent ForGap(int cycles)
             {
-                return new TapeEvent(TapeEventKind.Gap, 0, cycles, 0, null);
-            }
-
-            public static TapeEvent ForTrace(string label)
-            {
-                return new TapeEvent(TapeEventKind.Trace, 0, 0, 0, label);
-            }
-
-            public string Describe()
-            {
-                return Kind switch
-                {
-                    TapeEventKind.Byte => $"byte ${Byte:X2}",
-                    TapeEventKind.Carrier => $"carrier {Cycles}",
-                    TapeEventKind.CarrierDetect => "carrier-detect",
-                    TapeEventKind.Gap => $"gap {Cycles}",
-                    TapeEventKind.Trace => Label ?? "trace",
-                    _ => Kind.ToString()
-                };
+                return new TapeEvent(TapeEventKind.Gap, 0, cycles, 0);
             }
         }
     }

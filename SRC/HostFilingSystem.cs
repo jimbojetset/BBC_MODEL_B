@@ -27,7 +27,6 @@ namespace BBC
         private const ushort OsbyteEntry = 0xFFF4;
         private const ushort FscvVector = 0x021E;
         private const ushort DefaultBasicLoadAddress = 0x1900;
-        private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_OSCLI_TRACE") == "1";
         private readonly FlatMemoryBus memory;
         private HostFile[] files = [];
         private string currentDirectory = "$";
@@ -96,9 +95,6 @@ namespace BBC
             string requestedName = ReadOsString(ReadWord(controlBlock));
             HostFile? matchedFile = FindFile(requestedName);
 
-            if (TraceEnabled)
-                Trace($"OSFILE action=${action:X2} name=\"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
-
             if (!matchedFile.HasValue)
             {
                 cpu.registers.A = 0;
@@ -135,9 +131,6 @@ namespace BBC
             string command = ReadOsString(commandAddress).Trim();
             if (command.StartsWith('*'))
                 command = command[1..].TrimStart();
-
-            if (TraceEnabled)
-                Trace($"OSCLI \"{command}\"");
 
             if (command.StartsWith('/'))
                 command = "RUN " + command[1..].TrimStart();
@@ -237,9 +230,6 @@ namespace BBC
             {
                 HostFile? matchedLoadFile = FindFile(loadName);
 
-                if (TraceEnabled)
-                    Trace($"LOAD \"{loadName}\" match=\"{matchedLoadFile?.Name ?? "<none>"}\"");
-
                 if (!matchedLoadFile.HasValue)
                 {
                     return false;
@@ -260,9 +250,6 @@ namespace BBC
             }
 
             HostFile? matchedFile = FindFile(requestedName);
-
-            if (TraceEnabled)
-                Trace($"RUN \"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
 
             if (!matchedFile.HasValue)
             {
@@ -289,9 +276,6 @@ namespace BBC
 
             string requestedName = ReadOsString((ushort)(cpu.registers.X | (cpu.registers.Y << 8))).Trim();
             HostFile? matchedFile = FindFile(requestedName);
-
-            if (TraceEnabled)
-                Trace($"FSCV A=${cpu.registers.A:X2} name=\"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
 
             if (!matchedFile.HasValue)
             {
@@ -327,9 +311,6 @@ namespace BBC
                 return false;
 
             HostFile? matchedFile = FindFile(requestedName);
-
-            if (TraceEnabled)
-                Trace($"EXEC \"{requestedName}\" match=\"{matchedFile?.Name ?? "<none>"}\"");
 
             if (!matchedFile.HasValue)
                 return false;
@@ -404,9 +385,6 @@ namespace BBC
             bool enabled = !option.StartsWith("OFF", StringComparison.OrdinalIgnoreCase);
             MouseEnabledChanged?.Invoke(enabled);
 
-            if (TraceEnabled)
-                Trace($"MOUSE enabled={enabled}");
-
             return MouseCommandFallbackEnabled;
         }
 
@@ -423,9 +401,6 @@ namespace BBC
             string option = trimmed.Length == 7 ? "ON" : trimmed[7..].TrimStart();
             bool enabled = !option.StartsWith("OFF", StringComparison.OrdinalIgnoreCase);
             MouseEnabledChanged?.Invoke(enabled);
-
-            if (TraceEnabled)
-                Trace($"POINTER mouse enabled={enabled}");
 
             return MouseCommandFallbackEnabled;
         }
@@ -651,9 +626,6 @@ namespace BBC
                 ? "$"
                 : char.ToUpperInvariant(directory[0]).ToString();
 
-            if (TraceEnabled)
-                Trace($"DIR current=\"{currentDirectory}\"");
-
             return true;
         }
 
@@ -676,12 +648,6 @@ namespace BBC
                 trimmed = trimmed[1..].TrimStart();
 
             return trimmed;
-        }
-
-        private static void Trace(string message)
-        {
-            if (TraceEnabled)
-                Console.WriteLine($"HOSTFS {message}");
         }
 
         private static string GetLeafName(string name)
