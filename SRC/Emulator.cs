@@ -2250,6 +2250,8 @@ namespace BBC
                 if (version != SaveStateVersion)
                     throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
+                Display?.ClearScreenToBlack();
+
                 Cpu.LoadState(reader);
                 ReadByteArray(reader, Memory.Memory, "main memory");
                 ReadByteArray(reader, sidewaysRoms, "sideways ROM/RAM");

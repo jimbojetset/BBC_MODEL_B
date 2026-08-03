@@ -826,6 +826,19 @@ namespace BBC
             frameTextureDirtyRect = new SdlRect(unionLeft, unionTop, unionRight - unionLeft, unionBottom - unionTop);
         }
 
+        public void ClearScreenToBlack()
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+
+            Array.Fill(frameBuffer, Black);
+            MarkFrameDirty();
+            UpdateFrameTextureIfDirty();
+
+            ThrowIfSdlFailed(SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255), "SDL_SetRenderDrawColor");
+            ThrowIfSdlFailed(SDL_RenderClear(renderer), "SDL_RenderClear");
+            SDL_RenderPresent(renderer);
+        }
+
         public void Present()
         {
             ObjectDisposedException.ThrowIf(disposed, this);
