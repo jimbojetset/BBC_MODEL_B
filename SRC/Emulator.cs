@@ -27,6 +27,12 @@ namespace BBC
 
         private static void Main(string[] args)
         {
+            if (args.Any(arg => string.Equals(arg, "--help", StringComparison.OrdinalIgnoreCase)))
+            {
+                PrintCommandLineHelp();
+                return;
+            }
+
             using Emulator emulator = new Emulator();
             StartupOptions options = ParseStartupOptions(args);
 
@@ -107,6 +113,61 @@ namespace BBC
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
             else
                 emulator.Run();
+        }
+
+        private static void PrintCommandLineHelp()
+        {
+            Console.WriteLine("""
+BBC Model B emulator
+
+Usage:
+  dotnet run --project BBC_MODEL_B.csproj -- [OPTIONS] [PATH ...]
+  dotnet BBC_MODEL_B.dll [OPTIONS] [PATH ...]
+
+Options:
+  --help                  Show this help and exit.
+
+  --disc PATH             Mount a disc image, tape image, or host file.
+  --disk PATH             Alias for --disc.
+  --file PATH             Alias for --disc.
+  --tape PATH             Enable the tape player and mount a UEF tape.
+  --drive0 PATH           Enable physical drive 0 and mount media.
+  --drive1 PATH           Enable physical drive 1 and mount media.
+  --drive2 PATH           Mount an SSD in DFS logical drive 2.
+  --drive3 PATH           Mount an SSD in DFS logical drive 3.
+
+  --blank-ssd PATH        Create a blank SSD image if it does not exist, then mount it.
+  --blank-dsd PATH        Create a blank DSD image if it does not exist, then mount it.
+
+  --boot-disc             Boot mounted discs (the default).
+  --no-boot-disc          Mount media and leave the BBC at BASIC.
+  --no-autoboot           Alias for --no-boot-disc.
+  --type TEXT             Type text into the BBC keyboard buffer after boot.
+                         May be supplied more than once.
+  --load-state PATH       Restore a .sav state before running.
+  --headless-ms N         Run without a window for N milliseconds; N must be positive.
+  --print-autoload PATH   Print the !BOOT command for a bootable DFS image and exit.
+
+  --tube-6502             Start with the 65C02 Tube co-processor enabled.
+  --tube-enable           Alias for --tube-6502.
+  --tube-host-rom PATH    Use a non-default Tube host ROM.
+  --tube-6502-rom PATH    Use a non-default Tube 65C02 ROM.
+  --modem                 Start with the Hayes modem enabled.
+  --print                 Start with the dot-matrix printer enabled.
+
+Arguments:
+  PATH                    Mount a disc image, tape image, or host file. Disc images
+                          boot by default; tape images enable the tape player.
+
+Examples:
+  dotnet run --project BBC_MODEL_B.csproj -- game.ssd
+  dotnet run --project BBC_MODEL_B.csproj -- --drive0 game.ssd --drive1 data.dsd
+  dotnet run --project BBC_MODEL_B.csproj -- --tape Games/game.uef
+  dotnet run --project BBC_MODEL_B.csproj -- --blank-ssd work.ssd --no-autoboot
+  dotnet run --project BBC_MODEL_B.csproj -- --type "*CAT" --type "RUN"
+  dotnet run --project BBC_MODEL_B.csproj -- --headless-ms 5000 game.ssd
+  dotnet BBC_MODEL_B.dll --tube-6502 --modem
+""");
         }
 
         private static StartupOptions ParseStartupOptions(string[] args)
