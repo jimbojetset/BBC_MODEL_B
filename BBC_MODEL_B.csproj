@@ -32,6 +32,10 @@
     <EmbeddedResource Include="Assets\CassetteLoaded.png" LogicalName="BBC.CassetteLoaded.png" Condition="Exists('Assets\CassetteLoaded.png')" />
     <None Remove="Assets\BBC_Logo.png" Condition="Exists('Assets\BBC_Logo.png')" />
     <EmbeddedResource Include="Assets\BBC_Logo.png" LogicalName="BBC.BBC_Logo.png" Condition="Exists('Assets\BBC_Logo.png')" />
+    <None Remove="Assets\fx80.png" Condition="Exists('Assets\fx80.png')" />
+    <EmbeddedResource Include="Assets\fx80.png" LogicalName="BBC.fx80.png" Condition="Exists('Assets\fx80.png')" />
+    <None Remove="Assets\fx80-front.png" Condition="Exists('Assets\fx80-front.png')" />
+    <EmbeddedResource Include="Assets\fx80-front.png" LogicalName="BBC.fx80-front.png" Condition="Exists('Assets\fx80-front.png')" />
     <None Remove="Assets\DotMatrix-Regular.ttf" Condition="Exists('Assets\DotMatrix-Regular.ttf')" />
     <EmbeddedResource Include="Assets\DotMatrix-Regular.ttf" LogicalName="BBC.DotMatrix-Regular.ttf" Condition="Exists('Assets\DotMatrix-Regular.ttf')" />
     <None Update="ROMS\*.rom">

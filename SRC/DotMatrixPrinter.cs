@@ -23,14 +23,17 @@ namespace BBC
         private const int PrinterDpi = 240;
         private const int PageWidthDots = 1984;
         private const int PageHeightDots = 2806;
-        private const int PaperViewWidth = 595;
-        private const int PaperViewHeight = 842;
-        private const int ScrollBarWidth = 18;
+        private const int PaperViewWidth = 350;
+        private const int PaperViewHeight = 495;
+        private const int PaperSideMargin = 20;
+        private const int PaperWidth = PaperViewWidth + PaperSideMargin * 2;
         private const int PageGap = 6;
         private const int PreviewRefreshIntervalMs = 16;
-        private const int WindowWidth = PaperViewWidth + ScrollBarWidth;
+        private const int WindowWidth = 743;
+        private const int PaperViewLeft = (WindowWidth - PaperViewWidth) / 2 - 47;
+        private const int PaperLeft = PaperViewLeft - PaperSideMargin;
         private const int PaperAreaHeight = PaperViewHeight;
-        private const int WindowHeight = PaperAreaHeight;
+        private const int WindowHeight = PaperAreaHeight + 197;
         private const int DefaultLeftMarginDots = 32;
         private const int TopMarginDots = 120;
         private const int DefaultRightMarginDots = PageWidthDots - 32;
@@ -52,6 +55,10 @@ namespace BBC
         private const uint SDL_RENDERER_SOFTWARE = 0x00000001;
         private const uint SDL_PIXELFORMAT_ARGB8888 = 0x16362004;
         private const int SDL_TEXTUREACCESS_STREAMING = 1;
+        private const int SDL_TEXTUREACCESS_STATIC = 0;
+        private const int SDL_BLENDMODE_BLEND = 1;
+        private const string PrinterImageResourceName = "BBC.fx80.png";
+        private const string PrinterFrontImageResourceName = "BBC.fx80-front.png";
         private const uint SDL_WINDOWEVENT = 0x200;
         private const byte SDL_WINDOWEVENT_CLOSE = 14;
         private const uint SDL_KEYDOWN = 0x300;
@@ -83,6 +90,12 @@ namespace BBC
         private SKTypeface? printerTypeface;
         private IntPtr window;
         private IntPtr renderer;
+        private IntPtr printerTexture;
+        private int printerTextureWidth;
+        private int printerTextureHeight;
+        private IntPtr printerFrontTexture;
+        private int printerFrontTextureWidth;
+        private int printerFrontTextureHeight;
         private bool disposed;
         private bool enabled;
         private int x;
@@ -416,22 +429,41 @@ namespace BBC
             DrainInputFifo();
             UpdateScrollBounds();
 
-            SDL_SetRenderDrawColor(renderer, 188, 190, 190, 255);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             SDL_RenderClear(renderer);
+
+            if (printerTexture != IntPtr.Zero)
+            {
+                int height = printerTextureHeight * WindowWidth / printerTextureWidth;
+                SdlRect destination = new SdlRect(0, WindowHeight - height, WindowWidth, height);
+                SDL_RenderCopy(renderer, printerTexture, IntPtr.Zero, ref destination);
+            }
 
             for (int i = 0; i < pages.Count; i++)
             {
-                int top = (i * (PaperViewHeight + PageGap)) - scrollOffset;
+                int pagesBehindPrintHead = pages.Count - 1 - i;
+                int top = ActivePageTop() - pagesBehindPrintHead * (PaperViewHeight + PageGap) - scrollOffset;
                 if (top > WindowHeight || top + PaperViewHeight < 0)
                     continue;
 
                 Page page = pages[i];
                 UpdatePageTexture(page);
-                SdlRect destination = new SdlRect(0, top, PaperViewWidth, PaperViewHeight);
+
+                SDL_SetRenderDrawColor(renderer, 248, 248, 240, 255);
+                SdlRect paper = new SdlRect(PaperLeft, top, PaperWidth, PaperViewHeight);
+                SDL_RenderFillRect(renderer, ref paper);
+
+                SdlRect destination = new SdlRect(PaperViewLeft, top, PaperViewWidth, PaperViewHeight);
                 SDL_RenderCopy(renderer, page.Texture, IntPtr.Zero, ref destination);
             }
 
-            DrawScrollBar();
+            if (printerFrontTexture != IntPtr.Zero)
+            {
+                int height = printerFrontTextureHeight * WindowWidth / printerFrontTextureWidth;
+                SdlRect destination = new SdlRect(0, WindowHeight - height, WindowWidth, height);
+                SDL_RenderCopy(renderer, printerFrontTexture, IntPtr.Zero, ref destination);
+            }
+
             SDL_RenderPresent(renderer);
         }
 
@@ -529,6 +561,11 @@ namespace BBC
 
             printerTypeface?.Dispose();
 
+            if (printerTexture != IntPtr.Zero)
+                SDL_DestroyTexture(printerTexture);
+            if (printerFrontTexture != IntPtr.Zero)
+                SDL_DestroyTexture(printerFrontTexture);
+
             if (renderer != IntPtr.Zero)
                 SDL_DestroyRenderer(renderer);
 
@@ -602,7 +639,15 @@ namespace BBC
             pages.Add(new Page());
             x = leftMarginDots;
             y = TopMarginDots;
-            scrollOffset = Math.Max(0, DocumentHeight() - PaperAreaHeight);
+            scrollOffset = 0;
+        }
+
+        private int ActivePageTop()
+        {
+            int lineHeightDots = Math.Max(lineFeedDots, PrinterFontSizeDots + 8);
+            int lineBottom = Math.Min(PageHeightDots, y + lineHeightDots);
+            int lineBottomOnPaper = (lineBottom * PaperViewHeight + PageHeightDots - 1) / PageHeightDots;
+            return PaperViewHeight - lineBottomOnPaper;
         }
 
         private void FinishEscCommand()
@@ -1235,6 +1280,48 @@ namespace BBC
                 renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
             if (renderer == IntPtr.Zero)
                 throw new InvalidOperationException($"SDL_CreateRenderer failed: {GetSdlError()}");
+
+            printerTexture = CreatePrinterTexture(PrinterImageResourceName, out printerTextureWidth, out printerTextureHeight);
+            printerFrontTexture = CreatePrinterTexture(PrinterFrontImageResourceName, out printerFrontTextureWidth, out printerFrontTextureHeight);
+        }
+
+        private IntPtr CreatePrinterTexture(string resourceName, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+            using Stream? resource = typeof(DotMatrixPrinter).Assembly.GetManifestResourceStream(resourceName);
+            if (resource is null)
+                return IntPtr.Zero;
+
+            using SKBitmap bitmap = SKBitmap.Decode(resource);
+            width = bitmap.Width;
+            height = bitmap.Height;
+
+            uint[] pixels = new uint[bitmap.Width * bitmap.Height];
+            SKColor[] colours = bitmap.Pixels;
+            for (int i = 0; i < colours.Length; i++)
+            {
+                SKColor colour = colours[i];
+                pixels[i] = (uint)(colour.Alpha << 24 | colour.Red << 16 | colour.Green << 8 | colour.Blue);
+            }
+
+            IntPtr texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, bitmap.Width, bitmap.Height);
+            if (texture == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            _ = SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try
+            {
+                SdlRect rect = new SdlRect(0, 0, bitmap.Width, bitmap.Height);
+                _ = SDL_UpdateTexture(texture, ref rect, handle.AddrOfPinnedObject(), bitmap.Width * sizeof(uint));
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            return texture;
         }
 
         private void UpdatePageTexture(Page page)
@@ -1321,20 +1408,6 @@ namespace BBC
             uint averagedGreen = (uint)(green / samples);
             uint averagedBlue = (uint)(blue / samples);
             return 0xFF000000u | (averagedRed << 16) | (averagedGreen << 8) | averagedBlue;
-        }
-
-        private void DrawScrollBar()
-        {
-            SDL_SetRenderDrawColor(renderer, 68, 70, 74, 255);
-            SdlRect track = new SdlRect(PaperViewWidth, 0, ScrollBarWidth, PaperAreaHeight);
-            SDL_RenderFillRect(renderer, ref track);
-
-            int documentHeight = DocumentHeight();
-            int thumbHeight = Math.Max(32, PaperAreaHeight * PaperAreaHeight / Math.Max(PaperAreaHeight, documentHeight));
-            int thumbTop = documentHeight <= PaperAreaHeight ? 0 : scrollOffset * (PaperAreaHeight - thumbHeight) / (documentHeight - PaperAreaHeight);
-            SDL_SetRenderDrawColor(renderer, 188, 190, 194, 255);
-            SdlRect thumb = new SdlRect(PaperViewWidth + 3, thumbTop + 3, ScrollBarWidth - 6, Math.Max(8, thumbHeight - 6));
-            SDL_RenderFillRect(renderer, ref thumb);
         }
 
         private void Scroll(int wheelY)
@@ -1810,6 +1883,7 @@ namespace BBC
         [DllImport("SDL2")] private static extern void SDL_DestroyRenderer(IntPtr renderer);
         [DllImport("SDL2")] private static extern IntPtr SDL_CreateTexture(IntPtr renderer, uint format, int access, int w, int h);
         [DllImport("SDL2")] private static extern void SDL_DestroyTexture(IntPtr texture);
+        [DllImport("SDL2")] private static extern int SDL_SetTextureBlendMode(IntPtr texture, int blendMode);
         [DllImport("SDL2")] private static extern int SDL_UpdateTexture(IntPtr texture, ref SdlRect rect, IntPtr pixels, int pitch);
         [DllImport("SDL2")] private static extern int SDL_SetRenderDrawColor(IntPtr renderer, byte r, byte g, byte b, byte a);
         [DllImport("SDL2")] private static extern int SDL_RenderClear(IntPtr renderer);
