@@ -21,7 +21,10 @@ namespace BBC.CPU
         public byte S { get; set; }
 
         public byte P
-        { get { return Flags.GetFlagsAsByte(); } set { Flags.SetFlagsFromByte(value); } }
+        { 
+            get { return Flags.GetFlagsAsByte(); } 
+            set { Flags.SetFlagsFromByte(value); } 
+        }
 
         public byte A { get; set; }
 

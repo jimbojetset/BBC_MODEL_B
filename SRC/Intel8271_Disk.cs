@@ -73,8 +73,6 @@ namespace BBC
         private bool busy;
         private bool imageDirty;
         private bool writeProtected;
-        private StreamWriter? traceWriter;
-        private string? tracePath;
 
         public Intel8271_Disk()
         {
@@ -145,8 +143,6 @@ namespace BBC
             ? "*EXEC !BOOT"
             : null;
 
-        public bool TraceEnabled => traceWriter is not null;
-
         public bool NmiLineAsserted => nmiPending && nmiDelayCycles <= 0;
 
         public event Action<int>? DriveMotorStarted;
@@ -156,32 +152,6 @@ namespace BBC
         public event Action<int, int>? DriveSeek;
 
         private int ActiveDrive => selectedDrive + ((specialRegisters[0x23] & 0x20) != 0 ? 2 : 0);
-
-        public void StartTrace(string path)
-        {
-            StopTrace();
-            tracePath = Path.GetFullPath(path);
-            traceWriter = new StreamWriter(tracePath, append: false, Encoding.UTF8)
-            {
-                AutoFlush = true
-            };
-
-            if (TraceEnabled)
-                Trace("TRACE START");
-        }
-
-        public string? StopTrace()
-        {
-            if (traceWriter is null)
-                return tracePath;
-
-            if (TraceEnabled)
-                Trace("TRACE STOP");
-
-            traceWriter.Dispose();
-            traceWriter = null;
-            return tracePath;
-        }
 
         /// <summary>DFS option 3 boots by EXECing !BOOT, not by CHAINing it.</summary>
         public bool TryGetBootExecScript(out string? script)
@@ -630,9 +600,6 @@ namespace BBC
             nmiPending = false;
             busy = readData.Count > 0 || pendingWrite is not null;
 
-            if (TraceEnabled)
-                Trace($"RESULT read ${value:X2} drive={selectedDrive} readBytes={readData.Count} pendingWrite={pendingWrite is not null}");
-
             return value;
         }
 
@@ -680,9 +647,6 @@ namespace BBC
             resultAvailable = false;
             busy = true;
 
-            if (TraceEnabled)
-                Trace($"CMD ${command:X2} op=${command & 0x3F:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive}");
-
             if (GetParameterCount(command) == 0)
                 ExecuteCommand();
         }
@@ -693,9 +657,6 @@ namespace BBC
                 return;
 
             parameters.Add(value);
-
-            if (TraceEnabled)
-                Trace($"PARAM[{parameters.Count - 1}] ${value:X2}");
 
             if (parameters.Count >= GetParameterCount(command))
                 ExecuteCommand();
@@ -720,9 +681,6 @@ namespace BBC
                 writeData.Clear();
                 Flush();
 
-                if (TraceEnabled)
-                    Trace($"WRITE complete bytes={byteCount}");
-
                 SetResult(ResultOk);
             }
             else
@@ -734,9 +692,6 @@ namespace BBC
         private void ExecuteCommand()
         {
             byte opcode = (byte)(command & 0x3F);
-
-            if (TraceEnabled)
-                Trace($"EXEC op=${opcode:X2} drive={selectedDrive} params={string.Join(' ', parameters.Select(p => $"${p:X2}"))}");
 
             switch (opcode)
             {
@@ -805,9 +760,6 @@ namespace BBC
                     // which completes with the normal "Disk fault 18" result.
                     SetPolledResult(0x45);
 
-                    if (TraceEnabled)
-                        Trace($"DRIVE STATUS result=${result:X2} commandDrive={(command >> 6) & 0x03} selectedDrive={selectedDrive} activeDrive={ActiveDrive}");
-
                     break;
 
                 case 0x35:
@@ -817,18 +769,12 @@ namespace BBC
                 case 0x3A:
                     specialRegisters[parameters[0] & 0x3F] = parameters[1];
 
-                    if (TraceEnabled)
-                        Trace($"SPECIAL WRITE reg=${parameters[0] & 0x3F:X2} value=${parameters[1]:X2}");
-
                     SetPolledResult(ResultOk);
                     break;
 
                 case 0x3D:
                     int specialRegister = parameters[0] & 0x3F;
                     SetPolledResult(specialRegisters[specialRegister]);
-
-                    if (TraceEnabled)
-                        Trace($"SPECIAL READ reg=${specialRegister:X2} result=${result:X2}");
 
                     break;
 
@@ -871,9 +817,6 @@ namespace BBC
             }
 
             SetDriveActivityLed(drive, readData.Count > 0);
-
-            if (TraceEnabled)
-                Trace($"READ queued drive={drive} track={track} sector={sector} size={sectorSize} count={count} bytes={readData.Count}");
 
             RequestNmi(BeginMediaAccess(track, sector));
         }
@@ -935,9 +878,6 @@ namespace BBC
             writeData.Clear();
             SetDriveActivityLed(drive, true);
 
-            if (TraceEnabled)
-                Trace($"WRITE prepared drive={drive} track={track} sector={sector} size={sectorSize} count={count}");
-
             RequestNmi(BeginMediaAccess(track, sector));
         }
 
@@ -980,9 +920,6 @@ namespace BBC
             }
 
             SetDriveActivityLed(drive, readData.Count > 0);
-
-            if (TraceEnabled)
-                Trace($"READID queued drive={drive} track={track} count={sectorCount} bytes={readData.Count}");
 
             RequestNmi(BeginMediaAccess(track, 0));
         }
@@ -1072,9 +1009,6 @@ namespace BBC
             resultAvailable = true;
             busy = false;
 
-            if (TraceEnabled)
-                Trace($"RESULT ${value:X2} delay={nmiDelayCycles} drive={selectedDrive} readBytes={readData.Count} pendingWrite={pendingWrite is not null}");
-
             RequestNmi(nmiDelayCycles);
         }
 
@@ -1101,11 +1035,6 @@ namespace BBC
         private bool IsDriveReady(int drive)
         {
             return drive >= 0 && drive < drives.Length && driveMounted[drive] && drives[drive].Length > 0;
-        }
-
-        private void Trace(string message)
-        {
-            traceWriter?.WriteLine($"{elapsedCycles,12} {message}");
         }
 
         private static void AdvanceSector(ref int track, ref int sector)

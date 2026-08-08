@@ -117,21 +117,8 @@ namespace BBC
         private const int BottomOverlayContentOffsetY = 20;
         private const byte OverlayTextGrey = 80;
         private const int NotificationDurationMilliseconds = 15000;
-        private const int NotificationMargin = 28;
-        private const int NotificationPadding = 18;
-        private const int NotificationGap = 12;
-        private const int NotificationTitleCellWidth = 16;
-        private const int NotificationTitleCellHeight = 20;
-        private const int NotificationBodyCellWidth = 12;
-        private const int NotificationBodyCellHeight = 15;
         private const int NotificationGlyphWidth = 5;
         private const int NotificationGlyphHeight = 7;
-        private const uint NotificationShadow = 0xFF000000;
-        private const uint NotificationBackground = 0xFF101010;
-        private const uint NotificationBorder = 0xFFE2E2E2;
-        private const uint NotificationAccent = 0xFFFFD75E;
-        private const uint NotificationTitleColour = 0xFFFFFFFF;
-        private const uint NotificationBodyColour = 0xFFEAEAEA;
         private const short JoystickAxisThreshold = 12000;
 
         private readonly uint[] frameBuffer;
@@ -155,7 +142,6 @@ namespace BBC
         private int pendingScreenshotRequests;
         private int pendingPrintScreenRequests;
         private int suppressedTextInputCharacters;
-        private int pendingTraceToggleRequests;
         private int pendingSoundToggleRequests;
         private int pendingPauseToggleRequests;
         private int pendingTapePauseToggleRequests;
@@ -690,13 +676,6 @@ namespace BBC
             return true;
         }
 
-        public int DrainTraceToggleRequests()
-        {
-            int count = pendingTraceToggleRequests;
-            pendingTraceToggleRequests = 0;
-            return count;
-        }
-
         public int DrainSoundToggleRequests()
         {
             int count = pendingSoundToggleRequests;
@@ -824,6 +803,19 @@ namespace BBC
             int unionRight = Math.Max(frameTextureDirtyRect.X + frameTextureDirtyRect.W, rect.X + rect.W);
             int unionBottom = Math.Max(frameTextureDirtyRect.Y + frameTextureDirtyRect.H, rect.Y + rect.H);
             frameTextureDirtyRect = new SdlRect(unionLeft, unionTop, unionRight - unionLeft, unionBottom - unionTop);
+        }
+
+        public void ClearScreenToBlack()
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+
+            Array.Fill(frameBuffer, Black);
+            MarkFrameDirty();
+            UpdateFrameTextureIfDirty();
+
+            ThrowIfSdlFailed(SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255), "SDL_SetRenderDrawColor");
+            ThrowIfSdlFailed(SDL_RenderClear(renderer), "SDL_RenderClear");
+            SDL_RenderPresent(renderer);
         }
 
         public void Present()
@@ -3772,116 +3764,6 @@ namespace BBC
             }
         }
 
-        private void DrawNotificationOverlay()
-        {
-            if (notificationVisibleUntilTicks <= Stopwatch.GetTimestamp()
-                || (notificationTitle.Length == 0 && notificationBody.Length == 0))
-            {
-                return;
-            }
-
-            int maxPanelWidth = Width - (NotificationMargin * 2);
-            int bodyColumns = Math.Max(1, (maxPanelWidth - (NotificationPadding * 2)) / NotificationBodyCellWidth);
-            List<string> bodyLines = WrapNotificationText(notificationBody, bodyColumns);
-            int titleColumns = Math.Max(1, (maxPanelWidth - (NotificationPadding * 2)) / NotificationTitleCellWidth);
-            List<string> titleLines = WrapNotificationText(notificationTitle, titleColumns);
-
-            int titleWidth = titleLines.Count == 0 ? 0 : titleLines.Max(line => line.Length) * NotificationTitleCellWidth;
-            int bodyWidth = bodyLines.Count == 0 ? 0 : bodyLines.Max(line => line.Length) * NotificationBodyCellWidth;
-            int contentWidth = Math.Max(titleWidth, bodyWidth);
-            int panelWidth = Math.Min(maxPanelWidth, contentWidth + (NotificationPadding * 2));
-            int titleHeight = titleLines.Count * NotificationTitleCellHeight;
-            int bodyHeight = bodyLines.Count * NotificationBodyCellHeight;
-            int panelHeight = NotificationPadding + titleHeight + NotificationGap + bodyHeight + NotificationPadding;
-            int x = (Width - panelWidth) / 2;
-            int y = (Height - panelHeight) / 2;
-
-            FillPixelRect(frameBuffer, Width, Height, x + 4, y + 5, panelWidth, panelHeight, NotificationShadow);
-            FillPixelRect(frameBuffer, Width, Height, x, y, panelWidth, panelHeight, NotificationBackground);
-            DrawPixelRectOutline(frameBuffer, Width, Height, x, y, panelWidth, panelHeight, NotificationBorder);
-            FillPixelRect(frameBuffer, Width, Height, x, y, 6, panelHeight, NotificationAccent);
-
-            int textX = x + NotificationPadding;
-            int textY = y + NotificationPadding;
-            foreach (string line in titleLines)
-            {
-                DrawNotificationText(line, textX, textY, NotificationTitleCellWidth, NotificationTitleCellHeight, NotificationTitleColour);
-                textY += NotificationTitleCellHeight;
-            }
-
-            textY += NotificationGap;
-            foreach (string line in bodyLines)
-            {
-                DrawNotificationText(line, textX, textY, NotificationBodyCellWidth, NotificationBodyCellHeight, NotificationBodyColour);
-                textY += NotificationBodyCellHeight;
-            }
-        }
-
-        private void DrawNotificationText(string text, int x, int y, int cellWidth, int cellHeight, uint colour)
-        {
-            int scale = Math.Max(1, Math.Min(cellWidth / (NotificationGlyphWidth + 1), cellHeight / NotificationGlyphHeight));
-            int glyphPixelWidth = NotificationGlyphWidth * scale;
-            int glyphPixelHeight = NotificationGlyphHeight * scale;
-            int glyphYOffset = Math.Max(0, (cellHeight - glyphPixelHeight) / 2);
-
-            for (int i = 0; i < text.Length; i++)
-            {
-                int charX = x + (i * cellWidth);
-                byte[] glyph = NotificationFont.GetRows(text[i]);
-                int glyphXOffset = Math.Max(0, (cellWidth - glyphPixelWidth) / 2);
-
-                for (int row = 0; row < glyph.Length; row++)
-                {
-                    byte mask = glyph[row];
-                    for (int column = 0; column < NotificationGlyphWidth; column++)
-                    {
-                        if ((mask & (1 << (NotificationGlyphWidth - 1 - column))) == 0)
-                            continue;
-
-                        FillPixelRect(
-                            frameBuffer,
-                            Width,
-                            Height,
-                            charX + glyphXOffset + (column * scale),
-                            y + glyphYOffset + (row * scale),
-                            scale,
-                            scale,
-                            colour);
-                    }
-                }
-            }
-        }
-
-        private static List<string> WrapNotificationText(string text, int columns)
-        {
-            List<string> lines = new List<string>();
-            foreach (string paragraph in text.Replace('\r', '\n').Split('\n'))
-            {
-                string remaining = paragraph.Trim();
-                if (remaining.Length == 0)
-                {
-                    lines.Add(string.Empty);
-                    continue;
-                }
-
-                while (remaining.Length > columns)
-                {
-                    int split = remaining.LastIndexOfAny([' ', '/', '\\', '-'], columns);
-                    if (split <= 0)
-                        split = columns;
-
-                    int take = split == columns ? split : split + 1;
-                    lines.Add(remaining[..take].Trim());
-                    remaining = remaining[take..].TrimStart();
-                }
-
-                if (remaining.Length > 0)
-                    lines.Add(remaining);
-            }
-
-            return lines;
-        }
-
         private static class NotificationFont
         {
             private static readonly byte[] Fallback = [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100];
@@ -4603,12 +4485,6 @@ namespace BBC
             if (keySym == SDLK_S && (modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
             {
                 pendingScreenshotRequests++;
-                return;
-            }
-
-            if (keySym == SDLK_T && (modifiers & KMOD_CTRL) != 0)
-            {
-                pendingTraceToggleRequests++;
                 return;
             }
 
@@ -6121,102 +5997,41 @@ namespace BBC
         private const byte SDL_BUTTON_LEFT = 1;
         private const byte SDL_BUTTON_MIDDLE = 2;
         private const byte SDL_BUTTON_RIGHT = 3;
-        private const byte SDL_CONTROLLER_AXIS_LEFTX = 0;
-        private const byte SDL_CONTROLLER_AXIS_LEFTY = 1;
-        private const byte SDL_CONTROLLER_BUTTON_A = 0;
-        private const byte SDL_CONTROLLER_BUTTON_DPAD_UP = 11;
-        private const byte SDL_CONTROLLER_BUTTON_DPAD_DOWN = 12;
-        private const byte SDL_CONTROLLER_BUTTON_DPAD_LEFT = 13;
-        private const byte SDL_CONTROLLER_BUTTON_DPAD_RIGHT = 14;
         private const byte SDL_HAT_UP = 0x01;
         private const byte SDL_HAT_RIGHT = 0x02;
         private const byte SDL_HAT_DOWN = 0x04;
         private const byte SDL_HAT_LEFT = 0x08;
         private const int SDLK_SPACE = 32;
-        private const int SDLK_ASTERISK = 42;
-        private const int SDLK_PLUS = 43;
-        private const int SDLK_AT = 64;
-        private const int SDLK_CARET = 94;
-        private const int SDLK_HASH = 35;
-        private const int SDLK_APOSTROPHE = 39;
-        private const int SDLK_QUOTEDBL = 34;
         private const int SDLK_SECTION = 167;
-        private const int SDLK_UNDERSCORE = 95;
-        private const int SDLK_0 = 48;
-        private const int SDLK_1 = 49;
-        private const int SDLK_2 = 50;
-        private const int SDLK_3 = 51;
-        private const int SDLK_4 = 52;
-        private const int SDLK_5 = 53;
-        private const int SDLK_6 = 54;
-        private const int SDLK_7 = 55;
-        private const int SDLK_8 = 56;
-        private const int SDLK_9 = 57;
-        private const int SDLK_COLON = 58;
-        private const int SDLK_SEMICOLON = 59;
         private const int SDLK_BACKSPACE = 8;
-        private const int SDLK_TAB = 9;
         private const int SDLK_RETURN = 13;
         private const int SDLK_ESCAPE = 27;
-        private const int SDLK_COMMA = 44;
-        private const int SDLK_MINUS = 45;
-        private const int SDLK_PERIOD = 46;
-        private const int SDLK_SLASH = 47;
-        private const int SDLK_EQUALS = 61;
         private const int SDLK_DELETE = 127;
-        private const int SDLK_LEFTBRACKET = 91;
-        private const int SDLK_BACKSLASH = 92;
-        private const int SDLK_RIGHTBRACKET = 93;
         private const int SDLK_A = 97;
-        private const int SDLK_B = 98;
         private const int SDLK_C = 99;
         private const int SDLK_D = 100;
-        private const int SDLK_E = 101;
         private const int SDLK_F = 102;
-        private const int SDLK_G = 103;
-        private const int SDLK_H = 104;
-        private const int SDLK_I = 105;
-        private const int SDLK_J = 106;
         private const int SDLK_K = 107;
         private const int SDLK_L = 108;
         private const int SDLK_M = 109;
-        private const int SDLK_N = 110;
         private const int SDLK_O = 111;
         private const int SDLK_P = 112;
         private const int SDLK_Q = 113;
         private const int SDLK_R = 114;
         private const int SDLK_S = 115;
         private const int SDLK_T = 116;
-        private const int SDLK_U = 117;
         private const int SDLK_V = 118;
-        private const int SDLK_W = 119;
-        private const int SDLK_X = 120;
-        private const int SDLK_Y = 121;
         private const int SDLK_Z = 122;
         private const int SDLK_RIGHT = 1073741903;
         private const int SDLK_LEFT = 1073741904;
         private const int SDLK_DOWN = 1073741905;
         private const int SDLK_UP = 1073741906;
         private const int SDLK_CAPSLOCK = 1073741881;
-        private const int SDLK_F1 = 1073741882;
-        private const int SDLK_F2 = 1073741883;
-        private const int SDLK_F3 = 1073741884;
-        private const int SDLK_F4 = 1073741885;
-        private const int SDLK_F5 = 1073741886;
-        private const int SDLK_F6 = 1073741887;
-        private const int SDLK_F7 = 1073741888;
-        private const int SDLK_F8 = 1073741889;
-        private const int SDLK_F9 = 1073741890;
-        private const int SDLK_F10 = 1073741891;
         private const int SDLK_F11 = 1073741892;
-        private const int SDLK_INSERT = 1073741897;
-        private const int SDLK_KP_MULTIPLY = 1073741909;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDLK_RETURN2 = 1073741982;
         private const int SDLK_LCTRL = 1073742048;
         private const int SDLK_LSHIFT = 1073742049;
-        private const int SDLK_RSHIFT = 1073742053;
-        private const int SDLK_RCTRL = 1073742052;
         private const int SDLK_F12 = 1073741893;
         private const int KMOD_SHIFT = 0x0003;
         private const int KMOD_CTRL = 0x00C0;
@@ -6307,9 +6122,6 @@ namespace BBC
         private static extern uint SDL_GetWindowID(IntPtr window);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void SDL_GetWindowSize(IntPtr window, out int w, out int h);
-
-        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_SetWindowFullscreen(IntPtr window, uint flags);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
@@ -6329,15 +6141,6 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_RenderSetIntegerScale(IntPtr renderer, int enable);
-
-        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int SDL_GetRendererOutputSize(IntPtr renderer, out int w, out int h);
-
-        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void SDL_RenderGetViewport(IntPtr renderer, out SdlRect rect);
-
-        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
-        private static extern void SDL_RenderGetScale(IntPtr renderer, out float scaleX, out float scaleY);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_SetRelativeMouseMode(int enabled);

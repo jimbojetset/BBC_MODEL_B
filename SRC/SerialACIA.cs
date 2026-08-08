@@ -29,16 +29,10 @@ namespace BBC
         private const byte AciaStatusInterruptRequest = 0x80;
 
         private static readonly int[] SerialUlaBaudRates = { 19200, 9600, 4800, 2400, 1200, 300, 150, 75 };
-        private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
-        public static readonly string TracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE_FILE") ?? "bbc-serial-trace.log";
         private static readonly bool LoopbackEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_LOOPBACK") == "1";
-        private static readonly object TraceSync = new object();
-        private static bool traceStarted;
 
         private readonly object sync = new object();
         private readonly Queue<byte> receiveBytes = new Queue<byte>();
-        private readonly Queue<byte> transmitBytes = new Queue<byte>();
-        private readonly Dictionary<ushort, byte> lastTracedReads = new Dictionary<ushort, byte>();
         private byte aciaControl;
         private byte serialUlaControl;
         private long transmitReadyAtTicks;
@@ -114,11 +108,9 @@ namespace BBC
                     : ReadAciaData();
                 lock (sync)
                     tapeReadRequested = true;
-                TraceRead(address, value);
                 return value;
             }
 
-            TraceRead(address, serialUlaControl);
             return serialUlaControl;
         }
 
@@ -143,7 +135,6 @@ namespace BBC
             MotorRunning = (value & 0x80) != 0;
             if (MotorRunning != previousMotorRunning)
                 MotorChanged?.Invoke(MotorRunning);
-            Trace($"serial ULA <= ${value:X2} RX {ReceiveBaudRate} TX {TransmitBaudRate}");
         }
 
         public void QueueReceivedByte(byte value)
@@ -167,7 +158,6 @@ namespace BBC
                 receiveStatusOverflowPending = true;
             }
             UpdateInterruptLine();
-            Trace($"rx <= ${received:X2}");
         }
 
         public void QueueReceivedText(string text)
@@ -176,33 +166,17 @@ namespace BBC
                 QueueReceivedByte((byte)(c & 0x7F));
         }
 
-        public bool TryDequeueTransmittedByte(out byte value)
-        {
-            lock (sync)
-                return transmitBytes.TryDequeue(out value);
-        }
-
-        public bool TryDequeueReceivedByte(out byte value)
-        {
-            lock (sync)
-            {
-                return receiveBytes.TryDequeue(out value);
-            }
-        }
-
         public void Reset()
         {
             lock (sync)
             {
                 receiveBytes.Clear();
-                transmitBytes.Clear();
                 aciaControl = 0;
                 serialUlaControl = 0;
                 transmitReadyAtTicks = 0;
                 tapeReadRequested = false;
                 dataCarrierDetectLatched = false;
                 receiveStatusOverflowPending = false;
-                lastTracedReads.Clear();
             }
 
             SetMotorRunning(false);
@@ -228,12 +202,6 @@ namespace BBC
 
             UpdateInterruptLine();
             ByteReceived?.Invoke();
-        }
-
-        public void SetClearToSend(bool clear)
-        {
-            ClearToSend = clear;
-            UpdateInterruptLine();
         }
 
         public void StopTape()
@@ -279,7 +247,7 @@ namespace BBC
                 writer.Write(receiveStatusOverflowPending);
                 writer.Write(ClearToSend);
                 WriteQueue(writer, receiveBytes);
-                WriteQueue(writer, transmitBytes);
+                writer.Write(0); // Retain the legacy transmit-queue state block.
             }
         }
 
@@ -296,7 +264,7 @@ namespace BBC
                 receiveStatusOverflowPending = reader.ReadBoolean();
                 ClearToSend = reader.ReadBoolean();
                 ReadQueue(reader, receiveBytes);
-                ReadQueue(reader, transmitBytes);
+                SkipQueue(reader);
                 DecodeAciaControl(aciaControl);
                 DecodeSerialUla(serialUlaControl);
             }
@@ -370,10 +338,8 @@ namespace BBC
 
         private void WriteAciaControl(byte value)
         {
-            byte previousControl;
             lock (sync)
             {
-                previousControl = aciaControl;
                 aciaControl = value;
                 DecodeAciaControl(value);
 
@@ -381,13 +347,9 @@ namespace BBC
                 if ((value & 0x03) == 0x03)
                 {
                     receiveBytes.Clear();
-                    transmitBytes.Clear();
                     transmitReadyAtTicks = 0;
                 }
             }
-
-            if (value != previousControl)
-                Trace($"control <= ${value:X2} {FormatName} RTS={(RequestToSend ? 1 : 0)} break={(TransmitBreak ? 1 : 0)}");
 
             UpdateInterruptLine();
         }
@@ -398,12 +360,9 @@ namespace BBC
             bool send;
             lock (sync)
             {
-                transmitBytes.Enqueue(transmitted);
                 transmitReadyAtTicks = Stopwatch.GetTimestamp() + CharacterTicks(TransmitBaudRate);
                 send = ClearToSend && !TransmitBreak;
             }
-
-            Trace($"tx <= ${transmitted:X2}");
 
             if (send)
                 ByteTransmitted?.Invoke(transmitted);
@@ -565,38 +524,12 @@ namespace BBC
                 queue.Enqueue(reader.ReadByte());
         }
 
-        private static void Trace(string message)
+        private static void SkipQueue(BinaryReader reader)
         {
-            if (TraceEnabled)
-                WriteTraceLine($"[serial] {message}");
+            int count = reader.ReadInt32();
+            if (reader.ReadBytes(count).Length != count)
+                throw new EndOfStreamException();
         }
 
-        private void TraceRead(ushort address, byte value)
-        {
-            if (!TraceEnabled)
-                return;
-
-            if (lastTracedReads.TryGetValue(address, out byte previous) && previous == value)
-                return;
-
-            lastTracedReads[address] = value;
-            WriteTraceLine($"[serial] read ${address:X4} => ${value:X2}");
-        }
-
-        public static void WriteTraceLine(string line)
-        {
-            lock (TraceSync)
-            {
-                if (!traceStarted)
-                {
-                    File.WriteAllText(TracePath, string.Empty);
-                    traceStarted = true;
-                }
-
-                File.AppendAllText(TracePath, line + Environment.NewLine);
-            }
-
-            Console.WriteLine(line);
-        }
     }
 }

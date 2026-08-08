@@ -78,6 +78,8 @@ dotnet run --project BBC_MODEL_B.csproj -- --print
 Plain paths are accepted. Disc images boot by default, tape images enable the tape player, and explicit drive options enable the matching drive before mounting.
 
 ```text
+--help              Print all command-line options, usage examples, and exit.
+
 --disc PATH
 --disk PATH
 --file PATH         Mount a disc image, tape image, or host file.

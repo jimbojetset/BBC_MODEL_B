@@ -1205,7 +1205,6 @@ namespace BBC
                         value = (byte)(value & CrtcRegisterMasks[regIndex]);
                         crtcRegisters[regIndex] = value;
                         UpdateBeamCrtcDerivedState(regIndex, value);
-                        ValidateBeamCrtcProgramming(regIndex);
                         UpdateBeamStableVerticalTiming();
                         HandleBeamDisplayStartRupture(regIndex);
                     }
@@ -1354,65 +1353,6 @@ namespace BBC
             beamPendingDisplayStartRupture = true;
         }
 
-        [System.Diagnostics.Conditional("DEBUG")]
-        private void ValidateBeamCrtcProgramming(int changedRegister)
-        {
-            int horizontalTotal = crtcRegisters[CrtcHorizontalTotalRegister] + 1;
-            int horizontalDisplayed = crtcRegisters[CrtcHorizontalDisplayedRegister];
-            int horizontalSync = crtcRegisters[2];
-            int horizontalSyncWidth = crtcRegisters[3] & 0x0F;
-
-            if ((changedRegister is CrtcHorizontalTotalRegister or CrtcHorizontalDisplayedRegister)
-                && horizontalDisplayed != 0
-                && horizontalDisplayed >= horizontalTotal)
-            {
-                TraceBeamCrtcDiagnostic($"R1 horizontal displayed ({horizontalDisplayed}) must be less than R0+1 ({horizontalTotal}).");
-            }
-
-            if ((changedRegister is CrtcHorizontalTotalRegister or 2)
-                && horizontalSync > crtcRegisters[CrtcHorizontalTotalRegister])
-            {
-                TraceBeamCrtcDiagnostic($"R2 horizontal sync position ({horizontalSync}) is beyond R0 horizontal total ({crtcRegisters[CrtcHorizontalTotalRegister]}).");
-            }
-
-            if (changedRegister == 3 && horizontalSyncWidth == 0)
-                TraceBeamCrtcDiagnostic("R3 horizontal sync width is 0; HD6845 documents HSW=0 as invalid.");
-
-            int verticalTotal = GetBeamVerticalTotal() + 1;
-            int verticalDisplayed = GetBeamVerticalDisplayed();
-            int verticalSync = GetBeamVerticalSync();
-
-            if ((changedRegister is CrtcVerticalTotalRegister or CrtcVerticalDisplayedRegister)
-                && verticalDisplayed != 0
-                && verticalDisplayed >= verticalTotal)
-            {
-                TraceBeamCrtcDiagnostic($"R6 vertical displayed ({verticalDisplayed}) must be less than R4+1 ({verticalTotal}).");
-            }
-
-            if ((changedRegister is CrtcVerticalTotalRegister or CrtcVerticalSyncRegister)
-                && verticalSync > GetBeamVerticalTotal())
-            {
-                TraceBeamCrtcDiagnostic($"R7 vertical sync position ({verticalSync}) is beyond R4 vertical total ({GetBeamVerticalTotal()}).");
-            }
-
-            int cursorStart = crtcRegisters[CrtcCursorStartRegister] & 0x1F;
-            int cursorEnd = crtcRegisters[CrtcCursorEndRegister] & 0x1F;
-            int maxRaster = GetBeamMaximumRasterAddress();
-
-            if ((changedRegister is CrtcCursorStartRegister or CrtcCursorEndRegister or CrtcScanLinesPerCharacterRegister)
-                && cursorStart <= cursorEnd
-                && (cursorStart > maxRaster || cursorEnd > maxRaster))
-            {
-                TraceBeamCrtcDiagnostic($"Cursor raster range R10/R11 ({cursorStart}-{cursorEnd}) exceeds R9 maximum raster ({maxRaster}).");
-            }
-        }
-
-        [System.Diagnostics.Conditional("DEBUG")]
-        private static void TraceBeamCrtcDiagnostic(string message)
-        {
-            System.Diagnostics.Debug.WriteLine($"CRTC diagnostic: {message}");
-        }
-
         private void UpdateBeamStableVerticalTiming()
         {
             if (crtcRegisters[CrtcVerticalTotalRegister] < 0x10
@@ -1444,42 +1384,6 @@ namespace BBC
 
         private int GetBeamVerticalSync() =>
             BeamVisibleRuptureTimingActive ? beamStableVerticalSync : crtcRegisters[CrtcVerticalSyncRegister];
-
-        public int CountMode7NonBlankCells()
-        {
-            int count = 0;
-
-            for (int i = 0; i < Mode7Columns * Mode7Rows; i++)
-            {
-                byte character = memory[Mode7ScreenStart + i];
-                if (character != 0 && character != 32)
-                    count++;
-            }
-
-            return count;
-        }
-
-        public string[] ReadMode7TextRows()
-        {
-            string[] rows = new string[Mode7Rows];
-
-            for (int row = 0; row < Mode7Rows; row++)
-            {
-                char[] line = new char[Mode7Columns];
-                int baseAddress = Mode7ScreenStart + row * Mode7Columns;
-
-                for (int column = 0; column < Mode7Columns; column++)
-                {
-                    byte value = memory[baseAddress + column];
-                    value &= 0x7F;
-                    line[column] = value >= 32 && value < 127 ? (char)value : ' ';
-                }
-
-                rows[row] = new string(line).TrimEnd();
-            }
-
-            return rows;
-        }
 
         private void ResetPalette()
         {

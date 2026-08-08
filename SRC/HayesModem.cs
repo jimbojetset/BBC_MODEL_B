@@ -37,7 +37,6 @@ namespace BBC
         private const byte TelnetSubnegotiation = 250;
         private const byte TelnetSubnegotiationEnd = 240;
 
-        private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
 
         private readonly SerialACIA serialAcia;
         private readonly SN76489_Sound sound;
@@ -134,7 +133,6 @@ namespace BBC
 
             if (!SerialConfigMatches())
             {
-                Trace($"ignored ${value:X2}; BBC serial is {serialAcia.TransmitBaudRate}/{serialAcia.ReceiveBaudRate} {serialAcia.FormatName}");
                 return;
             }
 
@@ -181,7 +179,6 @@ namespace BBC
             if (command.Length == 0)
                 return;
 
-            Trace($"> {command}");
 
             if (!command.StartsWith("AT", StringComparison.OrdinalIgnoreCase))
             {
@@ -531,13 +528,11 @@ namespace BBC
                 };
                 receiveThread.Start();
                 Respond($"CONNECT {host} {port}");
-                Trace($"connected {host}:{port}; dialled {dialAddress}");
             }
             catch (Exception ex) when (ex is SocketException or IOException or ObjectDisposedException)
             {
                 Disconnect(reportNoCarrier: false);
                 Respond("NO CARRIER");
-                Trace($"connect failed {host}:{port}: {ex.Message}");
             }
         }
 
@@ -599,7 +594,6 @@ namespace BBC
                         Volatile.Write(ref online, 0);
                         escapePlusCount = 0;
                         Respond("OK");
-                        Trace("escaped to command mode");
                     }
                     return;
                 }
@@ -908,7 +902,6 @@ namespace BBC
                 Disconnect(reportNoCarrier: true);
             }
 
-            Trace($"telnet {(char)command} option {option} -> {(char)reply}");
         }
 
         private static void SkipWhiteSpace(string value, ref int index)
@@ -1053,19 +1046,16 @@ namespace BBC
         {
             if (!resultCodesEnabled)
             {
-                Trace($"< suppressed {text}");
                 return;
             }
 
             string response = verboseResultCodes ? text : ToNumericResultCode(text);
             QueueResponseLine(response);
-            Trace($"< {response}");
         }
 
         private void RespondInfo(string text)
         {
             QueueResponseLine(text);
-            Trace($"< {text}");
         }
 
         private void QueueResponseLine(string text)
@@ -1205,12 +1195,6 @@ namespace BBC
                 else
                     Thread.SpinWait(64);
             }
-        }
-
-        private static void Trace(string message)
-        {
-            if (TraceEnabled)
-                Console.WriteLine($"[hayes] {message}");
         }
 
         public readonly record struct HayesModemLedState(

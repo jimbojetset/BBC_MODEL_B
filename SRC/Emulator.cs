@@ -27,6 +27,12 @@ namespace BBC
 
         private static void Main(string[] args)
         {
+            if (args.Any(arg => string.Equals(arg, "--help", StringComparison.OrdinalIgnoreCase)))
+            {
+                PrintCommandLineHelp();
+                return;
+            }
+
             using Emulator emulator = new Emulator();
             StartupOptions options = ParseStartupOptions(args);
 
@@ -107,6 +113,61 @@ namespace BBC
                 emulator.RunHeadless(TimeSpan.FromMilliseconds(options.HeadlessMilliseconds));
             else
                 emulator.Run();
+        }
+
+        private static void PrintCommandLineHelp()
+        {
+            Console.WriteLine("""
+BBC Model B emulator
+
+Usage:
+  dotnet run --project BBC_MODEL_B.csproj -- [OPTIONS] [PATH ...]
+  dotnet BBC_MODEL_B.dll [OPTIONS] [PATH ...]
+
+Options:
+  --help                  Show this help and exit.
+
+  --disc PATH             Mount a disc image, tape image, or host file.
+  --disk PATH             Alias for --disc.
+  --file PATH             Alias for --disc.
+  --tape PATH             Enable the tape player and mount a UEF tape.
+  --drive0 PATH           Enable physical drive 0 and mount media.
+  --drive1 PATH           Enable physical drive 1 and mount media.
+  --drive2 PATH           Mount an SSD in DFS logical drive 2.
+  --drive3 PATH           Mount an SSD in DFS logical drive 3.
+
+  --blank-ssd PATH        Create a blank SSD image if it does not exist, then mount it.
+  --blank-dsd PATH        Create a blank DSD image if it does not exist, then mount it.
+
+  --boot-disc             Boot mounted discs (the default).
+  --no-boot-disc          Mount media and leave the BBC at BASIC.
+  --no-autoboot           Alias for --no-boot-disc.
+  --type TEXT             Type text into the BBC keyboard buffer after boot.
+                         May be supplied more than once.
+  --load-state PATH       Restore a .sav state before running.
+  --headless-ms N         Run without a window for N milliseconds; N must be positive.
+  --print-autoload PATH   Print the !BOOT command for a bootable DFS image and exit.
+
+  --tube-6502             Start with the 65C02 Tube co-processor enabled.
+  --tube-enable           Alias for --tube-6502.
+  --tube-host-rom PATH    Use a non-default Tube host ROM.
+  --tube-6502-rom PATH    Use a non-default Tube 65C02 ROM.
+  --modem                 Start with the Hayes modem enabled.
+  --print                 Start with the dot-matrix printer enabled.
+
+Arguments:
+  PATH                    Mount a disc image, tape image, or host file. Disc images
+                          boot by default; tape images enable the tape player.
+
+Examples:
+  dotnet run --project BBC_MODEL_B.csproj -- game.ssd
+  dotnet run --project BBC_MODEL_B.csproj -- --drive0 game.ssd --drive1 data.dsd
+  dotnet run --project BBC_MODEL_B.csproj -- --tape Games/game.uef
+  dotnet run --project BBC_MODEL_B.csproj -- --blank-ssd work.ssd --no-autoboot
+  dotnet run --project BBC_MODEL_B.csproj -- --type "*CAT" --type "RUN"
+  dotnet run --project BBC_MODEL_B.csproj -- --headless-ms 5000 game.ssd
+  dotnet BBC_MODEL_B.dll --tube-6502 --modem
+""");
         }
 
         private static StartupOptions ParseStartupOptions(string[] args)
@@ -379,18 +440,6 @@ namespace BBC
             string? Tube6502RomPath,
             IReadOnlyList<string> StartupCommands);
 
-        private sealed class RuntimeTracePcSample
-        {
-            public RuntimeTracePcSample(byte opcode)
-            {
-                Opcode = opcode;
-            }
-
-            public byte Opcode { get; }
-
-            public int Count { get; set; }
-        }
-
         public const ushort RamStart = 0x0000;
         public const ushort RamEnd = 0x7FFF;
         public const ushort SidewaysRomStart = 0x8000;
@@ -423,19 +472,7 @@ namespace BBC
         private const string DfsRomMarker = "DFS\0" + "0.90";
         private const string DnfsRomMarker = "DFS,NET";
         private const string Tube6502RomMarker = "6502 TUBE";
-        private static readonly bool MouseTraceEnabled = Environment.GetEnvironmentVariable("BBC_MOUSE_TRACE") == "1";
-        private static readonly bool TubeDebugEnabled = Environment.GetEnvironmentVariable("BBC_TUBE_DEBUG") == "1";
-        private static readonly bool SerialPcTraceEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE") == "1";
-        private static readonly bool SerialPcTraceAutoEnabled = Environment.GetEnvironmentVariable("BBC_SERIAL_TRACE") == "1";
-        private static readonly string? SerialPcTracePath = Environment.GetEnvironmentVariable("BBC_SERIAL_PC_TRACE_FILE")
-            ?? (SerialPcTraceAutoEnabled ? SerialACIA.TracePath : null);
-        private static readonly bool RuntimeTraceStartupEnabled = Environment.GetEnvironmentVariable("BBC_RUNTIME_TRACE") == "1";
-        private static readonly string RuntimeTraceStartupPath = Environment.GetEnvironmentVariable("BBC_RUNTIME_TRACE_FILE") ?? "bbc-runtime-trace.log";
         private static readonly bool TapeAutoplayEnabled = Environment.GetEnvironmentVariable("BBC_TAPE_AUTOPLAY") == "1";
-        private static readonly bool UserViaTraceEnabled = Environment.GetEnvironmentVariable("BBC_USER_VIA_TRACE") == "1";
-        private static readonly string UserViaTracePath = Environment.GetEnvironmentVariable("BBC_USER_VIA_TRACE_FILE") ?? "bbc-user-via-trace.log";
-        private static readonly bool ExileRamTraceEnabled = Environment.GetEnvironmentVariable("BBC_EXILE_RAM_TRACE") == "1";
-        private static readonly string ExileRamTracePath = Environment.GetEnvironmentVariable("BBC_EXILE_RAM_TRACE_FILE") ?? "bbc-exile-ram-trace.log";
         private const string OsRomMarker = "BBC Computer";
         private const string AmxMouseRomMarker = "AMX Mouse Support";
         private const int TargetFramesPerSecond = 50;
@@ -452,15 +489,11 @@ namespace BBC
         private const byte BbcCapsLockKey = 0x40;
         private const int CapsLockTapPulseCycles = CpuClockHz / 20;
         private const int MinimumMatrixKeyPressMilliseconds = 40;
-        private const int HostDiscActivityLedMilliseconds = 180;
         private const int MaxAmxMouseStepsPerFrame = 16;
         private const int BootScriptInitialDelayMilliseconds = 1000;
         private const int ExecScriptInitialDelayMilliseconds = 100;
         private const int KeyboardScriptLineDelayMilliseconds = 120;
         private const int PausedFrameAdvanceCount = 10;
-        private const int RuntimeTraceFirstInstructions = 4096;
-        private const int RuntimeTraceHotPcInterval = 512;
-        private const int RuntimeTraceTopPcCount = 8;
         private const uint DisplayBlack = 0xFF000000;
 
         private bool initialised;
@@ -528,20 +561,8 @@ namespace BBC
         private bool capsLockTapPressed;
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
-        private readonly object runtimeTraceLock = new object();
-        private readonly Dictionary<ushort, RuntimeTracePcSample> runtimeTraceFramePcSamples = new Dictionary<ushort, RuntimeTracePcSample>();
-        private StreamWriter? runtimeTraceWriter;
-        private string? runtimeTracePath;
-        private long runtimeTraceInstructionCount;
-        private int runtimeTraceFrame;
-        private StreamWriter? serialPcTraceWriter;
-        private StreamWriter? userViaTraceWriter;
-        private StreamWriter? exileRamTraceWriter;
-        private string? lastSerialPcTraceLine;
         private const uint SaveStateMagic = 0x31535642; // BVS1
         private const int SaveStateVersion = 23;
-        private int runtimeTraceActive;
-        private long nextTubeDebugDumpTicks;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -667,7 +688,6 @@ namespace BBC
             Sound.Start();
             Sound.QueuePowerOnBeep();
 
-            StartStartupRuntimeTrace();
             StartCpu();
 
             long frameTicks = Math.Max(1, Stopwatch.Frequency / TargetFramesPerSecond);
@@ -721,7 +741,6 @@ namespace BBC
                 DrainHostPrintScreenRequests(Display);
                 DrainHostSavedScreenshotPrintRequests(Display);
                 DrainHostScreenshotRequests(Display);
-                DrainHostTraceToggleRequests(Display);
                 Display.Drive0Enabled = drive0Enabled;
                 Display.Drive1Enabled = drive1Enabled;
                 Display.Drive0Mounted = drive0Enabled && discController.IsPhysicalDriveMounted(0);
@@ -753,8 +772,6 @@ namespace BBC
                 UpdateHayesModemLeds(Display);
                 Display.Present();
 
-                DumpTubeDebugStateIfDue();
-
                 WaitUntil(nextFrame);
                 nextFrame += frameTicks;
 
@@ -764,28 +781,6 @@ namespace BBC
             }
 
             StopCpu();
-            StopStartupRuntimeTrace();
-        }
-
-        private void DumpTubeDebugStateIfDue()
-        {
-            if (tube6502 is null || !TubeDebugEnabled)
-                return;
-
-            long now = Stopwatch.GetTimestamp();
-            if (now < nextTubeDebugDumpTicks)
-                return;
-
-            nextTubeDebugDumpTicks = now + Stopwatch.Frequency;
-            Console.WriteLine($"GUI Tube debug: host PC ${Cpu.registers.PC & 0xFFFF:X4}, tube PC ${tube6502.Cpu.registers.PC & 0xFFFF:X4}, overlay {(tube6502.BootRomEnabled ? "on" : "off")}, requested NMI {tube6502.QueuedParasiteNmis}, queued {tube6502.CpuQueuedNmis}, serviced {tube6502.CpuServicedNmis}");
-            Console.WriteLine(tubeUla.DebugStatus());
-            Console.WriteLine($"Host registers: {FormatRegisters(Cpu.registers)}");
-            Console.WriteLine($"Tube registers: {FormatRegisters(tube6502.Cpu.registers)}");
-            Console.WriteLine($"Host bytes: {FormatMemoryBytes(Memory.Memory, (ushort)Cpu.registers.PC, 12)}");
-            Console.WriteLine($"Tube bytes: {FormatMemoryBytes(tube6502.Memory, (ushort)tube6502.Cpu.registers.PC, 12)}");
-            Console.WriteLine("Recent Tube ops:");
-            foreach (string line in tubeUla.RecentTrace())
-                Console.WriteLine(line);
         }
 
         public void RunHeadless(TimeSpan duration)
@@ -793,7 +788,6 @@ namespace BBC
             if (!initialised)
                 Initialise();
 
-            StartStartupRuntimeTrace();
             StartCpu();
 
             long deadline = Stopwatch.GetTimestamp() + (long)(duration.TotalSeconds * Stopwatch.Frequency);
@@ -821,7 +815,6 @@ namespace BBC
             long measuredEndTicks = Stopwatch.GetTimestamp();
             long measuredEndCycles = Cpu.TotalCycles;
             StopCpu();
-            StopStartupRuntimeTrace();
 
             string? headlessPngPath = Environment.GetEnvironmentVariable("BBC_HEADLESS_PNG");
             if (!string.IsNullOrWhiteSpace(headlessPngPath))
@@ -845,27 +838,7 @@ namespace BBC
             {
                 Console.WriteLine($"Tube 6502 PC: ${tube6502.Cpu.registers.PC:X4}");
                 Console.WriteLine($"Tube 6502 boot ROM overlay: {(tube6502.BootRomEnabled ? "enabled" : "disabled")}");
-                if (TubeDebugEnabled)
-                {
-                    Console.WriteLine(tubeUla.DebugStatus());
-                    Console.WriteLine($"Host registers: {FormatRegisters(Cpu.registers)}");
-                    Console.WriteLine($"Tube registers: {FormatRegisters(tube6502.Cpu.registers)}");
-                    Console.WriteLine($"Host bytes: {FormatMemoryBytes(Memory.Memory, (ushort)Cpu.registers.PC, 12)}");
-                    Console.WriteLine($"Tube bytes: {FormatMemoryBytes(tube6502.Memory, (ushort)tube6502.Cpu.registers.PC, 12)}");
-                    Console.WriteLine($"Host stack: {FormatMemoryBytes(Memory.Memory, (ushort)(0x0100 + Cpu.registers.S), 16)}");
-                    Console.WriteLine($"Tube stack: {FormatMemoryBytes(tube6502.Memory, (ushort)(0x0100 + tube6502.Cpu.registers.S), 16)}");
-                    Console.WriteLine("Recent Tube ops:");
-                    foreach (string line in tubeUla.RecentTrace())
-                        Console.WriteLine(line);
-                }
-                if (tube6502.Cpu.Jammed)
-                    Console.WriteLine($"Tube 6502 jam bytes: {FormatMemoryBytes(tube6502.Memory, tube6502.Cpu.JamAddress, 16)}");
             }
-            Console.WriteLine($"Mode 7 non-blank cells: {Video.CountMode7NonBlankCells()}");
-            Console.WriteLine($"Tracked video mode: {Video.CurrentMode}");
-            Console.WriteLine("Mode 7 text:");
-            foreach (string row in Video.ReadMode7TextRows())
-                Console.WriteLine(row);
         }
 
         public bool MountHostFile(string path, bool autoRunDisc = true, int? requestedDrive = null)
@@ -1015,10 +988,6 @@ namespace BBC
                 if (discController.Flush())
                     Console.WriteLine($"Saved disc:   {discController.MountedFileName}");
             }
-            discController.StopTrace();
-            StopRuntimeTrace();
-            StopUserViaTrace();
-            StopExileRamTrace();
             DisposeHayesModem();
             tube6502?.Dispose();
             printer.Dispose();
@@ -1118,14 +1087,6 @@ namespace BBC
             }
 
             Video.Render(display);
-            if (Volatile.Read(ref runtimeTraceActive) != 0)
-                TraceRuntimeFrame();
-        }
-
-        private void PulseHostDiscActivityLed()
-        {
-            long pulseTicks = (long)HostDiscActivityLedMilliseconds * Stopwatch.Frequency / 1000;
-            Interlocked.Exchange(ref hostDiscActivityLedUntilTicks, Stopwatch.GetTimestamp() + pulseTicks);
         }
 
         private void AdvanceDeviceCycles(int cycles)
@@ -2250,6 +2211,8 @@ namespace BBC
                 if (version != SaveStateVersion)
                     throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
+                Display?.ClearScreenToBlack();
+
                 Cpu.LoadState(reader);
                 ReadByteArray(reader, Memory.Memory, "main memory");
                 ReadByteArray(reader, sidewaysRoms, "sideways ROM/RAM");
@@ -2469,31 +2432,6 @@ namespace BBC
             return bytes;
         }
 
-        private static string FormatRegisters(BBC.CPU.Registers registers)
-        {
-            return $"PC=${registers.PC & 0xFFFF:X4} A=${registers.A:X2} X=${registers.X:X2} Y=${registers.Y:X2} S=${registers.S:X2} P=${registers.P:X2}";
-        }
-
-        private static string FormatMemoryBytes(byte[] memory, ushort centerAddress, int radius)
-        {
-            StringBuilder builder = new StringBuilder();
-            int start = Math.Max(0, centerAddress - radius);
-            int end = Math.Min(memory.Length - 1, centerAddress + radius);
-
-            for (int address = start; address <= end; address++)
-            {
-                if (builder.Length > 0)
-                    builder.Append(' ');
-
-                builder.Append('$');
-                builder.Append(address.ToString("X4", CultureInfo.InvariantCulture));
-                builder.Append(':');
-                builder.Append(memory[address].ToString("X2", CultureInfo.InvariantCulture));
-            }
-
-            return builder.ToString();
-        }
-
         private void DrainHostScreenshotRequests(Display display)
         {
             int count = display.DrainScreenshotRequests();
@@ -2556,187 +2494,6 @@ namespace BBC
                     display.ShowNotification("Could not print screenshot", ex.Message, 3000);
                 }
             }
-        }
-
-        private void DrainHostTraceToggleRequests(Display display)
-        {
-            int count = display.DrainTraceToggleRequests();
-            for (int i = 0; i < count; i++)
-            {
-                if (discController.TraceEnabled || Volatile.Read(ref runtimeTraceActive) != 0)
-                {
-                    string? path = discController.StopTrace();
-                    Console.WriteLine($"8271 trace stopped: {path}");
-                    path = StopRuntimeTrace();
-                    Console.WriteLine($"runtime trace stopped: {path}");
-                }
-                else
-                {
-                    string discTracePath = Path.Combine(Environment.CurrentDirectory, "bbc-8271-trace.log");
-                    discController.StartTrace(discTracePath);
-                    Console.WriteLine($"8271 trace started: {discTracePath}");
-
-                    string runtimePath = Path.Combine(Environment.CurrentDirectory, "bbc-runtime-trace.log");
-                    StartRuntimeTrace(runtimePath);
-                    Console.WriteLine($"runtime trace started: {runtimePath}");
-                }
-            }
-        }
-
-        private void StartRuntimeTrace(string path)
-        {
-            StopRuntimeTrace();
-
-            lock (runtimeTraceLock)
-            {
-                runtimeTracePath = Path.GetFullPath(path);
-                runtimeTraceWriter = new StreamWriter(runtimeTracePath, append: false, Encoding.UTF8);
-                runtimeTraceInstructionCount = 0;
-                runtimeTraceFrame = 0;
-                runtimeTraceFramePcSamples.Clear();
-                runtimeTraceWriter.WriteLine($"TRACE START {DateTimeOffset.Now:O}");
-                runtimeTraceWriter.WriteLine($"MOUNTED {discController.MountedDriveSummary}");
-                runtimeTraceWriter.WriteLine("Instruction lines are compressed after the first few thousand opcodes; HOT counts show repeated PCs within the current frame.");
-                Cpu.OnInstructionExecuted = TraceRuntimeInstruction;
-                Volatile.Write(ref runtimeTraceActive, 1);
-            }
-        }
-
-        private void StartStartupRuntimeTrace()
-        {
-            if (RuntimeTraceStartupEnabled)
-                StartRuntimeTrace(RuntimeTraceStartupPath);
-        }
-
-        private void StopStartupRuntimeTrace()
-        {
-            if (RuntimeTraceStartupEnabled)
-                StopRuntimeTrace();
-        }
-
-        private string? StopRuntimeTrace()
-        {
-            lock (runtimeTraceLock)
-            {
-                Volatile.Write(ref runtimeTraceActive, 0);
-                Cpu.OnInstructionExecuted = null;
-                if (runtimeTraceWriter is null)
-                    return runtimeTracePath;
-
-                WriteRuntimeTraceFrameSummary();
-                runtimeTraceWriter.WriteLine($"TRACE STOP {DateTimeOffset.Now:O}");
-                runtimeTraceWriter.Dispose();
-                runtimeTraceWriter = null;
-                runtimeTraceFramePcSamples.Clear();
-                return runtimeTracePath;
-            }
-        }
-
-        private void TraceUserVia(string operation, ushort address, byte value)
-        {
-            if (!UserViaTraceEnabled)
-                return;
-
-            userViaTraceWriter ??= new StreamWriter(UserViaTracePath, append: false, Encoding.UTF8);
-            userViaTraceWriter.WriteLine(
-                $"via {operation} pc=${Cpu.registers.PC:X4} cycles={Cpu.TotalCycles} addr=${address:X4} value=${value:X2} {userVia.TraceState}");
-        }
-
-        private void StopUserViaTrace()
-        {
-            userViaTraceWriter?.Dispose();
-            userViaTraceWriter = null;
-        }
-
-        private void TraceExileRamWrite(ushort address, byte value)
-        {
-            if (!ExileRamTraceEnabled || address < 0x0B00 || address > 0x0BFF)
-                return;
-
-            exileRamTraceWriter ??= new StreamWriter(ExileRamTracePath, append: false, Encoding.UTF8);
-            exileRamTraceWriter.WriteLine($"ram write pc=${Cpu.registers.PC:X4} cycles={Cpu.TotalCycles} addr=${address:X4} value=${value:X2}");
-        }
-
-        private void StopExileRamTrace()
-        {
-            exileRamTraceWriter?.Dispose();
-            exileRamTraceWriter = null;
-        }
-
-        private void TraceRuntimeInstruction(ushort pc, byte opcode, int cycles, bool handledByHost)
-        {
-            if (Volatile.Read(ref runtimeTraceActive) == 0)
-                return;
-
-            lock (runtimeTraceLock)
-            {
-                if (runtimeTraceWriter is null)
-                    return;
-
-                runtimeTraceInstructionCount++;
-                if (!runtimeTraceFramePcSamples.TryGetValue(pc, out RuntimeTracePcSample? sample))
-                {
-                    sample = new RuntimeTracePcSample(opcode);
-                    runtimeTraceFramePcSamples.Add(pc, sample);
-                }
-
-                sample.Count++;
-
-                bool logInstruction = runtimeTraceInstructionCount <= RuntimeTraceFirstInstructions
-                    || sample.Count <= 4
-                    || sample.Count % RuntimeTraceHotPcInterval == 0;
-
-                if (!logInstruction)
-                    return;
-
-                string kind = sample.Count > 4 ? "HOT" : "CPU";
-                runtimeTraceWriter.WriteLine(
-                    $"{kind} i={runtimeTraceInstructionCount} frame={runtimeTraceFrame} pc=${pc:X4} op=${opcode:X2} " +
-                    $"a=${Cpu.registers.A:X2} x=${Cpu.registers.X:X2} y=${Cpu.registers.Y:X2} s=${Cpu.registers.S:X2} p=${Cpu.registers.P:X2} " +
-                    $"cycles={cycles} hit={sample.Count} host={(handledByHost ? 1 : 0)} " +
-                    $"irq={(Cpu.IrqLineAsserted ? 1 : 0)} nmi={(discController.NmiLineAsserted ? 1 : 0)} disc={(discController.TransferActive ? 1 : 0)}");
-            }
-        }
-
-        private void TraceRuntimeFrame()
-        {
-            if (Volatile.Read(ref runtimeTraceActive) == 0)
-                return;
-
-            lock (runtimeTraceLock)
-            {
-                if (runtimeTraceWriter is null)
-                    return;
-
-                WriteRuntimeTraceFrameSummary();
-                runtimeTraceFramePcSamples.Clear();
-                runtimeTraceFrame++;
-                runtimeTraceWriter.Flush();
-            }
-        }
-
-        private void WriteRuntimeTraceFrameSummary()
-        {
-            if (runtimeTraceWriter is null || runtimeTraceFramePcSamples.Count == 0)
-                return;
-
-            string hotPcs = string.Join(" ",
-                runtimeTraceFramePcSamples
-                    .OrderByDescending(pair => pair.Value.Count)
-                    .ThenBy(pair => pair.Key)
-                    .Take(RuntimeTraceTopPcCount)
-                    .Select(pair => $"${pair.Key:X4}/${pair.Value.Opcode:X2}:{pair.Value.Count}"));
-
-            runtimeTraceWriter.WriteLine(
-                $"FRAME {runtimeTraceFrame} totalCycles={Cpu.TotalCycles} pc=${Cpu.registers.PC & 0xFFFF:X4} " +
-                $"a=${Cpu.registers.A:X2} x=${Cpu.registers.X:X2} y=${Cpu.registers.Y:X2} s=${Cpu.registers.S:X2} p=${Cpu.registers.P:X2} " +
-                $"irq={(Cpu.IrqLineAsserted ? 1 : 0)} nmi={(discController.NmiLineAsserted ? 1 : 0)} disc={(discController.TransferActive ? 1 : 0)} " +
-                $"cli=${ReadRamWord(CliVector):X4} v0204=${ReadRamWord(0x0204):X4} v0206=${ReadRamWord(0x0206):X4} hot={hotPcs}");
-        }
-
-        private ushort ReadRamWord(ushort address)
-        {
-            return (ushort)(Memory.Memory[address] | (Memory.Memory[(address + 1) & 0xFFFF] << 8));
         }
 
         private void DrainHostKeyboardInput(Display display)
@@ -2939,8 +2696,6 @@ namespace BBC
             mousePositionInitialized = true;
             userVia.SetMouseInput(activeLowButtons, -deltaY, deltaX);
             UpdateCpuIrqLine();
-            if (MouseTraceEnabled && (deltaX != 0 || deltaY != 0 || mouse.Buttons != 0))
-                Console.WriteLine($"MOUSE x={x} y={y} buttons=${mouse.Buttons:X2} dx={deltaX} dy={deltaY}");
         }
 
         private void UpdateJoystickInputs()
@@ -3828,8 +3583,6 @@ namespace BBC
                 if (addr >= SidewaysRomStart)
                     return true;
 
-                TraceExileRamWrite(addr, value);
-
                 return false;
             };
         }
@@ -3881,7 +3634,6 @@ namespace BBC
             if (User6522Via.IsAddress(address))
             {
                 byte value = userVia.Read(address);
-                TraceUserVia("read", address, value);
                 UpdateCpuIrqLine();
                 return value;
             }
@@ -3890,11 +3642,7 @@ namespace BBC
                 return discController.Read(address);
 
             if (SerialACIA.IsAddress(address))
-            {
-                byte value = serialAcia.Read(address);
-                TraceSerialPc("read", address, value);
-                return value;
-            }
+                return serialAcia.Read(address);
 
             if (uPD7002_ADC.IsAddress(address))
                 return adc.Read(address);
@@ -3926,7 +3674,6 @@ namespace BBC
 
             if (User6522Via.IsAddress(address))
             {
-                TraceUserVia("write", address, value);
                 userVia.Write(address, value);
                 UpdateCpuIrqLine();
                 return;
@@ -3940,7 +3687,6 @@ namespace BBC
 
             if (SerialACIA.IsAddress(address))
             {
-                TraceSerialPc("write", address, value);
                 serialAcia.Write(address, value);
                 return;
             }
@@ -3980,63 +3726,6 @@ namespace BBC
         private static bool IsTapeImagePath(string path)
         {
             return string.Equals(Path.GetExtension(path), ".uef", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private void TraceSerialPc(string operation, ushort address, byte value)
-        {
-            bool highSignal = address == 0xFE09
-                || (address == 0xFE08 && operation == "read" && (value & 0x81) != 0);
-
-            if (!SerialPcTraceEnabled && !(SerialPcTraceAutoEnabled && highSignal))
-                return;
-
-            string line = $"[serial-pc] PC ${Cpu.registers.PC & 0xFFFF:X4} {operation} ${address:X4} = ${value:X2} I={(Cpu.registers.Flags.I ? 1 : 0)} V={(Cpu.registers.Flags.V ? 1 : 0)}{FormatTapeStateTrace()}";
-            if (line == lastSerialPcTraceLine)
-                return;
-
-            lastSerialPcTraceLine = line;
-            if (string.IsNullOrWhiteSpace(SerialPcTracePath))
-            {
-                Console.WriteLine(line);
-                return;
-            }
-
-            if (SerialPcTracePath == SerialACIA.TracePath)
-            {
-                SerialACIA.WriteTraceLine(line);
-                return;
-            }
-
-            serialPcTraceWriter ??= new StreamWriter(SerialPcTracePath, append: false) { AutoFlush = true };
-            serialPcTraceWriter.WriteLine(line);
-        }
-
-        private string FormatTapeStateTrace()
-        {
-            if (!SerialPcTraceAutoEnabled && !SerialPcTraceEnabled)
-                return string.Empty;
-
-            byte[] memory = Memory.Memory;
-            return $" C2=${memory[0x00C2]:X2} BC=${memory[0x00BC]:X2} BD=${memory[0x00BD]:X2} C0=${memory[0x00C0]:X2} C8=${memory[0x03C8]:X2} C9=${memory[0x03C9]:X2}";
-        }
-
-        private void TraceSerialPcMessage(string line)
-        {
-            if (!SerialPcTraceEnabled && !SerialPcTraceAutoEnabled)
-                return;
-
-            if (line == lastSerialPcTraceLine)
-                return;
-
-            lastSerialPcTraceLine = line;
-            if (string.IsNullOrWhiteSpace(SerialPcTracePath))
-            {
-                Console.WriteLine(line);
-                return;
-            }
-
-            serialPcTraceWriter ??= new StreamWriter(SerialPcTracePath, append: false) { AutoFlush = true };
-            serialPcTraceWriter.WriteLine(line);
         }
 
         private static bool IsZipArchivePath(string path)

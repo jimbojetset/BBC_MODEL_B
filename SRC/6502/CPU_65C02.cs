@@ -90,7 +90,6 @@ namespace BBC.CPU
         private long totalCycles;
         public long TotalCycles => Interlocked.Read(ref totalCycles);
         public Action<int>? OnCyclesExecuted;
-        public Action<ushort, byte, int, bool>? OnInstructionExecuted;
         public Func<bool>? OnBeforeInstruction;
         public Func<bool>? NmiLineAsserted;
         private int externalStallCycles;
@@ -306,8 +305,6 @@ namespace BBC.CPU
                         }
                         if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
                             ProcessIRQ();
-                        ushort pcBefore = (ushort)registers.PC;
-                        byte opcodeBefore = PeekByte(pcBefore);
                         int beforeCycles = cyclesThisOperation;
                         bool handledByHost = OnBeforeInstruction?.Invoke() == true;
 
@@ -338,7 +335,6 @@ namespace BBC.CPU
                             Interlocked.Add(ref totalCycles, deltaCycles);
                             OnCyclesExecuted?.Invoke(deltaCycles);
                         }
-                        OnInstructionExecuted?.Invoke(pcBefore, opcodeBefore, deltaCycles, handledByHost);
                         if (jammed)
                             break;
                     }
@@ -1351,8 +1347,6 @@ namespace BBC.CPU
                 DoReset();
 
             cyclesThisOperation = 0;
-            ushort pcBefore = (ushort)registers.PC;
-            byte opcodeBefore = PeekByte(pcBefore);
             bool nmiLineAsserted = NmiLineAsserted?.Invoke() == true;
             if (nmiLineAsserted && !nmiLineWasAsserted)
                 ProcessNMI();
@@ -1393,7 +1387,6 @@ namespace BBC.CPU
                 Interlocked.Add(ref totalCycles, elapsed);
                 OnCyclesExecuted?.Invoke(elapsed);
             }
-            OnInstructionExecuted?.Invoke(pcBefore, opcodeBefore, elapsed, false);
 
             return elapsed;
         }
