@@ -50,13 +50,13 @@ dotnet run --project BBC_MODEL_B.csproj
 Boot a disc image:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- Games/Defender-Atarisoft.ssd
+dotnet run --project BBC_MODEL_B.csproj -- Games/Phoenix.ssd
 ```
 
 Mount a disc but stay at BASIC:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot Games/Defender-Atarisoft.ssd
+dotnet run --project BBC_MODEL_B.csproj -- --no-autoboot Games/Phoenix.ssd
 ```
 
 Load a tape:
@@ -65,10 +65,10 @@ Load a tape:
 dotnet run --project BBC_MODEL_B.csproj -- --tape Games/Elite-v1.0_B.uef
 ```
 
-Run with the Tube or modem enabled:
+Run with optional hardware enabled:
 
 ```bash
-dotnet run --project BBC_MODEL_B.csproj -- --tube-6502 Games/Elite-SRR_B/Elite-SRR_B.uef
+dotnet run --project BBC_MODEL_B.csproj -- --tube-6502 Games/Elite-v1.0_B.uef
 dotnet run --project BBC_MODEL_B.csproj -- --modem
 dotnet run --project BBC_MODEL_B.csproj -- --print
 ```
@@ -98,13 +98,14 @@ Plain paths are accepted. Disc images boot by default, tape images enable the ta
 --no-boot-disc
 --no-autoboot       Mount media and leave the BBC at BASIC.
 
---type TEXT         Type text into the BBC keyboard buffer after boot.
+--type TEXT         Type text into the BBC keyboard buffer after boot. May be repeated.
 --load-state PATH   Restore a .sav state before running.
 --headless-ms N     Run without a window for N milliseconds.
 --print-autoload PATH
                    Print the !BOOT command for a bootable DFS image.
 
 --tube-6502         Start with the 65C02 Tube co-processor enabled.
+--tube-enable       Alias for --tube-6502.
 --tube-host-rom PATH
 --tube-6502-rom PATH
                    Use non-default Tube ROMs.
@@ -127,15 +128,16 @@ The SDL window has a small menu bar for the common jobs:
 
 ```text
 File         Screenshot, save state, open state, quit
-Disc         Mount, eject, or create blank SSD media
-Cassette    Load, create, and control UEF tapes
 Machine      BREAK, reset, sound, pause
 Peripherals  Tape player, modem, printer, disc drives, Tube
 ROM Manager  Edit sideways ROM banks and import/export ROM layouts
+Keyboard Mapper
+             Remap the BBC keyboard and import/export input profiles
 Printer      Screen printing, output viewer, page controls, PNG export, sound
-View         Fullscreen and scanlines
-Input        Paste text, Shift Lock, keyboard mapper
+View         Fullscreen, scanlines, and BBC logo
 ```
+
+Click an on-screen disc drive or cassette player to open its media and transport menu.
 
 A few useful details:
 
@@ -173,7 +175,7 @@ Left Ctrl+Left Shift    Toggle BBC SHIFT LOCK
 
 Host arrow keys map to the BBC cursor keys, `F1` to `F10` map to BBC function keys, and `Insert` or `§` maps to BBC `COPY`.
 
-The keyboard mapper is in `Input > Keyboard Mapper`. Click a BBC key, press the host key you want, then save the map if you want to keep it. If `Assets/DefaultInputProfile.json` exists, it is loaded at startup.
+Open `Keyboard Mapper` from the menu bar. Click a BBC key, press the host key you want, then save the map if you want to keep it. If `Assets/DefaultInputProfile.json` exists, it is loaded at startup.
 
 ## Discs, Tapes, And Drives
 
@@ -185,7 +187,7 @@ You can create blank media from the menu or command line. DFS can also catalogue
 
 Blank UEF tapes created from the cassette menu are recordable 10-minute tapes. Loaded game UEFs are treated like tapes with the record tab removed, so `REC` is disabled for them.
 
-5.25 inch drive sounds are mixed into the main audio path from samples in `Assets/DriveNoise`. The sample source is credited in `THIRD_PARTY_NOTICES.md`.
+5.25 inch drive sounds are mixed into the main audio path from WAV samples in `Assets/`. The sample source is credited in `THIRD_PARTY_NOTICES.md`.
 
 ## Optional Hardware
 
@@ -193,6 +195,7 @@ The Peripherals menu lets you add or remove hardware while the emulator is runni
 
 - `Tape Player` toggles the cassette hardware and tape controls.
 - `Hayes Modem` enables the modem and its front-panel LEDs.
+- `Printer` connects an Epson FX-80-compatible dot-matrix printer to the BBC printer port and opens its paper display and controls.
 - `Disc Drive 0` and `Disc Drive 1` enable or remove each physical drive.
 - `6502 Co-Processor` enables the Tube hardware. Use `Ctrl-BREAK` after changing it so the BBC sees the new machine.
 
