@@ -132,7 +132,7 @@ Cassette    Load, create, and control UEF tapes
 Machine      BREAK, reset, sound, pause
 Peripherals  Tape player, modem, printer, disc drives, Tube
 ROM Manager  Edit sideways ROM banks and import/export ROM layouts
-Printer      Screen printing, saved screenshots, page controls, PNG export, sound
+Printer      Screen printing, output viewer, page controls, PNG export, sound
 View         Fullscreen and scanlines
 Input        Paste text, Shift Lock, keyboard mapper
 ```
@@ -142,8 +142,9 @@ A few useful details:
 - Disc menu loads accept `.ssd`, `.dsd`, and `.zip`. ZIP files are browsed without extracting them.
 - Drive 0 is on by default. Drive 1 is off until enabled from `Peripherals` or used from the command line.
 - The tape player is on by default. The Hayes modem is off until enabled from `Peripherals` or started with `--modem`.
-- Enabling the printer opens the `Epson FX-80 Printer` paper window and adds a `Printer` menu between `Keyboard Mapper` and `View`.
-- The `Printer` menu can print the current screen or a saved PNG from `Screenshots/`, invert screen-to-paper colours, save the paper as PNG, start a new page or sheet, cancel a job, and enable or mute printer sound.
+- Enabling the printer opens the `Epson FX-80 Printer` window and adds a `Printer` menu between `Keyboard Mapper` and `View`. The display models continuous tractor-feed paper curling behind the printer, including moving transparent sprocket holes and animated form feeds between connected pages.
+- The `Printer` menu can print the current screen or a saved PNG from `Screenshots/`, open a scrollable undistorted view of every rendered page, invert screen-to-paper colours, save the paper as PNG, start a new page or sheet, cancel a job, and enable or mute printer sound.
+- `New page` advances to the next connected fanfold sheet while preserving the current paper roll. `New paper` clears the rendered document and loads a fresh roll.
 - Draft text runs at 160 characters per second. ESC/P bit-image graphics use an 80-cps-equivalent head speed.
 - Saved-screenshot printing lists only PNG files directly inside `Screenshots/`; an empty folder produces an on-screen notification.
 - Menu disc mounts behave like inserting a disc. They do not auto-boot; use `Shift-BREAK` when you want to boot.

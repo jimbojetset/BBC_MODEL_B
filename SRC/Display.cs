@@ -2845,6 +2845,9 @@ namespace BBC
                 case MenuCommand.SavePrinterPng:
                     printer?.SaveDocumentPng();
                     break;
+                case MenuCommand.ViewPrinterOutput:
+                    printer?.ShowOutputWindow();
+                    break;
                 case MenuCommand.NewPrinterPaper:
                     printer?.NewPaper();
                     break;
@@ -5119,6 +5122,7 @@ namespace BBC
             TogglePrinterSound,
             ToggleFastPrinterGraphics,
             SavePrinterPng,
+            ViewPrinterOutput,
             NewPrinterPaper,
             NewPrinterPage,
             CancelPrinterActivity,
@@ -5191,6 +5195,7 @@ namespace BBC
                     new MenuItem("Printer sound", "", MenuCommand.TogglePrinterSound),
                     new MenuItem("10x graphics speed", "", MenuCommand.ToggleFastPrinterGraphics),
                     MenuSeparator(),
+                    new MenuItem("View Printer Output", "", MenuCommand.ViewPrinterOutput),
                     new MenuItem("Save PNG...", "", MenuCommand.SavePrinterPng),
                     MenuSeparator(),
                     new MenuItem("New paper", "", MenuCommand.NewPrinterPaper),
