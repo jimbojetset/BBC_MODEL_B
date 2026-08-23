@@ -150,6 +150,7 @@ namespace BBC
         private int pendingDrive0ToggleRequests;
         private int pendingDrive1ToggleRequests;
         private int pendingTube6502ToggleRequests;
+        private int pendingSpeechToggleRequests;
         private int pendingHayesModemToggleRequests;
         private int pendingPrinterToggleRequests;
         private int pendingHayesLoopbackToggleRequests;
@@ -294,6 +295,8 @@ namespace BBC
         public bool TapePlayerEnabled { get; set; }
 
         public bool Tube6502Enabled { get; set; }
+
+        public bool SpeechEnabled { get; set; }
 
         public bool HayesModemEnabled { get; set; }
 
@@ -729,6 +732,13 @@ namespace BBC
         {
             int count = pendingTube6502ToggleRequests;
             pendingTube6502ToggleRequests = 0;
+            return count;
+        }
+
+        public int DrainSpeechToggleRequests()
+        {
+            int count = pendingSpeechToggleRequests;
+            pendingSpeechToggleRequests = 0;
             return count;
         }
 
@@ -2906,6 +2916,9 @@ namespace BBC
                 case MenuCommand.ToggleTube6502:
                     pendingTube6502ToggleRequests++;
                     break;
+                case MenuCommand.ToggleSpeech:
+                    pendingSpeechToggleRequests++;
+                    break;
                 case MenuCommand.ToggleHayesModem:
                     pendingHayesModemToggleRequests++;
                     break;
@@ -3087,6 +3100,7 @@ namespace BBC
                 MenuCommand.ToggleDiscDrive0 => Drive0Enabled,
                 MenuCommand.ToggleDiscDrive1 => Drive1Enabled,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
+                MenuCommand.ToggleSpeech => SpeechEnabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
                 MenuCommand.TogglePrinter => PrinterEnabled,
                 MenuCommand.TogglePrinterPageInversion => printer?.PageInverted == true,
@@ -5145,6 +5159,7 @@ namespace BBC
             ToggleDiscDrive0,
             ToggleDiscDrive1,
             ToggleTube6502,
+            ToggleSpeech,
             ToggleHayesModem,
             TogglePrinter,
             ToggleHayesLoopback,
@@ -5179,6 +5194,7 @@ namespace BBC
                     new MenuItem("Printer", "Ctrl+Shift+P", MenuCommand.TogglePrinter),
                     new MenuItem("Disc Drive 0", "", MenuCommand.ToggleDiscDrive0),
                     new MenuItem("Disc Drive 1", "Ctrl+Shift+D", MenuCommand.ToggleDiscDrive1),
+                    new MenuItem("Acorn Speech System", "", MenuCommand.ToggleSpeech),
                     new MenuItem("6502 Co-Processor", "Ctrl+Shift+C", MenuCommand.ToggleTube6502)
                 ]),
                 new MenuDefinition("ROM Manager", [], MenuCommand.OpenRomManager),

@@ -3,7 +3,7 @@
 A BBC Micro Model B emulator written in C# and .NET.
 
 I wrote this to feel more like a real Beeb rather than just a launcher for disc images.
-It emulates the 6502, OS 1.20, BASIC II, DFS, the 8271 disc controller, the VIAs, video, sound, keyboard matrix, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, and an optional 65C02 Tube second processor.
+It emulates the 6502, OS 1.20, BASIC II, DFS, the 8271 disc controller, the VIAs, video, sound, keyboard matrix, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, the Acorn Speech System, and an optional 65C02 Tube second processor.
 
 <p>
     <img src="Screenshot0.png" alt="BBC Model B emulator screenshot" width="49%">
@@ -31,6 +31,7 @@ ROMS/HiBASIC.rom        Tube BASIC
 ROMS/DNFS302.rom        BBC-side Tube host ROM
 ROMS/6502tube_120.rom   65C02 Tube parasite ROM
 ROMS/AMXMSE331.rom      AMX mouse ROM
+ROMS/PHROM.rom          Acorn Word PHROM A speech data (16 KB)
 ```
 
 ## Build And Run
@@ -71,6 +72,7 @@ Run with optional hardware enabled:
 dotnet run --project BBC_MODEL_B.csproj -- --tube-6502 Games/Elite-v1.0_B.uef
 dotnet run --project BBC_MODEL_B.csproj -- --modem
 dotnet run --project BBC_MODEL_B.csproj -- --print
+dotnet run --project BBC_MODEL_B.csproj -- --speech
 ```
 
 ## Command Line
@@ -112,6 +114,7 @@ Plain paths are accepted. Disc images boot by default, tape images enable the ta
 
 --modem             Start with the Hayes modem enabled.
 --print             Start with the dot-matrix printer enabled.
+--speech            Start with the Acorn Speech System enabled.
 ```
 
 Examples:
@@ -129,7 +132,7 @@ The SDL window has a small menu bar for the common jobs:
 ```text
 File         Screenshot, save state, open state, quit
 Machine      BREAK, reset, sound, pause
-Peripherals  Tape player, modem, printer, disc drives, Tube
+Peripherals  Tape player, modem, printer, disc drives, speech, Tube
 ROM Manager  Edit sideways ROM banks and import/export ROM layouts
 Keyboard Mapper
              Remap the BBC keyboard and import/export input profiles
@@ -196,12 +199,15 @@ The Peripherals menu lets you add or remove hardware while the emulator is runni
 - `Tape Player` toggles the cassette hardware and tape controls.
 - `Hayes Modem` enables the modem and its front-panel LEDs.
 - `Printer` connects an Epson FX-80-compatible dot-matrix printer to the BBC printer port and opens its paper display and controls.
+- `Acorn Speech System` fits the TMS5220 processor and loads `ROMS/PHROM.rom` as the TMS6100 Word PHROM A.
 - `Disc Drive 0` and `Disc Drive 1` enable or remove each physical drive.
 - `6502 Co-Processor` enables the Tube hardware. Use `Ctrl-BREAK` after changing it so the BBC sees the new machine.
 
 The Hayes modem accepts familiar AT commands such as `AT`, `ATZ`, `ATH`, `ATO`, `ATE0/1`, `ATV0/1`, `AT&F`, and `ATDThost:port`. A successful dial opens a TCP connection, defaulting to port 23 if no port is given. The BBC serial side should be set to 9600 baud, 8 data bits, no parity.
 
 AMX mouse support is available through the ROM Manager. Add `ROMS/AMXMSE331.rom` to a sideways ROM bank, then use the usual BBC commands such as `*MOUSE ON` and `*POINTER ON`.
+
+The speech system supports both PHROM vocabulary and speech data supplied from BBC RAM through the TMS5220 FIFO. With Word PHROM A installed, `SOUND -1,160,0,0` says “ACORN”. The PHROM is speech data rather than a sideways ROM and must remain named `PHROM.rom` in the `ROMS/` directory.
 
 ## Project Layout
 
@@ -214,7 +220,7 @@ Assets/              Config files, drive sounds, and sample media
 Screenshots/         Runtime screenshot output
 ```
 
-The main files are named after the hardware they emulate: `Intel8271_Disk.cs`, `System6522Via.cs`, `User6522Via.cs`, `SerialACIA.cs`, `SN76489_Sound.cs`, `TubeUla.cs`, `HD6845_Video.cs`, and so on. `Emulator.cs` ties the machine together.
+The main files are named after the hardware they emulate: `Intel8271_Disk.cs`, `System6522Via.cs`, `User6522Via.cs`, `SerialACIA.cs`, `SN76489_Sound.cs`, `TMS5220_Speech.cs`, `TubeUla.cs`, `HD6845_Video.cs`, and so on. `Emulator.cs` ties the machine together.
 
 ## Legal Note
 

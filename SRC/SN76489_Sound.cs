@@ -108,6 +108,8 @@ namespace BBC
         private double printerClickFastNoise;
         private double printerClickSlowNoise;
         private double printerClickResonancePhase;
+        private double speechSampleRemainder;
+        private short speechSample;
         private uint audioDevice;
         private Thread? audioThread;
         private bool running;
@@ -131,6 +133,8 @@ namespace BBC
                     discDriveSound = value;
             }
         }
+
+        public TMS5220_Speech Speech { get; } = new TMS5220_Speech();
 
         public SN76489_Sound()
         {
@@ -174,6 +178,9 @@ namespace BBC
                 printerClickFastNoise = 0;
                 printerClickSlowNoise = 0;
                 printerClickResonancePhase = 0;
+                speechSampleRemainder = 0;
+                speechSample = 0;
+                Speech.Reset();
                 Volatile.Write(ref printerOutputActive, 0);
                 discDriveSound?.Reset();
             }
@@ -211,6 +218,9 @@ namespace BBC
                 writer.Write(noiseShiftRegister);
                 writer.Write(latchedChannel);
                 writer.Write(latchedVolume);
+                writer.Write(speechSampleRemainder);
+                writer.Write(speechSample);
+                Speech.SaveState(writer);
             }
         }
 
@@ -235,6 +245,9 @@ namespace BBC
                 noiseShiftRegister = reader.ReadUInt16();
                 latchedChannel = reader.ReadInt32();
                 latchedVolume = reader.ReadBoolean();
+                speechSampleRemainder = reader.ReadDouble();
+                speechSample = reader.ReadInt16();
+                Speech.LoadState(reader);
 
                 scheduledEvents.Clear();
                 Volatile.Write(ref scheduledEventCount, 0);
@@ -804,13 +817,39 @@ namespace BBC
             }
         }
 
+        public byte ReadSpeech()
+        {
+            lock (syncRoot)
+                return Speech.Read();
+        }
+
+        public byte ReadSpeechPortBInputs()
+        {
+            lock (syncRoot)
+            {
+                byte inputs = 0xFF;
+                if (Speech.Ready)
+                    inputs &= 0x7F;
+                if (Speech.InterruptAsserted)
+                    inputs &= 0xBF;
+                return inputs;
+            }
+        }
+
+        public void WriteSpeech(byte value)
+        {
+            lock (syncRoot)
+                Speech.Write(value);
+        }
+
         /// <summary>The PSG tone counters advance with emulated CPU time, while host audio drains independently.</summary>
         public void Tick(int cycles)
         {
             if (cycles <= 0)
                 return;
 
-            if (Volatile.Read(ref hostOutputPaused) || Volatile.Read(ref hostOutputMuted))
+            if ((Volatile.Read(ref hostOutputPaused) || Volatile.Read(ref hostOutputMuted))
+                && !Speech.IsSpeaking)
             {
                 lock (syncRoot)
                 {
@@ -838,6 +877,7 @@ namespace BBC
             if (Volatile.Read(ref scheduledEventCount) == 0
                 && Volatile.Read(ref emulatedOutputActive) == 0
                 && Volatile.Read(ref printerOutputActive) == 0
+                && !Speech.IsSpeaking
                 && discDriveSound?.HasActiveOutput != true)
             {
                 emulatedCycle += cycles;
@@ -946,7 +986,22 @@ namespace BBC
             mixed += discDriveSound?.GenerateSample() ?? 0;
             mixed += GenerateCassetteToneSample();
             mixed += GeneratePrinterClickSample();
+            mixed += GenerateSpeechSample();
             return (short)Math.Clamp(mixed * short.MaxValue, short.MinValue, short.MaxValue);
+        }
+
+        private double GenerateSpeechSample()
+        {
+            speechSampleRemainder += 8_000.0 / SampleRate;
+            if (speechSampleRemainder >= 1)
+            {
+                speechSampleRemainder -= 1;
+                speechSample = Speech.GenerateSample();
+            }
+
+            // The fitted speech output is mixed into the same analogue path as
+            // the SN76489 before the Model B's speaker amplifier.
+            return speechSample / (double)short.MaxValue * 0.75;
         }
 
         private double GeneratePrinterClickSample()
@@ -1035,6 +1090,7 @@ namespace BBC
                 || volumes[2] < 15
                 || volumes[3] < 15
                 || Volatile.Read(ref printerOutputActive) != 0
+                || Speech.IsSpeaking
                 || discDriveSound?.HasActiveOutput == true;
         }
 

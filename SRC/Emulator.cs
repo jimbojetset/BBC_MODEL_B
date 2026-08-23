@@ -53,6 +53,19 @@ namespace BBC
                 emulator.SetHayesModemEnabled(true, notify: false);
             if (options.Printer)
                 emulator.SetPrinterEnabled(true, notify: false);
+            if (options.Speech)
+            {
+                try
+                {
+                    emulator.SetSpeechEnabled(true, notify: false);
+                }
+                catch (Exception ex) when (IsUserMountException(ex))
+                {
+                    Console.Error.WriteLine($"Could not enable Acorn Speech System: {ex.Message}");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+            }
 
             foreach (MountRequest mount in options.Mounts)
             {
@@ -71,8 +84,6 @@ namespace BBC
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  bank {Emulator.BasicRomBank} ({Path.GetFileName(emulator.BasicRomPath)})");
             Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank} ({Path.GetFileName(emulator.DfsRomPath)})");
-            if (emulator.AmxMouseRomPath is not null)
-                Console.WriteLine($"AMX ROM:    available ({Path.GetFileName(emulator.AmxMouseRomPath)})");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
             if (emulator.tube6502 is not null)
                 Console.WriteLine($"Tube 6502:  reset PC ${emulator.tube6502.Cpu.registers.PC:X4} ({Path.GetFileName(emulator.Tube6502RomPath)})");
@@ -154,6 +165,7 @@ Options:
   --tube-6502-rom PATH    Use a non-default Tube 65C02 ROM.
   --modem                 Start with the Hayes modem enabled.
   --print                 Start with the dot-matrix printer enabled.
+  --speech                Start with the Acorn Speech System enabled.
 
 Arguments:
   PATH                    Mount a disc image, tape image, or host file. Disc images
@@ -183,6 +195,7 @@ Examples:
             bool tube6502 = false;
             bool hayesModem = false;
             bool printer = false;
+            bool speech = false;
             string? tubeHostRomPath = null;
             string? tube6502RomPath = null;
 
@@ -204,6 +217,12 @@ Examples:
                 if (string.Equals(args[i], "--print", StringComparison.OrdinalIgnoreCase))
                 {
                     printer = true;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--speech", StringComparison.OrdinalIgnoreCase))
+                {
+                    speech = true;
                     continue;
                 }
 
@@ -329,7 +348,7 @@ Examples:
                     mounts.Add(new MountRequest(blankImage, null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, autoRunDisc, tube6502, hayesModem, printer, tubeHostRomPath, tube6502RomPath, startupCommands);
+            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, autoRunDisc, tube6502, hayesModem, printer, speech, tubeHostRomPath, tube6502RomPath, startupCommands);
         }
 
         private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
@@ -436,6 +455,7 @@ Examples:
             bool Tube6502,
             bool HayesModem,
             bool Printer,
+            bool Speech,
             string? TubeHostRomPath,
             string? Tube6502RomPath,
             IReadOnlyList<string> StartupCommands);
@@ -467,6 +487,7 @@ Examples:
         private const string TubeHostRomFileName = "DNFS302.rom";
         private const string Tube6502RomFileName = "6502tube_120.rom";
         private const string AmxMouseRomFileName = "AMXMSE331.rom";
+        private const string SpeechPhraseRomFileName = "PHROM.rom";
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
         private const string HiBasicRomMarker = "BASIC\0(C)1983 Acorn";
         private const string DfsRomMarker = "DFS\0" + "0.90";
@@ -562,7 +583,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 23;
+        private const int SaveStateVersion = 24;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -588,6 +609,8 @@ Examples:
         public string? AmxMouseRomPath { get; private set; }
 
         public string? Tube6502RomPath { get; private set; }
+
+        public string SpeechPhraseRomPath { get; private set; } = string.Empty;
 
         public Emulator()
         {
@@ -717,6 +740,7 @@ Examples:
                 DrainHostTapePlayerToggleRequests(Display);
                 DrainHostDriveToggleRequests(Display);
                 DrainHostTube6502ToggleRequests(Display);
+                DrainHostSpeechToggleRequests(Display);
                 DrainHostHayesModemToggleRequests(Display);
                 DrainHostPrinterToggleRequests(Display);
                 DrainHostHayesLoopbackToggleRequests(Display);
@@ -766,6 +790,7 @@ Examples:
                 Display.TapePlayerEnabled = tapePlayerEnabled;
                 Display.TapeCounter = tape.Counter;
                 Display.Tube6502Enabled = tube6502 is not null;
+                Display.SpeechEnabled = Sound.Speech.Enabled;
                 Display.HayesModemEnabled = hayesModem is not null;
                 Display.PrinterEnabled = printer.Enabled;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
@@ -1328,6 +1353,22 @@ Examples:
             int count = display.DrainTube6502ToggleRequests();
             for (int i = 0; i < count; i++)
                 SetTube6502Enabled(tube6502 is null);
+        }
+
+        private void DrainHostSpeechToggleRequests(Display display)
+        {
+            int count = display.DrainSpeechToggleRequests();
+            if ((count & 1) != 0)
+            {
+                try
+                {
+                    SetSpeechEnabled(!Sound.Speech.Enabled);
+                }
+                catch (Exception ex) when (IsUserMountException(ex))
+                {
+                    display.ShowNotification("Could not enable Acorn Speech System", ex.Message, 5000);
+                }
+            }
         }
 
         private void DrainHostHayesModemToggleRequests(Display display)
@@ -2261,6 +2302,10 @@ Examples:
                 adc.LoadState(reader);
                 discController.LoadState(reader);
                 Sound.LoadState(reader);
+                if (Sound.Speech.Enabled && !Sound.Speech.HasPhraseRom)
+                    LoadSpeechPhraseRom(preservePosition: true);
+                else if (!Sound.Speech.Enabled)
+                    Sound.Speech.ClearPhraseRom();
                 Video.LoadState(reader);
                 bool saveHasTube = reader.ReadBoolean();
                 if (saveHasTube)
@@ -2866,7 +2911,9 @@ Examples:
 
                 Display?.ShowNotification(
                     enabled ? "6502 Co-Processor enabled" : "6502 Co-Processor disabled",
-                    "Press Ctrl-BREAK for the BBC to recognise the change",
+                    enabled
+                        ? "Press BREAK for the BBC to recognise the change"
+                        : "Press Ctrl-BREAK for the BBC to recognise the change",
                     6000);
             }
             finally
@@ -2900,6 +2947,35 @@ Examples:
                     "BBC RS423 serial port",
                     3000);
             }
+        }
+
+        private void SetSpeechEnabled(bool enabled, bool notify = true)
+        {
+            if (enabled == Sound.Speech.Enabled)
+                return;
+
+            if (enabled)
+                LoadSpeechPhraseRom();
+
+            Sound.Speech.SetEnabled(enabled);
+            if (!enabled)
+                Sound.Speech.ClearPhraseRom();
+            if (notify)
+            {
+                Display?.ShowNotification(
+                    enabled ? "Acorn Speech System enabled" : "Acorn Speech System disabled",
+                    enabled
+                        ? "Press BREAK for the BBC to recognise the change"
+                        : "Press Ctrl-BREAK for the BBC to recognise the change",
+                    6000);
+            }
+        }
+
+        private void LoadSpeechPhraseRom(bool preservePosition = false)
+        {
+            if (string.IsNullOrEmpty(SpeechPhraseRomPath))
+                SpeechPhraseRomPath = Path.Combine(GetRomRoot(), SpeechPhraseRomFileName);
+            Sound.Speech.LoadPhraseRom(SpeechPhraseRomPath, preservePosition);
         }
 
         private void SetPrinterEnabled(bool enabled, bool notify = true)
@@ -3312,6 +3388,7 @@ Examples:
             DfsRomPath = configuredTubeHostRomPath ?? Path.Combine(romRoot, tubeEnabled ? TubeHostRomFileName : DfsRomFileName);
             AmxMouseRomPath = Path.Combine(romRoot, AmxMouseRomFileName);
             Tube6502RomPath = configuredTube6502RomPath ?? (tubeEnabled ? Path.Combine(romRoot, Tube6502RomFileName) : null);
+            SpeechPhraseRomPath = Path.Combine(romRoot, SpeechPhraseRomFileName);
 
             ValidateRom(OsRomPath, OsRomMarker, RomSize);
             ValidateRom(BasicRomPath, basicRomMarker, RomSize);

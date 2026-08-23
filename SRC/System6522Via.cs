@@ -22,6 +22,8 @@ namespace BBC
     public sealed class System6522Via
     {
         private const byte SoundWriteEnableLatchBit = 0;
+        private const byte SpeechReadSelectLatchBit = 1;
+        private const byte SpeechWriteSelectLatchBit = 2;
         private const byte KeyboardWriteEnableLatchBit = 3;
         private const byte ScreenAddressLatchLowBit = 4;
         private const byte ScreenAddressLatchHighBit = 5;
@@ -60,6 +62,7 @@ namespace BBC
         private int frameCounter;
         private bool vsyncLineActive;
         private bool externalVsyncLineEnabled;
+        private bool speechInterruptWasAsserted;
 
         public System6522Via(SN76489_Sound sound)
         {
@@ -99,6 +102,7 @@ namespace BBC
             frameCounter = 0;
             vsyncLineActive = false;
             externalVsyncLineEnabled = false;
+            speechInterruptWasAsserted = false;
         }
 
         public void SaveState(BinaryWriter writer)
@@ -130,6 +134,7 @@ namespace BBC
             writer.Write(frameCounter);
             writer.Write(vsyncLineActive);
             writer.Write(externalVsyncLineEnabled);
+            writer.Write(speechInterruptWasAsserted);
         }
 
         public void LoadState(BinaryReader reader)
@@ -163,6 +168,7 @@ namespace BBC
             frameCounter = reader.ReadInt32();
             vsyncLineActive = reader.ReadBoolean();
             externalVsyncLineEnabled = reader.ReadBoolean();
+            speechInterruptWasAsserted = reader.ReadBoolean();
 
             UpdateSoundSlowDataBus();
             ScreenMemoryWindowChanged?.Invoke(CurrentScreenMemoryWindow);
@@ -254,7 +260,12 @@ namespace BBC
                 TickTimer1(cycles);
 
             if (timer2Running)
-                TickTimer2(cycles);
+            {
+                if (IsTimer2PulseCounting())
+                    TickSpeechInterruptCounter();
+                else
+                    TickTimer2(cycles);
+            }
 
             if (!externalVsyncLineEnabled && peripheralCycles > 0)
                 TickVsync(peripheralCycles);
@@ -266,7 +277,7 @@ namespace BBC
 
             return register switch
             {
-                0x0 => ReadPort(portB, dataDirectionB),
+                0x0 => (byte)(ReadPort(portB, dataDirectionB) & sound.ReadSpeechPortBInputs()),
                 0x1 => ReadPortAWithHandshake(),
                 0xF => ReadPortAWithoutHandshake(),
                 0x2 => dataDirectionB,
@@ -426,6 +437,24 @@ namespace BBC
                 timer2Counter -= 2;
         }
 
+        private bool IsTimer2PulseCounting()
+        {
+            return (registers[0xB] & 0x20) != 0;
+        }
+
+        private void TickSpeechInterruptCounter()
+        {
+            bool asserted = sound.Speech.InterruptAsserted;
+            if (asserted && !speechInterruptWasAsserted)
+            {
+                // In ACR pulse-counting mode T2 is clocked by PB6 transitions,
+                // which is how MOS turns the TMS5220 /INT pin into a VIA IRQ.
+                TickTimer2(2);
+            }
+
+            speechInterruptWasAsserted = asserted;
+        }
+
         private void TickVsync(int peripheralCycles)
         {
             vsyncCycleCounter += peripheralCycles;
@@ -443,6 +472,7 @@ namespace BBC
         {
             int latchBit = value & 0x07;
             bool latchValue = (value & 0x08) != 0;
+            byte previousLatch = addressableLatch;
             ScreenMemoryWindow previousWindow = GetScreenMemoryWindow(addressableLatch);
 
             if (latchValue)
@@ -452,6 +482,13 @@ namespace BBC
 
             if (latchBit == SoundWriteEnableLatchBit)
                 UpdateSoundSlowDataBus();
+
+            // IC32 drives the active-low RS and WS inputs on the optional
+            // TMS5220. Data is accepted on the falling edge of WS.
+            if (latchBit == SpeechWriteSelectLatchBit
+                && (previousLatch & (1 << SpeechWriteSelectLatchBit)) != 0
+                && !latchValue)
+                sound.WriteSpeech(portA);
 
             if (latchBit is ScreenAddressLatchLowBit or ScreenAddressLatchHighBit)
             {
@@ -549,19 +586,27 @@ namespace BBC
         private byte ReadPortAWithHandshake()
         {
             ClearInterrupt(InterruptFlagVsync);
-
-            if (dataDirectionA == 0x7F)
-                return ReadKeyboardPortA();
-
-            return ReadPort(portA, dataDirectionA);
+            return ReadSlowDataBus();
         }
 
         private byte ReadPortAWithoutHandshake()
         {
-            if (dataDirectionA == 0x7F)
-                return ReadKeyboardPortA();
+            return ReadSlowDataBus();
+        }
 
-            return ReadPort(portA, dataDirectionA);
+        private byte ReadSlowDataBus()
+        {
+            byte value = dataDirectionA == 0x7F
+                ? ReadKeyboardPortA()
+                : ReadPort(portA, dataDirectionA);
+
+            // The keyboard and speech processor are both open-collector users
+            // of the Model B slow data bus. If software selects both at once,
+            // their values are electrically ANDed rather than one taking priority.
+            if (IsSpeechReadSelected())
+                value &= sound.ReadSpeech();
+
+            return value;
         }
 
         private byte ReadKeyboardPortA()
@@ -589,6 +634,11 @@ namespace BBC
         private bool IsKeyboardAutoScanEnabled()
         {
             return (addressableLatch & (1 << KeyboardWriteEnableLatchBit)) != 0;
+        }
+
+        private bool IsSpeechReadSelected()
+        {
+            return (addressableLatch & (1 << SpeechReadSelectLatchBit)) == 0;
         }
 
         private void UpdateKeyboardColumnInterrupt()
