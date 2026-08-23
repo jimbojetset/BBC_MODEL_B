@@ -10,7 +10,6 @@ obj/
 *.log
 SSD/*.png
 ROMS/*.crdownload
-ROMS/PHROM.rom
 .vs/
 NotWorking/
 AGENTS.md
