@@ -36,6 +36,9 @@ namespace BBC
             using Emulator emulator = new Emulator();
             StartupOptions options = ParseStartupOptions(args);
 
+            if (options.Wd1770)
+                emulator.ConfigureDiscInterface(DiscInterface.Wd1770);
+
             if (!string.IsNullOrEmpty(options.PrintAutoLoadPath))
             {
                 Intel8271_Disk disc = new Intel8271_Disk();
@@ -84,6 +87,7 @@ namespace BBC
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  bank {Emulator.BasicRomBank} ({Path.GetFileName(emulator.BasicRomPath)})");
             Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank} ({Path.GetFileName(emulator.DfsRomPath)})");
+            Console.WriteLine($"Disc:       {(emulator.discInterface == DiscInterface.Wd1770 ? "WD1770" : "Intel 8271")}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
             if (emulator.tube6502 is not null)
                 Console.WriteLine($"Tube 6502:  reset PC ${emulator.tube6502.Cpu.registers.PC:X4} ({Path.GetFileName(emulator.Tube6502RomPath)})");
@@ -166,6 +170,7 @@ Options:
   --modem                 Start with the Hayes modem enabled.
   --print                 Start with the dot-matrix printer enabled.
   --speech                Start with the Acorn Speech System enabled.
+  --wd1770                Start with the WD1770 interface and Acorn 1770 DFS.
 
 Arguments:
   PATH                    Mount a disc image, tape image, or host file. Disc images
@@ -196,6 +201,7 @@ Examples:
             bool hayesModem = false;
             bool printer = false;
             bool speech = false;
+            bool wd1770 = false;
             string? tubeHostRomPath = null;
             string? tube6502RomPath = null;
 
@@ -223,6 +229,12 @@ Examples:
                 if (string.Equals(args[i], "--speech", StringComparison.OrdinalIgnoreCase))
                 {
                     speech = true;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--wd1770", StringComparison.OrdinalIgnoreCase))
+                {
+                    wd1770 = true;
                     continue;
                 }
 
@@ -348,7 +360,7 @@ Examples:
                     mounts.Add(new MountRequest(blankImage, null));
             }
 
-            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, autoRunDisc, tube6502, hayesModem, printer, speech, tubeHostRomPath, tube6502RomPath, startupCommands);
+            return new StartupOptions(headlessMilliseconds, mounts, tapePath, printAutoLoadPath, loadStatePath, autoRunDisc, tube6502, hayesModem, printer, speech, wd1770, tubeHostRomPath, tube6502RomPath, startupCommands);
         }
 
         private static bool MountsContainPath(IEnumerable<MountRequest> mounts, string path)
@@ -456,6 +468,7 @@ Examples:
             bool HayesModem,
             bool Printer,
             bool Speech,
+            bool Wd1770,
             string? TubeHostRomPath,
             string? Tube6502RomPath,
             IReadOnlyList<string> StartupCommands);
@@ -484,6 +497,7 @@ Examples:
         private const string BasicRomFileName = "BASIC2.rom";
         private const string HiBasicRomFileName = "HiBASIC.rom";
         private const string DfsRomFileName = "DFS-0.9.rom";
+        private const string Wd1770DfsRomFileName = "DFS-2.26.rom";
         private const string TubeHostRomFileName = "DNFS302.rom";
         private const string Tube6502RomFileName = "6502tube_120.rom";
         private const string AmxMouseRomFileName = "AMXMSE331.rom";
@@ -491,6 +505,7 @@ Examples:
         private const string BasicRomMarker = "BASIC\0(C)1982 Acorn";
         private const string HiBasicRomMarker = "BASIC\0(C)1983 Acorn";
         private const string DfsRomMarker = "DFS\0" + "0.90";
+        private const string Wd1770DfsRomMarker = "{DFS";
         private const string DnfsRomMarker = "DFS,NET";
         private const string Tube6502RomMarker = "6502 TUBE";
         private static readonly bool TapeAutoplayEnabled = Environment.GetEnvironmentVariable("BBC_TAPE_AUTOPLAY") == "1";
@@ -549,7 +564,8 @@ Examples:
         private readonly UefTape tape;
         private readonly uPD7002_ADC adc = new uPD7002_ADC();
         private readonly HostFilingSystem hostFilingSystem;
-        private readonly Intel8271_Disk discController;
+        private IDiscController discController;
+        private DiscInterface discInterface;
         private readonly TubeUla tubeUla = new TubeUla();
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
@@ -583,7 +599,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 24;
+        private const int SaveStateVersion = 26;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -628,9 +644,7 @@ Examples:
             hostFilingSystem.BreakCommandObserved = QueueBreakContinuation;
             hostFilingSystem.MouseEnabledChanged = SetMouseEnabled;
             discController = new Intel8271_Disk();
-            discController.DriveMotorStarted += _ => discDriveSound?.MotorStarted();
-            discController.DriveMotorStopped += _ => discDriveSound?.MotorStopped();
-            discController.DriveSeek += (_, trackDelta) => discDriveSound?.Seek(trackDelta);
+            AttachDiscControllerSound();
 
             tubeUla.HostIrqChanged += asserted =>
             {
@@ -667,6 +681,33 @@ Examples:
             tube6502Configured = true;
             configuredTubeHostRomPath = hostRomPath;
             configuredTube6502RomPath = parasiteRomPath;
+        }
+
+        public void ConfigureDiscInterface(DiscInterface selectedInterface)
+        {
+            if (initialised)
+                throw new InvalidOperationException("Disc interface configuration must be applied before the emulator is initialised.");
+
+            if (discInterface == selectedInterface)
+                return;
+
+            discController = CreateDiscController(selectedInterface);
+            discInterface = selectedInterface;
+            AttachDiscControllerSound();
+        }
+
+        private static IDiscController CreateDiscController(DiscInterface selectedInterface) => selectedInterface switch
+        {
+            DiscInterface.Intel8271 => new Intel8271_Disk(),
+            DiscInterface.Wd1770 => new WD1770_Disk(),
+            _ => throw new ArgumentOutOfRangeException(nameof(selectedInterface))
+        };
+
+        private void AttachDiscControllerSound()
+        {
+            discController.DriveMotorStarted += _ => discDriveSound?.MotorStarted();
+            discController.DriveMotorStopped += _ => discDriveSound?.MotorStopped();
+            discController.DriveSeek += (_, trackDelta) => discDriveSound?.Seek(trackDelta);
         }
 
         /// <summary>MOS sees RAM, paged ROMs, and SHEILA devices in their BBC Model B address ranges.</summary>
@@ -745,6 +786,7 @@ Examples:
                 DrainHostPrinterToggleRequests(Display);
                 DrainHostHayesLoopbackToggleRequests(Display);
                 DrainHostHayesResetRequests(Display);
+                DrainHostDiscInterfaceSelection(Display);
                 DrainHostPowerResetRequests(Display);
                 DrainHostBreakInput(Display);
                 DrainHostDiscLoads(Display);
@@ -790,6 +832,7 @@ Examples:
                 Display.TapePlayerEnabled = tapePlayerEnabled;
                 Display.TapeCounter = tape.Counter;
                 Display.Tube6502Enabled = tube6502 is not null;
+                Display.CurrentDiscInterface = discInterface;
                 Display.SpeechEnabled = Sound.Speech.Enabled;
                 Display.HayesModemEnabled = hayesModem is not null;
                 Display.PrinterEnabled = printer.Enabled;
@@ -1174,6 +1217,61 @@ Examples:
             int drive1Toggles = display.DrainDrive1ToggleRequests();
             for (int i = 0; i < drive1Toggles; i++)
                 SetDiscDriveEnabled(1, !drive1Enabled, display);
+        }
+
+        private void DrainHostDiscInterfaceSelection(Display display)
+        {
+            if (!display.TryDrainDiscInterfaceSelection(out DiscInterface selectedInterface)
+                || selectedInterface == discInterface)
+                return;
+
+            StopCpu();
+            IDiscController previousController = discController;
+            DiscInterface previousInterface = discInterface;
+            string previousDfsRomPath = DfsRomPath;
+            try
+            {
+                if (previousController.ImageDirty)
+                    previousController.Flush();
+                using MemoryStream mediaState = new MemoryStream();
+                using (BinaryWriter mediaWriter = new BinaryWriter(mediaState, Encoding.UTF8, leaveOpen: true))
+                    previousController.SaveMediaState(mediaWriter);
+                previousController.PowerOff();
+
+                discController = CreateDiscController(selectedInterface);
+                discInterface = selectedInterface;
+                AttachDiscControllerSound();
+                mediaState.Position = 0;
+                using (BinaryReader mediaReader = new BinaryReader(mediaState, Encoding.UTF8, leaveOpen: true))
+                    discController.LoadMediaState(mediaReader);
+
+                DfsRomPath = Path.Combine(GetRomRoot(), selectedInterface == DiscInterface.Wd1770
+                    ? Wd1770DfsRomFileName
+                    : DfsRomFileName);
+                ValidateRom(
+                    DfsRomPath,
+                    selectedInterface == DiscInterface.Wd1770 ? Wd1770DfsRomMarker : DfsRomMarker,
+                    selectedInterface == DiscInterface.Wd1770 ? RomSize : RomSize / 2,
+                    RomSize);
+                SetSidewaysRomBank(DfsRomBank, DfsRomPath);
+                display.SetRomSlots(sidewaysRomSlots);
+
+                PowerReset(display);
+                display.ShowNotification(
+                    selectedInterface == DiscInterface.Wd1770
+                        ? "WD1770 + Acorn 1770 DFS"
+                        : "Intel 8271 + Acorn DFS 1.20",
+                    "BBC power reset",
+                    4000);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+            {
+                discController = previousController;
+                discInterface = previousInterface;
+                DfsRomPath = previousDfsRomPath;
+                display.ShowNotification("Disc interface unchanged", ex.Message, 5000);
+                StartCpu();
+            }
         }
 
         private void SetDiscDriveEnabled(int drive, bool enabled, Display? display = null)
@@ -2223,6 +2321,7 @@ Examples:
                     WriteStateBlock(writer, hayesModem.SaveState);
 
                 adc.SaveState(writer);
+                writer.Write((int)discInterface);
                 discController.SaveState(writer);
                 Sound.SaveState(writer);
                 Video.SaveState(writer);
@@ -2300,6 +2399,15 @@ Examples:
                 }
 
                 adc.LoadState(reader);
+                DiscInterface savedDiscInterface = (DiscInterface)reader.ReadInt32();
+                if (!Enum.IsDefined(savedDiscInterface))
+                    throw new InvalidDataException("Save state contains an unknown disc interface.");
+                if (savedDiscInterface != discInterface)
+                {
+                    discController = CreateDiscController(savedDiscInterface);
+                    discInterface = savedDiscInterface;
+                    AttachDiscControllerSound();
+                }
                 discController.LoadState(reader);
                 Sound.LoadState(reader);
                 if (Sound.Speech.Enabled && !Sound.Speech.HasPhraseRom)
@@ -2870,7 +2978,9 @@ Examples:
                 {
                     string romRoot = GetRomRoot();
                     string hiBasicRomPath = Path.Combine(romRoot, HiBasicRomFileName);
-                    DfsRomPath = configuredTubeHostRomPath ?? Path.Combine(romRoot, TubeHostRomFileName);
+                    DfsRomPath = discInterface == DiscInterface.Wd1770
+                        ? Path.Combine(romRoot, Wd1770DfsRomFileName)
+                        : configuredTubeHostRomPath ?? Path.Combine(romRoot, TubeHostRomFileName);
                     Tube6502RomPath = configuredTube6502RomPath ?? Path.Combine(romRoot, Tube6502RomFileName);
                     if (File.Exists(hiBasicRomPath))
                     {
@@ -2878,7 +2988,11 @@ Examples:
                         ValidateRom(BasicRomPath, HiBasicRomMarker, RomSize);
                         SetSidewaysRomBank(BasicRomBank, BasicRomPath);
                     }
-                    ValidateRom(DfsRomPath, DnfsRomMarker, RomSize / 2, RomSize);
+                    ValidateRom(
+                        DfsRomPath,
+                        discInterface == DiscInterface.Wd1770 ? Wd1770DfsRomMarker : DnfsRomMarker,
+                        discInterface == DiscInterface.Wd1770 ? RomSize : RomSize / 2,
+                        RomSize);
                     ValidateRom(Tube6502RomPath, Tube6502RomMarker, 1, RomSize);
                     SetSidewaysRomBank(DfsRomBank, DfsRomPath);
 
@@ -2893,10 +3007,15 @@ Examples:
                 {
                     string romRoot = GetRomRoot();
                     BasicRomPath = Path.Combine(romRoot, BasicRomFileName);
-                    DfsRomPath = Path.Combine(romRoot, DfsRomFileName);
+                    DfsRomPath = Path.Combine(romRoot,
+                        discInterface == DiscInterface.Wd1770 ? Wd1770DfsRomFileName : DfsRomFileName);
                     Tube6502RomPath = null;
                     ValidateRom(BasicRomPath, BasicRomMarker, RomSize);
-                    ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
+                    ValidateRom(
+                        DfsRomPath,
+                        discInterface == DiscInterface.Wd1770 ? Wd1770DfsRomMarker : DfsRomMarker,
+                        discInterface == DiscInterface.Wd1770 ? RomSize : RomSize / 2,
+                        RomSize);
                     SetSidewaysRomBank(BasicRomBank, BasicRomPath);
                     SetSidewaysRomBank(DfsRomBank, DfsRomPath);
 
@@ -3385,14 +3504,18 @@ Examples:
                     basicRomMarker = HiBasicRomMarker;
                 }
             }
-            DfsRomPath = configuredTubeHostRomPath ?? Path.Combine(romRoot, tubeEnabled ? TubeHostRomFileName : DfsRomFileName);
+            DfsRomPath = discInterface == DiscInterface.Wd1770
+                ? Path.Combine(romRoot, Wd1770DfsRomFileName)
+                : configuredTubeHostRomPath ?? Path.Combine(romRoot, tubeEnabled ? TubeHostRomFileName : DfsRomFileName);
             AmxMouseRomPath = Path.Combine(romRoot, AmxMouseRomFileName);
             Tube6502RomPath = configuredTube6502RomPath ?? (tubeEnabled ? Path.Combine(romRoot, Tube6502RomFileName) : null);
             SpeechPhraseRomPath = Path.Combine(romRoot, SpeechPhraseRomFileName);
 
             ValidateRom(OsRomPath, OsRomMarker, RomSize);
             ValidateRom(BasicRomPath, basicRomMarker, RomSize);
-            if (tubeEnabled)
+            if (discInterface == DiscInterface.Wd1770)
+                ValidateRom(DfsRomPath, Wd1770DfsRomMarker, RomSize);
+            else if (tubeEnabled)
                 ValidateRom(DfsRomPath, DnfsRomMarker, RomSize / 2, RomSize);
             else
                 ValidateRom(DfsRomPath, DfsRomMarker, RomSize / 2, RomSize);
@@ -3715,7 +3838,9 @@ Examples:
                 return value;
             }
 
-            if (Intel8271_Disk.IsAddress(address))
+            if (discInterface == DiscInterface.Wd1770
+                ? WD1770_Disk.IsAddress(address)
+                : Intel8271_Disk.IsAddress(address))
                 return discController.Read(address);
 
             if (SerialACIA.IsAddress(address))
@@ -3756,7 +3881,9 @@ Examples:
                 return;
             }
 
-            if (Intel8271_Disk.IsAddress(address))
+            if (discInterface == DiscInterface.Wd1770
+                ? WD1770_Disk.IsAddress(address)
+                : Intel8271_Disk.IsAddress(address))
             {
                 discController.Write(address, value);
                 return;

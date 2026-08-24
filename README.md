@@ -3,7 +3,7 @@
 A BBC Micro Model B emulator written in C# and .NET.
 
 I wrote this to feel more like a real Beeb rather than just a launcher for disc images.
-It emulates the 6502, OS 1.20, BASIC II, DFS, the 8271 disc controller, the VIAs, video, sound, keyboard matrix, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, the Acorn Speech System, and an optional 65C02 Tube second processor.
+It emulates the 6502, OS 1.20, BASIC II, DFS, selectable Intel 8271 and WD1770 disc interfaces, the VIAs, video, sound, keyboard matrix, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, the Acorn Speech System, and an optional 65C02 Tube second processor.
 
 <p>
     <img src="Screenshot0.png" alt="BBC Model B emulator screenshot" width="49%">
@@ -32,6 +32,8 @@ ROMS/DNFS302.rom        BBC-side Tube host ROM
 ROMS/6502tube_120.rom   65C02 Tube parasite ROM
 ROMS/AMXMSE331.rom      AMX mouse ROM
 ROMS/PHROM.rom          Acorn Word PHROM A speech data (16 KB)
+ROMS/DFS-2.26.rom       Acorn 1770 DFS 2.26 (16 KB)
+ROMS/ADFS-1.30.rom      Reserved for future ADFS support (16 KB)
 ```
 
 ## Build And Run
@@ -73,6 +75,7 @@ dotnet run --project BBC_MODEL_B.csproj -- --tube-6502 Games/Elite-v1.0_B.uef
 dotnet run --project BBC_MODEL_B.csproj -- --modem
 dotnet run --project BBC_MODEL_B.csproj -- --print
 dotnet run --project BBC_MODEL_B.csproj -- --speech
+dotnet run --project BBC_MODEL_B.csproj -- --wd1770 Games/Phoenix.ssd
 ```
 
 ## Command Line
@@ -115,6 +118,7 @@ Plain paths are accepted. Disc images boot by default, tape images enable the ta
 --modem             Start with the Hayes modem enabled.
 --print             Start with the dot-matrix printer enabled.
 --speech            Start with the Acorn Speech System enabled.
+--wd1770            Start with the WD1770 interface and Acorn 1770 DFS.
 ```
 
 Examples:
@@ -133,6 +137,8 @@ The SDL window has a small menu bar for the common jobs:
 File         Screenshot, save state, open state, quit
 Machine      BREAK, reset, sound, pause
 Peripherals  Tape player, modem, printer, disc drives, speech, Tube
+Disc interface
+             Intel 8271 + Acorn DFS 1.20, or WD1770 + Acorn 1770 DFS
 ROM Manager  Edit sideways ROM banks and import/export ROM layouts
 Keyboard Mapper
              Remap the BBC keyboard and import/export input profiles
@@ -145,6 +151,7 @@ Click an on-screen disc drive or cassette player to open its media and transport
 A few useful details:
 
 - Disc menu loads accept `.ssd`, `.dsd`, and `.zip`. ZIP files are browsed without extracting them.
+- The Intel 8271 is selected by default. Changing `Disc interface` swaps the controller and DFS ROM, preserves mounted media, and power-resets the BBC.
 - Drive 0 is on by default. Drive 1 is off until enabled from `Peripherals` or used from the command line.
 - The tape player is on by default. The Hayes modem is off until enabled from `Peripherals` or started with `--modem`.
 - Enabling the printer opens the `Epson FX-80 Printer` window and adds a `Printer` menu between `Keyboard Mapper` and `View`. The display models continuous tractor-feed paper curling behind the printer, including moving transparent sprocket holes and animated form feeds between connected pages.

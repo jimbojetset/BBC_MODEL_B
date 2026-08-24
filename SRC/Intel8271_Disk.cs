@@ -20,7 +20,7 @@ namespace BBC
     /// Acorn DFS talks to an Intel 8271 FDC through SHEILA registers and expects
     /// completion NMIs, result bytes, motor spin-up, and DFS sector geometry.
     /// </summary>
-    public sealed class Intel8271_Disk
+    public sealed class Intel8271_Disk : IDiscController
     {
         private const int SectorSize = 256;
         private const int SectorsPerTrack = 10;
@@ -421,6 +421,10 @@ namespace BBC
             imageDirty = reader.ReadBoolean();
             writeProtected = reader.ReadBoolean();
         }
+
+        public void SaveMediaState(BinaryWriter writer) => SaveState(writer);
+
+        public void LoadMediaState(BinaryReader reader) => LoadState(reader);
 
         private static void WriteString(BinaryWriter writer, string? value)
         {
@@ -1002,6 +1006,32 @@ namespace BBC
             offset = logicalSector * SectorSize;
             return offset >= 0 && offset < drives[drive].Length;
         }
+
+        internal bool TryReadRawSector(int drive, int track, int sector, Span<byte> destination)
+        {
+            if (destination.Length < SectorSize || !TryGetOffset(drive, track, sector, out int offset)
+                || offset + SectorSize > drives[drive].Length)
+                return false;
+
+            drives[drive].AsSpan(offset, SectorSize).CopyTo(destination);
+            return true;
+        }
+
+        internal bool TryWriteRawSector(int drive, int track, int sector, ReadOnlySpan<byte> source)
+        {
+            if (writeProtected || source.Length < SectorSize || !TryGetOffset(drive, track, sector, out int offset)
+                || offset + SectorSize > drives[drive].Length)
+                return false;
+
+            source[..SectorSize].CopyTo(drives[drive].AsSpan(offset, SectorSize));
+            imageDirty = true;
+            imageDirtyByDrive[drive] = true;
+            return true;
+        }
+
+        internal void SetRawActivityLed(int drive, bool active) => SetDriveActivityLed(drive, active);
+
+        internal bool RawWriteProtected => writeProtected;
 
         private void SetResult(byte value, int nmiDelayCycles = 0)
         {

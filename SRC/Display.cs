@@ -149,6 +149,7 @@ namespace BBC
         private int pendingFrameAdvanceRequests;
         private int pendingDrive0ToggleRequests;
         private int pendingDrive1ToggleRequests;
+        private DiscInterface? pendingDiscInterface;
         private int pendingTube6502ToggleRequests;
         private int pendingSpeechToggleRequests;
         private int pendingHayesModemToggleRequests;
@@ -295,6 +296,8 @@ namespace BBC
         public bool TapePlayerEnabled { get; set; }
 
         public bool Tube6502Enabled { get; set; }
+
+        public DiscInterface CurrentDiscInterface { get; set; }
 
         public bool SpeechEnabled { get; set; }
 
@@ -775,6 +778,19 @@ namespace BBC
             int count = pendingPowerResetRequests;
             pendingPowerResetRequests = 0;
             return count;
+        }
+
+        public bool TryDrainDiscInterfaceSelection(out DiscInterface selectedInterface)
+        {
+            if (!pendingDiscInterface.HasValue)
+            {
+                selectedInterface = default;
+                return false;
+            }
+
+            selectedInterface = pendingDiscInterface.Value;
+            pendingDiscInterface = null;
+            return true;
         }
 
         public void CopyFrame(ReadOnlySpan<uint> pixels)
@@ -2913,6 +2929,12 @@ namespace BBC
                 case MenuCommand.ToggleDiscDrive1:
                     pendingDrive1ToggleRequests++;
                     break;
+                case MenuCommand.SelectIntel8271:
+                    pendingDiscInterface = DiscInterface.Intel8271;
+                    break;
+                case MenuCommand.SelectWd1770:
+                    pendingDiscInterface = DiscInterface.Wd1770;
+                    break;
                 case MenuCommand.ToggleTube6502:
                     pendingTube6502ToggleRequests++;
                     break;
@@ -3099,6 +3121,8 @@ namespace BBC
                 MenuCommand.ToggleTapePlayer => TapePlayerEnabled,
                 MenuCommand.ToggleDiscDrive0 => Drive0Enabled,
                 MenuCommand.ToggleDiscDrive1 => Drive1Enabled,
+                MenuCommand.SelectIntel8271 => CurrentDiscInterface == DiscInterface.Intel8271,
+                MenuCommand.SelectWd1770 => CurrentDiscInterface == DiscInterface.Wd1770,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
                 MenuCommand.ToggleSpeech => SpeechEnabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
@@ -5158,6 +5182,8 @@ namespace BBC
             ToggleTapePlayer,
             ToggleDiscDrive0,
             ToggleDiscDrive1,
+            SelectIntel8271,
+            SelectWd1770,
             ToggleTube6502,
             ToggleSpeech,
             ToggleHayesModem,
@@ -5196,6 +5222,11 @@ namespace BBC
                     new MenuItem("Disc Drive 1", "Ctrl+Shift+D", MenuCommand.ToggleDiscDrive1),
                     new MenuItem("Acorn Speech System", "", MenuCommand.ToggleSpeech),
                     new MenuItem("6502 Co-Processor", "Ctrl+Shift+C", MenuCommand.ToggleTube6502)
+                ]),
+                new MenuDefinition("Disc interface",
+                [
+                    new MenuItem("Intel 8271 + Acorn DFS 1.20", "", MenuCommand.SelectIntel8271),
+                    new MenuItem("WD1770 + Acorn 1770 DFS", "", MenuCommand.SelectWd1770)
                 ]),
                 new MenuDefinition("ROM Manager", [], MenuCommand.OpenRomManager),
                 new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper)
