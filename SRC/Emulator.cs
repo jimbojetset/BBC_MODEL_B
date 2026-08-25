@@ -87,6 +87,8 @@ namespace BBC
             Console.WriteLine($"OS ROM:     ${Emulator.OsRomStart:X4}-${Emulator.OsRomEnd:X4}");
             Console.WriteLine($"BASIC ROM:  bank {Emulator.BasicRomBank} ({Path.GetFileName(emulator.BasicRomPath)})");
             Console.WriteLine($"DFS ROM:    bank {Emulator.DfsRomBank} ({Path.GetFileName(emulator.DfsRomPath)})");
+            if (!string.IsNullOrEmpty(emulator.AdfsRomPath))
+                Console.WriteLine($"ADFS ROM:   bank {Emulator.AdfsRomBank} ({Path.GetFileName(emulator.AdfsRomPath)})");
             Console.WriteLine($"Disc:       {(emulator.discInterface == DiscInterface.Wd1770 ? "WD1770" : "Intel 8271")}");
             Console.WriteLine($"Reset PC:   ${emulator.Cpu.registers.PC:X4}");
             if (emulator.tube6502 is not null)
@@ -170,7 +172,7 @@ Options:
   --modem                 Start with the Hayes modem enabled.
   --print                 Start with the dot-matrix printer enabled.
   --speech                Start with the Acorn Speech System enabled.
-  --wd1770                Start with the WD1770 interface and Acorn 1770 DFS.
+  --wd1770                Start with WD1770, Acorn 1770 DFS, and ADFS 1.30.
 
 Arguments:
   PATH                    Mount a disc image, tape image, or host file. Disc images
@@ -485,6 +487,7 @@ Examples:
         public const int SidewaysRomBanks = 16;
         public const int BasicRomBank = 15;
         public const int DfsRomBank = 14;
+        public const int AdfsRomBank = 12;
         public const int AmxMouseRomBank = 13;
         public const int SidewaysRamFirstBank = 4;
         public const int SidewaysRamLastBank = 7;
@@ -498,6 +501,7 @@ Examples:
         private const string HiBasicRomFileName = "HiBASIC.rom";
         private const string DfsRomFileName = "DFS-0.9.rom";
         private const string Wd1770DfsRomFileName = "DFS-2.26.rom";
+        private const string AdfsRomFileName = "ADFS-1.30.rom";
         private const string TubeHostRomFileName = "DNFS302.rom";
         private const string Tube6502RomFileName = "6502tube_120.rom";
         private const string AmxMouseRomFileName = "AMXMSE331.rom";
@@ -506,6 +510,7 @@ Examples:
         private const string HiBasicRomMarker = "BASIC\0(C)1983 Acorn";
         private const string DfsRomMarker = "DFS\0" + "0.90";
         private const string Wd1770DfsRomMarker = "{DFS";
+        private const string AdfsRomMarker = "Acorn ADFS";
         private const string DnfsRomMarker = "DFS,NET";
         private const string Tube6502RomMarker = "6502 TUBE";
         private static readonly bool TapeAutoplayEnabled = Environment.GetEnvironmentVariable("BBC_TAPE_AUTOPLAY") == "1";
@@ -599,7 +604,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 29;
+        private const int SaveStateVersion = 30;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -621,6 +626,8 @@ Examples:
         public string BasicRomPath { get; private set; } = string.Empty;
 
         public string DfsRomPath { get; private set; } = string.Empty;
+
+        public string? AdfsRomPath { get; private set; }
 
         public string? AmxMouseRomPath { get; private set; }
 
@@ -916,7 +923,7 @@ Examples:
                 throw new InvalidOperationException($"Disc Drive {physicalDrive} is disabled.");
 
             if (requestedDrive.HasValue && !IsDriveLoadPath(path))
-                throw new InvalidDataException("Drives can only load SSD, DSD, or ZIP files.");
+                throw new InvalidDataException("Drives can only load SSD, DSD, ADF, or ZIP files.");
 
             if (IsZipArchivePath(path))
                 return MountZipArchive(path, autoRunDisc, requestedDrive);
@@ -938,7 +945,7 @@ Examples:
                 discController.Mount(path, requestedDrive.GetValueOrDefault(0));
                 hostFilingSystem.Unmount();
 
-                Console.WriteLine($"Mounted DFS: {discController.MountedDriveSummary}");
+                Console.WriteLine($"Mounted {(discController.MountedMediaIsAdfs ? "ADFS" : "DFS")}: {discController.MountedDriveSummary}");
                 if (autoRunDisc && requestedDrive.GetValueOrDefault(0) == 0)
                     QueueMountedDiscAutoRun();
                 return true;
@@ -984,7 +991,7 @@ Examples:
         {
             List<ArchiveDiscEntry> entries = GetArchiveDiscEntries(path);
             if (entries.Count == 0)
-                throw new InvalidOperationException($"'{Path.GetFileName(path)}' does not contain any SSD or DSD images.");
+                throw new InvalidOperationException($"'{Path.GetFileName(path)}' does not contain any SSD, DSD, or ADF images.");
 
             int drive = requestedDrive.GetValueOrDefault(0);
             if (entries.Count == 1 || Display is null)
@@ -1011,7 +1018,7 @@ Examples:
             discController.MountImage(image, drive, null, displayName, readOnly: true);
             hostFilingSystem.Unmount();
 
-            Console.WriteLine($"Mounted DFS: {discController.MountedDriveSummary}");
+            Console.WriteLine($"Mounted {(discController.MountedMediaIsAdfs ? "ADFS" : "DFS")}: {discController.MountedDriveSummary}");
             if (autoRunDisc && drive == 0)
                 QueueMountedDiscAutoRun();
         }
@@ -1031,6 +1038,8 @@ Examples:
             string message = exception is FileNotFoundException
                 ? $"File does not exist at: {displayPath}"
                 : $"Could not load file: {displayPath}";
+            if (exception is not FileNotFoundException && !string.IsNullOrWhiteSpace(exception.Message))
+                message += $" ({exception.Message})";
 
             Display?.ShowNotification(
                 exception is FileNotFoundException ? "File not found" : "Could not load file",
@@ -1039,9 +1048,14 @@ Examples:
             return message;
         }
 
-        /// <summary>DFS boot option 3 uses EXEC !BOOT; discs without that boot path are left at BASIC.</summary>
+        /// <summary>Boots mounted ADFS media through ADFS, or a DFS option 3 disc through its !BOOT file.</summary>
         public void QueueMountedDiscAutoRun()
         {
+            if (discController.MountedMediaIsAdfs)
+            {
+                QueueBootScript("*ADFS\r*EXEC $.!BOOT");
+                return;
+            }
             if (discController.TryGetBootExecScript(out string? bootScript) && bootScript is not null)
             {
                 QueueBootScript("*EXEC !BOOT");
@@ -1224,11 +1238,17 @@ Examples:
             if (!display.TryDrainDiscInterfaceSelection(out DiscInterface selectedInterface)
                 || selectedInterface == discInterface)
                 return;
+            if (discController.MountedMediaIsAdfs && selectedInterface != DiscInterface.Wd1770)
+            {
+                display.ShowNotification("WD1770 required", "Eject the ADFS disc before selecting Intel 8271", 5000);
+                return;
+            }
 
             StopCpu();
             IDiscController previousController = discController;
             DiscInterface previousInterface = discInterface;
             string previousDfsRomPath = DfsRomPath;
+            string? previousAdfsRomPath = AdfsRomPath;
             try
             {
                 if (previousController.ImageDirty)
@@ -1254,6 +1274,17 @@ Examples:
                     selectedInterface == DiscInterface.Wd1770 ? RomSize : RomSize / 2,
                     RomSize);
                 SetSidewaysRomBank(DfsRomBank, DfsRomPath);
+                if (selectedInterface == DiscInterface.Wd1770)
+                {
+                    AdfsRomPath = Path.Combine(GetRomRoot(), AdfsRomFileName);
+                    ValidateRom(AdfsRomPath, AdfsRomMarker, RomSize);
+                    SetSidewaysRomBank(AdfsRomBank, AdfsRomPath);
+                }
+                else
+                {
+                    AdfsRomPath = null;
+                    ClearSidewaysRomBank(AdfsRomBank);
+                }
                 display.SetRomSlots(sidewaysRomSlots);
 
                 PowerReset(display);
@@ -1269,6 +1300,11 @@ Examples:
                 discController = previousController;
                 discInterface = previousInterface;
                 DfsRomPath = previousDfsRomPath;
+                AdfsRomPath = previousAdfsRomPath;
+                if (previousAdfsRomPath is not null)
+                    SetSidewaysRomBank(AdfsRomBank, previousAdfsRomPath);
+                else
+                    ClearSidewaysRomBank(AdfsRomBank);
                 display.ShowNotification("Disc interface unchanged", ex.Message, 5000);
                 StartCpu();
             }
@@ -2898,7 +2934,14 @@ Examples:
                 return;
 
             pendingBreak = breakScratch[count - 1];
-            if (pendingBreak.Shift && discController.TryGetBootExecScript(out string? bootScript))
+            if (pendingBreak.Shift && discController.MountedMediaIsAdfs)
+            {
+                // DFS has the higher-priority ROM socket, so a physical Shift-BREAK would let DFS
+                // claim the boot. Select ADFS explicitly after BREAK for an ADFS disc instead.
+                pendingBootExecScript = "*ADFS\r*EXEC $.!BOOT";
+                pendingBreak = new BreakKeyPress(false, pendingBreak.Control);
+            }
+            else if (pendingBreak.Shift && discController.TryGetBootExecScript(out string? bootScript))
             {
                 pendingBootExecScript = bootScript;
                 pendingBreak = new BreakKeyPress(false, pendingBreak.Control);
@@ -3507,6 +3550,9 @@ Examples:
             DfsRomPath = discInterface == DiscInterface.Wd1770
                 ? Path.Combine(romRoot, Wd1770DfsRomFileName)
                 : configuredTubeHostRomPath ?? Path.Combine(romRoot, tubeEnabled ? TubeHostRomFileName : DfsRomFileName);
+            AdfsRomPath = discInterface == DiscInterface.Wd1770
+                ? Path.Combine(romRoot, AdfsRomFileName)
+                : null;
             AmxMouseRomPath = Path.Combine(romRoot, AmxMouseRomFileName);
             Tube6502RomPath = configuredTube6502RomPath ?? (tubeEnabled ? Path.Combine(romRoot, Tube6502RomFileName) : null);
             SpeechPhraseRomPath = Path.Combine(romRoot, SpeechPhraseRomFileName);
@@ -3514,7 +3560,10 @@ Examples:
             ValidateRom(OsRomPath, OsRomMarker, RomSize);
             ValidateRom(BasicRomPath, basicRomMarker, RomSize);
             if (discInterface == DiscInterface.Wd1770)
+            {
                 ValidateRom(DfsRomPath, Wd1770DfsRomMarker, RomSize);
+                ValidateRom(AdfsRomPath!, AdfsRomMarker, RomSize);
+            }
             else if (tubeEnabled)
                 ValidateRom(DfsRomPath, DnfsRomMarker, RomSize / 2, RomSize);
             else
@@ -3549,6 +3598,8 @@ Examples:
         {
             SetSidewaysRomBank(BasicRomBank, BasicRomPath);
             SetSidewaysRomBank(DfsRomBank, DfsRomPath);
+            if (AdfsRomPath is not null)
+                SetSidewaysRomBank(AdfsRomBank, AdfsRomPath);
             RefreshSidewaysRomSlots();
         }
 
@@ -3556,6 +3607,8 @@ Examples:
         {
             SetSidewaysRomBank(BasicRomBank, BasicRomPath);
             SetSidewaysRomBank(DfsRomBank, DfsRomPath);
+            if (AdfsRomPath is not null)
+                SetSidewaysRomBank(AdfsRomBank, AdfsRomPath);
         }
 
         private void UpdateAmxMouseRomState()
@@ -3919,7 +3972,11 @@ Examples:
         {
             string extension = Path.GetExtension(path);
             return string.Equals(extension, ".ssd", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(extension, ".dsd", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, ".adf", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, ".ads", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, ".adm", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, ".adl", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsDriveLoadPath(string path)

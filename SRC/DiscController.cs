@@ -6,6 +6,7 @@ namespace BBC
         bool HasMountedDisc { get; }
         string? MountedFileName { get; }
         bool ImageDirty { get; }
+        bool MountedMediaIsAdfs { get; }
         string MountedDriveSummary { get; }
         bool NmiLineAsserted { get; }
         bool TickRequired { get; }

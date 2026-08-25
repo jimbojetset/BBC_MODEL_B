@@ -76,12 +76,14 @@ namespace BBC
 
         public WD1770_Disk()
         {
+            media.AdfImagesEnabled = true;
             Reset();
         }
 
         public bool HasMountedDisc => media.HasMountedDisc;
         public string? MountedFileName => media.MountedFileName;
         public bool ImageDirty => media.ImageDirty;
+        public bool MountedMediaIsAdfs => media.MountedMediaIsAdfs;
         public string MountedDriveSummary => media.MountedDriveSummary;
         public bool NmiLineAsserted => interruptRequest || dataRequest;
         public bool TickRequired => requestDelayCycles > 0 || dataRequestDeadlineCycles > 0
@@ -96,6 +98,7 @@ namespace BBC
         private bool ControllerReleasedFromReset => (control & ControlReset) != 0;
         private bool MultiSector => (command & 0x10) != 0;
         private int ByteDelayCycles => (control & ControlDensity) != 0 ? FmByteDelayCycles : MfmByteDelayCycles;
+        private int CurrentSectorsPerTrack => media.GetRawSectorsPerTrack(SelectedImageSide);
 
         public static bool IsAddress(ushort address) => address is >= 0xFE80 and <= 0xFE87;
 
@@ -390,7 +393,7 @@ namespace BBC
             }
 
             byte[] buffer = new byte[SectorSize];
-            int finalSector = MultiSector ? SectorsPerTrack - 1 : sector;
+            int finalSector = MultiSector ? CurrentSectorsPerTrack - 1 : sector;
             for (int current = sector; current <= finalSector; current++)
             {
                 if (!media.TryReadRawSector(imageDrive, track, current, buffer))
@@ -429,7 +432,7 @@ namespace BBC
                 return;
             }
 
-            int count = MultiSector ? SectorsPerTrack - sector : 1;
+            int count = MultiSector ? CurrentSectorsPerTrack - sector : 1;
             pendingWrite = new PendingWrite(imageDrive, track, sector, Math.Max(1, count), (command & 0x01) != 0);
             writeData.Clear();
             readTransferActive = false;
@@ -448,7 +451,7 @@ namespace BBC
 
             readData.Enqueue(track);
             readData.Enqueue((byte)((control & ControlSide) != 0 ? 1 : 0));
-            readData.Enqueue(sector < SectorsPerTrack ? sector : (byte)0);
+            readData.Enqueue(sector < CurrentSectorsPerTrack ? sector : (byte)0);
             readData.Enqueue(1); // 256-byte sector length code.
             readData.Enqueue(0);
             readData.Enqueue(0);
@@ -471,7 +474,7 @@ namespace BBC
             int requiredLength = GetTrackTransferLength();
             AddRepeated(readData, 0xFF, 40);
             byte[] sectorData = new byte[SectorSize];
-            for (int currentSector = 0; currentSector < SectorsPerTrack; currentSector++)
+            for (int currentSector = 0; currentSector < CurrentSectorsPerTrack; currentSector++)
             {
                 if (!media.TryReadRawSector(imageDrive, track, currentSector, sectorData))
                 {
@@ -611,7 +614,7 @@ namespace BBC
                 int idSector = writeData[i + 3];
                 int sizeCode = writeData[i + 4];
                 if (idTrack != track || idSide != ((control & ControlSide) != 0 ? 1 : 0)
-                    || idSector is < 0 or >= SectorsPerTrack || sizeCode != 1)
+                    || idSector is < 0 || idSector >= CurrentSectorsPerTrack || sizeCode != 1)
                     continue;
                 if (!TrackFieldCrcIsValid(i, 5))
                 {

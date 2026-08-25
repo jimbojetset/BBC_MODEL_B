@@ -5465,13 +5465,13 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc or archive'; $dialog.Filter = 'BBC disc/archive (*.ssd;*.dsd;*.zip)|*.ssd;*.dsd;*.zip'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC disc or archive'; $dialog.Filter = 'BBC disc/archive (*.ssd;*.dsd;*.adf;*.ads;*.adm;*.adl;*.zip)|*.ssd;*.dsd;*.adf;*.ads;*.adm;*.adl;*.zip'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc or archive\" of type {\"ssd\", \"dsd\", \"zip\"})");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC disc or archive\" of type {\"ssd\", \"dsd\", \"adf\", \"ads\", \"adm\", \"adl\", \"zip\"})");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc or archive", "--file-filter=BBC disc/archive (*.ssd *.dsd *.zip) | *.ssd *.dsd *.zip");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC disc or archive", "--file-filter=BBC disc/archive (*.ssd *.dsd *.adf *.ads *.adm *.adl *.zip) | *.ssd *.dsd *.adf *.ads *.adm *.adl *.zip");
             }
             catch
             {

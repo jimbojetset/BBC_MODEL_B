@@ -27,6 +27,9 @@ namespace BBC
         private const int SingleSidedTracks = 80;
         private const int TrackBytes = SectorsPerTrack * SectorSize;
         private const int SingleSidedImageBytes = SingleSidedTracks * SectorsPerTrack * SectorSize;
+        private const int AdfsSectorsPerTrack = 16;
+        private const int AdfsFortyTrackImageBytes = 40 * AdfsSectorsPerTrack * SectorSize;
+        private const int AdfsSingleSidedImageBytes = SingleSidedTracks * AdfsSectorsPerTrack * SectorSize;
         private const byte StatusBusy = 0x80;
         private const byte StatusDataRequest = 0x04;
         private const byte StatusInterrupt = 0x08;
@@ -52,6 +55,9 @@ namespace BBC
         private readonly string?[] mountedPaths = new string?[4];
         private readonly string?[] mountedFileNames = new string?[4];
         private readonly bool[] imageDirtyByDrive = new bool[4];
+        private readonly int[] rawSectorsPerTrack = [SectorsPerTrack, SectorsPerTrack, SectorsPerTrack, SectorsPerTrack];
+        private readonly int[] rawImageSide = new int[4];
+        private readonly bool[] rawAdfImage = new bool[4];
         private readonly int[] currentTrack = new int[4];
         private readonly bool[] motorSpinning = new bool[4];
         private readonly long[] motorStartedAtCycle = new long[4];
@@ -74,6 +80,8 @@ namespace BBC
         private bool imageDirty;
         private bool writeProtected;
 
+        internal bool AdfImagesEnabled { get; set; }
+
         public Intel8271_Disk()
         {
         }
@@ -85,6 +93,8 @@ namespace BBC
         public string? MountedFileName => mountedFileName;
 
         public bool ImageDirty => imageDirty;
+
+        public bool MountedMediaIsAdfs => rawAdfImage.Any(value => value);
 
         public string MountedDriveSummary => string.Join(", ",
             Enumerable.Range(0, drives.Length)
@@ -196,8 +206,15 @@ namespace BBC
             if (drive < 0 || drive >= drives.Length)
                 throw new ArgumentOutOfRangeException(nameof(drive), "DFS drive must be 0-3.");
 
-            if (image.Length < 512 || image.Length % SectorSize != 0)
+            bool adfImage = IsAdfsImageExtension(Path.GetExtension(displayName));
+            if (!adfImage && (image.Length < 512 || image.Length % SectorSize != 0))
                 throw new InvalidOperationException($"'{displayName}' is not a sector-aligned DFS image.");
+
+            if (adfImage)
+            {
+                MountAdfImage(image, drive, sourcePath, displayName, readOnly);
+                return;
+            }
 
             if (image.Length >= SingleSidedImageBytes * 2)
             {
@@ -216,6 +233,8 @@ namespace BBC
                 mountedFileNames[reverseSideDrive] = displayName;
                 imageDirtyByDrive[drive] = false;
                 imageDirtyByDrive[reverseSideDrive] = false;
+                SetDfsRawGeometry(drive);
+                SetDfsRawGeometry(reverseSideDrive);
             }
             else
             {
@@ -224,6 +243,7 @@ namespace BBC
                 mountedPaths[drive] = readOnly ? null : sourcePath;
                 mountedFileNames[drive] = displayName;
                 imageDirtyByDrive[drive] = false;
+                SetDfsRawGeometry(drive);
             }
 
             Array.Clear(currentTrack);
@@ -237,6 +257,60 @@ namespace BBC
             writeProtected = readOnly;
             Reset();
         }
+
+        private void MountAdfImage(byte[] image, int drive, string? sourcePath, string displayName, bool readOnly)
+        {
+            if (!AdfImagesEnabled)
+                throw new InvalidOperationException("ADF images require the WD1770 disc interface.");
+            if (drive is < 0 or > 1)
+                throw new InvalidOperationException("ADF images must be mounted as physical drive 0 or 1.");
+            if (image.Length is not AdfsFortyTrackImageBytes
+                and not AdfsSingleSidedImageBytes
+                and not AdfsSingleSidedImageBytes * 2)
+                throw new InvalidOperationException($"'{displayName}' is not a 160 KB, 320 KB, or 640 KB ADFS floppy image.");
+
+            int reverseSideDrive = drive + 2;
+            drives[drive] = image;
+            driveMounted[drive] = true;
+            mountedPaths[drive] = readOnly ? null : sourcePath;
+            mountedFileNames[drive] = displayName;
+            imageDirtyByDrive[drive] = false;
+            rawSectorsPerTrack[drive] = AdfsSectorsPerTrack;
+            rawImageSide[drive] = 0;
+            rawAdfImage[drive] = true;
+
+            if (image.Length == AdfsSingleSidedImageBytes * 2)
+            {
+                drives[reverseSideDrive] = image;
+                driveMounted[reverseSideDrive] = true;
+                mountedPaths[reverseSideDrive] = readOnly ? null : sourcePath;
+                mountedFileNames[reverseSideDrive] = displayName;
+                imageDirtyByDrive[reverseSideDrive] = false;
+                rawSectorsPerTrack[reverseSideDrive] = AdfsSectorsPerTrack;
+                rawImageSide[reverseSideDrive] = 1;
+                rawAdfImage[reverseSideDrive] = true;
+            }
+            else
+            {
+                ClearDrive(reverseSideDrive);
+            }
+
+            Array.Clear(currentTrack);
+            Array.Clear(motorSpinning);
+            Array.Clear(motorStartedAtCycle);
+            Array.Clear(driveActivityLedActive);
+            motorIdleCycles = 0;
+            mountedPath = mountedPaths[0] ?? sourcePath;
+            mountedFileName = mountedFileNames[0] ?? displayName;
+            imageDirty = false;
+            writeProtected = readOnly;
+            Reset();
+        }
+
+        private static bool IsAdfsImageExtension(string extension) => extension.Equals(".adf", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".ads", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".adm", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".adl", StringComparison.OrdinalIgnoreCase);
 
         public void EjectPhysicalDrive(int drive)
         {
@@ -346,6 +420,9 @@ namespace BBC
                 writer.Write(currentTrack[i]);
                 writer.Write(motorSpinning[i]);
                 writer.Write(motorStartedAtCycle[i]);
+                writer.Write(rawSectorsPerTrack[i]);
+                writer.Write(rawImageSide[i]);
+                writer.Write(rawAdfImage[i]);
             }
 
             writer.Write(driveActivityLedActive.Length);
@@ -393,6 +470,15 @@ namespace BBC
                 currentTrack[i] = reader.ReadInt32();
                 motorSpinning[i] = reader.ReadBoolean();
                 motorStartedAtCycle[i] = reader.ReadInt64();
+                rawSectorsPerTrack[i] = reader.ReadInt32();
+                rawImageSide[i] = reader.ReadInt32();
+                rawAdfImage[i] = reader.ReadBoolean();
+            }
+            for (int physicalDrive = 0; physicalDrive < 2; physicalDrive++)
+            {
+                int reverseSideDrive = physicalDrive + 2;
+                if (rawAdfImage[physicalDrive] && rawAdfImage[reverseSideDrive])
+                    drives[reverseSideDrive] = drives[physicalDrive];
             }
 
             int ledCount = reader.ReadInt32();
@@ -996,13 +1082,17 @@ namespace BBC
 
         private bool TryGetOffset(int drive, int track, int sector, out int offset)
         {
-            if (!IsDriveReady(drive) || track < 0 || sector < 0 || sector >= SectorsPerTrack)
+            int sectorsPerTrack = drive is >= 0 and < 4 ? rawSectorsPerTrack[drive] : SectorsPerTrack;
+            if (!IsDriveReady(drive) || track < 0 || sector < 0 || sector >= sectorsPerTrack)
             {
                 offset = 0;
                 return false;
             }
 
-            int logicalSector = (track * SectorsPerTrack) + sector;
+            int logicalSector = rawAdfImage[drive]
+                ? (rawImageSide[drive] * SingleSidedTracks * sectorsPerTrack)
+                    + (track * sectorsPerTrack) + sector
+                : (track * sectorsPerTrack) + sector;
             offset = logicalSector * SectorSize;
             return offset >= 0 && offset < drives[drive].Length;
         }
@@ -1032,6 +1122,10 @@ namespace BBC
         internal void SetRawActivityLed(int drive, bool active) => SetDriveActivityLed(drive, active);
 
         internal bool RawWriteProtected => writeProtected;
+
+        internal int GetRawSectorsPerTrack(int drive) => drive is >= 0 and < 4
+            ? rawSectorsPerTrack[drive]
+            : SectorsPerTrack;
 
         private void SetResult(byte value, int nmiDelayCycles = 0)
         {
@@ -1111,6 +1205,14 @@ namespace BBC
             if (string.IsNullOrEmpty(path))
                 return false;
 
+            if (rawAdfImage[drive])
+            {
+                File.WriteAllBytes(path, drives[drive]);
+                imageDirtyByDrive[drive] = false;
+                imageDirtyByDrive[drive + 2] = false;
+                return true;
+            }
+
             if (driveMounted[reverseSideDrive]
                 && drives[reverseSideDrive].Length > 0
                 && string.Equals(mountedPaths[drive], mountedPaths[reverseSideDrive], StringComparison.Ordinal))
@@ -1138,9 +1240,17 @@ namespace BBC
             currentTrack[drive] = 0;
             motorSpinning[drive] = false;
             motorStartedAtCycle[drive] = 0;
+            SetDfsRawGeometry(drive);
 
             if (drive < driveActivityLedActive.Length)
                 driveActivityLedActive[drive] = false;
+        }
+
+        private void SetDfsRawGeometry(int drive)
+        {
+            rawSectorsPerTrack[drive] = SectorsPerTrack;
+            rawImageSide[drive] = 0;
+            rawAdfImage[drive] = false;
         }
 
         private bool TryReadCatalogue(out List<DfsFile> files)

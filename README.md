@@ -33,7 +33,7 @@ ROMS/6502tube_120.rom   65C02 Tube parasite ROM
 ROMS/AMXMSE331.rom      AMX mouse ROM
 ROMS/PHROM.rom          Acorn Word PHROM A speech data (16 KB)
 ROMS/DFS-2.26.rom       Acorn 1770 DFS 2.26 (16 KB)
-ROMS/ADFS-1.30.rom      Reserved for future ADFS support (16 KB)
+ROMS/ADFS-1.30.rom      Acorn ADFS 1.30, fitted with the WD1770 interface (16 KB)
 ```
 
 ## Build And Run
@@ -76,6 +76,7 @@ dotnet run --project BBC_MODEL_B.csproj -- --modem
 dotnet run --project BBC_MODEL_B.csproj -- --print
 dotnet run --project BBC_MODEL_B.csproj -- --speech
 dotnet run --project BBC_MODEL_B.csproj -- --wd1770 Games/Phoenix.ssd
+dotnet run --project BBC_MODEL_B.csproj -- --wd1770 Discs/Utilities.adf
 ```
 
 ## Command Line
@@ -118,7 +119,7 @@ Plain paths are accepted. Disc images boot by default, tape images enable the ta
 --modem             Start with the Hayes modem enabled.
 --print             Start with the dot-matrix printer enabled.
 --speech            Start with the Acorn Speech System enabled.
---wd1770            Start with the WD1770 interface and Acorn 1770 DFS.
+--wd1770            Start with the WD1770 interface, Acorn 1770 DFS, and ADFS 1.30.
 ```
 
 Examples:
@@ -150,7 +151,8 @@ Click an on-screen disc drive or cassette player to open its media and transport
 
 A few useful details:
 
-- Disc menu loads accept `.ssd`, `.dsd`, and `.zip`. ZIP files are browsed without extracting them.
+- Disc menu loads accept `.ssd`, `.dsd`, `.adf`, `.ads`, `.adm`, `.adl`, and `.zip`. ZIP files are browsed without extracting them.
+- ADFS floppy images require the WD1770 interface. S (160 KB), M (320 KB), and L (640 KB) geometries use 16 MFM sectors per track; ADFS 1.30 is fitted in sideways ROM bank 12 alongside 1770 DFS.
 - The Intel 8271 is selected by default. Changing `Disc interface` swaps the controller and DFS ROM, preserves mounted media, and power-resets the BBC.
 - Drive 0 is on by default. Drive 1 is off until enabled from `Peripherals` or used from the command line.
 - The tape player is on by default. The Hayes modem is off until enabled from `Peripherals` or started with `--modem`.
@@ -159,7 +161,7 @@ A few useful details:
 - `New page` advances to the next connected fanfold sheet while preserving the current paper roll. `New paper` clears the rendered document and loads a fresh roll.
 - Draft text runs at 160 characters per second. ESC/P bit-image graphics use an 80-cps-equivalent head speed.
 - Saved-screenshot printing lists only PNG files directly inside `Screenshots/`; an empty folder produces an on-screen notification.
-- Menu disc mounts behave like inserting a disc. They do not auto-boot; use `Shift-BREAK` when you want to boot.
+- Menu disc mounts behave like inserting a disc. They do not auto-boot; use `Shift-BREAK` when you want to boot. With ADFS media mounted, the emulator selects ADFS and executes `$.!BOOT`; SSD and DSD media continue to boot through DFS.
 - Save states use `.sav` files and are opened or saved from the `File` menu.
 - Screenshots go into `Screenshots/`.
 
