@@ -52,12 +52,14 @@ namespace BBC
         private bool interruptRequest;
         private bool dataRequest;
         private int requestDelayCycles;
+        private int dataRequestDeadlineCycles;
         private int commandCompletionCycles;
         private int motorIdleCycles;
         private int cyclesUntilIndex;
         private int physicalTrack;
         private int lastStepDirection = 1;
         private bool interruptOnIndex;
+        private bool readTransferActive;
         private PendingWrite? pendingWrite;
         private bool writeTrackActive;
         private int trackTransferLength;
@@ -73,7 +75,8 @@ namespace BBC
         public bool ImageDirty => media.ImageDirty;
         public string MountedDriveSummary => media.MountedDriveSummary;
         public bool NmiLineAsserted => interruptRequest || dataRequest;
-        public bool TickRequired => requestDelayCycles > 0 || commandCompletionCycles > 0 || motorIdleCycles > 0;
+        public bool TickRequired => requestDelayCycles > 0 || dataRequestDeadlineCycles > 0
+            || commandCompletionCycles > 0 || motorIdleCycles > 0;
 
         public event Action<int>? DriveMotorStarted;
         public event Action<int>? DriveMotorStopped;
@@ -112,12 +115,14 @@ namespace BBC
             interruptRequest = false;
             dataRequest = false;
             requestDelayCycles = 0;
+            dataRequestDeadlineCycles = 0;
             commandCompletionCycles = 0;
             motorIdleCycles = 0;
             cyclesUntilIndex = IndexPeriodCycles;
             physicalTrack = 0;
             lastStepDirection = 1;
             interruptOnIndex = false;
+            readTransferActive = false;
             media.SetRawActivityLed(0, false);
             media.SetRawActivityLed(1, false);
         }
@@ -188,12 +193,12 @@ namespace BBC
 
         private byte ReadData()
         {
-            if (readData.Count == 0)
+            if (!dataRequest || !readTransferActive)
                 return data;
 
             dataRequest = false;
+            dataRequestDeadlineCycles = 0;
             status &= unchecked((byte)~StatusDrq);
-            data = readData.Dequeue();
             if (readData.Count > 0)
                 requestDelayCycles = ByteDelayCycles;
             else
@@ -220,6 +225,7 @@ namespace BBC
                 interruptRequest = false;
                 dataRequest = false;
                 requestDelayCycles = 0;
+                dataRequestDeadlineCycles = 0;
                 commandCompletionCycles = 0;
                 if (wasRunning && oldDrive >= 0)
                     DriveMotorStopped?.Invoke(oldDrive);
@@ -246,7 +252,9 @@ namespace BBC
             interruptRequest = false;
             dataRequest = false;
             requestDelayCycles = 0;
+            dataRequestDeadlineCycles = 0;
             commandCompletionCycles = 0;
+            readTransferActive = false;
             status = StatusBusy;
             StartMotor();
 
@@ -346,6 +354,7 @@ namespace BBC
             }
 
             media.SetRawActivityLed(SelectedPhysicalDrive, true);
+            readTransferActive = true;
             requestDelayCycles = CommandDelayCycles;
         }
 
@@ -366,6 +375,7 @@ namespace BBC
             int count = MultiSector ? SectorsPerTrack - sector : 1;
             pendingWrite = new PendingWrite(imageDrive, track, sector, Math.Max(1, count));
             writeData.Clear();
+            readTransferActive = false;
             media.SetRawActivityLed(SelectedPhysicalDrive, true);
             requestDelayCycles = CommandDelayCycles;
         }
@@ -384,6 +394,7 @@ namespace BBC
             readData.Enqueue(1); // 256-byte sector length code.
             readData.Enqueue(0);
             readData.Enqueue(0);
+            readTransferActive = true;
             requestDelayCycles = CommandDelayCycles;
         }
 
@@ -433,6 +444,7 @@ namespace BBC
                 readData.Dequeue();
 
             media.SetRawActivityLed(SelectedPhysicalDrive, true);
+            readTransferActive = true;
             requestDelayCycles = CommandDelayCycles;
         }
 
@@ -453,6 +465,7 @@ namespace BBC
             writeTrackActive = true;
             trackTransferLength = GetTrackTransferLength();
             writeData.Clear();
+            readTransferActive = false;
             media.SetRawActivityLed(SelectedPhysicalDrive, true);
             requestDelayCycles = CommandDelayCycles;
         }
@@ -464,7 +477,14 @@ namespace BBC
                 return;
 
             dataRequest = false;
+            dataRequestDeadlineCycles = 0;
             status &= unchecked((byte)~StatusDrq);
+
+            AcceptWriteByte(value);
+        }
+
+        private void AcceptWriteByte(byte value)
+        {
 
             if (writeTrackActive)
             {
@@ -594,9 +614,11 @@ namespace BBC
         {
             status &= unchecked((byte)~(StatusBusy | StatusDrq));
             dataRequest = false;
+            dataRequestDeadlineCycles = 0;
             pendingWrite = null;
             writeTrackActive = false;
             trackTransferLength = 0;
+            readTransferActive = false;
             media.SetRawActivityLed(0, false);
             media.SetRawActivityLed(1, false);
             interruptRequest = true;
@@ -618,9 +640,11 @@ namespace BBC
             writeData.Clear();
             pendingWrite = null;
             requestDelayCycles = 0;
+            dataRequestDeadlineCycles = 0;
             commandCompletionCycles = 0;
             status &= unchecked((byte)~(StatusBusy | StatusDrq));
             dataRequest = false;
+            readTransferActive = false;
             interruptRequest = immediateInterrupt;
             interruptOnIndex = indexInterrupt;
             media.SetRawActivityLed(0, false);
@@ -629,20 +653,36 @@ namespace BBC
 
         public void Tick(int cycles)
         {
+            bool transferAdvanced = false;
             if (requestDelayCycles > 0)
             {
                 requestDelayCycles -= cycles;
                 if (requestDelayCycles <= 0)
                 {
                     requestDelayCycles = 0;
-                    if (dataRequest)
-                        status |= StatusLostData;
+                    if (readTransferActive && readData.Count > 0)
+                        data = readData.Dequeue();
                     dataRequest = true;
                     status |= StatusDrq;
+                    dataRequestDeadlineCycles = readTransferActive ? 0 : ByteDelayCycles;
+                    transferAdvanced = true;
                 }
             }
 
-            if (commandCompletionCycles > 0)
+            if (!transferAdvanced && dataRequestDeadlineCycles > 0)
+            {
+                dataRequestDeadlineCycles -= cycles;
+                if (dataRequestDeadlineCycles <= 0 && dataRequest)
+                {
+                    dataRequestDeadlineCycles = 0;
+                    dataRequest = false;
+                    status = (byte)((status & ~StatusDrq) | StatusLostData);
+                    AcceptWriteByte(0);
+                    transferAdvanced = true;
+                }
+            }
+
+            if (!transferAdvanced && commandCompletionCycles > 0)
             {
                 commandCompletionCycles -= cycles;
                 if (commandCompletionCycles <= 0)
@@ -690,12 +730,14 @@ namespace BBC
             writer.Write(interruptRequest);
             writer.Write(dataRequest);
             writer.Write(requestDelayCycles);
+            writer.Write(dataRequestDeadlineCycles);
             writer.Write(commandCompletionCycles);
             writer.Write(motorIdleCycles);
             writer.Write(cyclesUntilIndex);
             writer.Write(physicalTrack);
             writer.Write(lastStepDirection);
             writer.Write(interruptOnIndex);
+            writer.Write(readTransferActive);
             writer.Write(readData.Count);
             foreach (byte value in readData)
                 writer.Write(value);
@@ -726,12 +768,14 @@ namespace BBC
             interruptRequest = reader.ReadBoolean();
             dataRequest = reader.ReadBoolean();
             requestDelayCycles = reader.ReadInt32();
+            dataRequestDeadlineCycles = reader.ReadInt32();
             commandCompletionCycles = reader.ReadInt32();
             motorIdleCycles = reader.ReadInt32();
             cyclesUntilIndex = reader.ReadInt32();
             physicalTrack = reader.ReadInt32();
             lastStepDirection = reader.ReadInt32();
             interruptOnIndex = reader.ReadBoolean();
+            readTransferActive = reader.ReadBoolean();
             readData.Clear();
             int readCount = reader.ReadInt32();
             for (int i = 0; i < readCount; i++)
