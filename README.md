@@ -3,7 +3,7 @@
 A BBC Micro Model B emulator written in C# and .NET.
 
 I wrote this to feel more like a real Beeb rather than just a launcher for disc images.
-It emulates the 6502, OS 1.20, BASIC II, DFS, selectable Intel 8271 and WD1770 disc interfaces, the VIAs, video, sound, keyboard matrix, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, the Acorn Speech System, and an optional 65C02 Tube second processor.
+It emulates the 6502, OS 1.20, BASIC II, DFS, selectable Intel 8271 and WD1770 disc interfaces, the VIAs, video, sound, keyboard matrix, sideways RAM, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, the Acorn Speech System, and an optional 65C02 Tube second processor.
 
 <p>
     <img src="Screenshot0.png" alt="BBC Model B emulator screenshot" width="49%">
@@ -146,7 +146,7 @@ Machine      BREAK, reset, sound, pause
 Peripherals  Tape player, modem, printer, disc drives, speech, Tube
 Disc interface
              Intel 8271 + Acorn DFS 1.20, or WD1770 + Acorn 1770 DFS
-ROM Manager  Edit sideways ROM banks and import/export ROM layouts
+Sideways Memory  Configure empty, ROM, and writable RAM banks and import/export layouts
 Keyboard Mapper
              Remap the BBC keyboard and import/export input profiles
 Printer      Screen printing, output viewer, page controls, PNG export, sound
@@ -159,6 +159,8 @@ A few useful details:
 
 - Disc menu loads accept `.ssd`, `.dsd`, `.adf`, `.ads`, `.adm`, `.adl`, and `.zip`. ZIP files are browsed without extracting them.
 - ADFS floppy images require the WD1770 interface. S (160 KB), M (320 KB), and L (640 KB) geometries use 16 MFM sectors per track; ADFS 1.30 is fitted in sideways ROM bank 12 alongside 1770 DFS.
+- Sideways banks 4–7 are fitted as 16K RAM by default. Sideways Memory can add, remove, or move RAM banks independently; ROM and empty sockets remain read-only. BREAK preserves sideways RAM, a power reset clears it, and save states preserve both its contents and the socket configuration.
+- Sideways Memory shows logical ROMSEL banks 0–15. Banks 12–15 are highlighted as the four motherboard sockets fitted to a Model B; banks 0–11 represent expansion hardware.
 - The Intel 8271 is selected by default. Changing `Disc interface` swaps the controller and DFS ROM, preserves mounted media, and power-resets the BBC.
 - Drive 0 is on by default. Drive 1 is off until enabled from `Peripherals` or used from the command line.
 - The tape player is on by default. The Hayes modem is off until enabled from `Peripherals` or started with `--modem`.
@@ -186,7 +188,7 @@ Ctrl+S / Cmd+S          Save screenshot
 Ctrl+L / Cmd+L          Open the disc picker
 Ctrl+V / Cmd+V          Paste clipboard text into the BBC
 Ctrl+Shift+P            Toggle printer
-Ctrl+Shift+R            Open the ROM Manager
+Ctrl+Shift+R            Open Sideways Memory
 Ctrl+Shift+K            Open the Keyboard Mapper
 Left Ctrl+Left Shift    Toggle BBC SHIFT LOCK
 ```
@@ -220,7 +222,7 @@ The Peripherals menu lets you add or remove hardware while the emulator is runni
 
 The Hayes modem accepts familiar AT commands such as `AT`, `ATZ`, `ATH`, `ATO`, `ATE0/1`, `ATV0/1`, `AT&F`, and `ATDThost:port`. A successful dial opens a TCP connection, defaulting to port 23 if no port is given. The BBC serial side should be set to 9600 baud, 8 data bits, no parity.
 
-AMX mouse support is available through the ROM Manager. Add `ROMS/AMXMSE331.rom` to a sideways ROM bank, then use the usual BBC commands such as `*MOUSE ON` and `*POINTER ON`.
+AMX mouse support is available through Sideways Memory. Add `ROMS/AMXMSE331.rom` to a sideways ROM bank, then use the usual BBC commands such as `*MOUSE ON` and `*POINTER ON`.
 
 The speech system supports both PHROM vocabulary and speech data supplied from BBC RAM through the TMS5220 FIFO. With Word PHROM A installed, `SOUND -1,160,0,0` says “ACORN”. The PHROM is speech data rather than a sideways ROM and must remain named `PHROM.rom` in the `ROMS/` directory.
 

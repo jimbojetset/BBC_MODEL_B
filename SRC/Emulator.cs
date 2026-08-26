@@ -557,6 +557,7 @@ Examples:
         private readonly bool[] matrixKeyReleasePending = new bool[128];
         private readonly byte[] sidewaysRoms = new byte[SidewaysRomBanks * RomSize];
         private readonly string?[] sidewaysRomPaths = new string?[SidewaysRomBanks];
+        private readonly bool[] sidewaysRamBanks = new bool[SidewaysRomBanks];
         private readonly SidewaysRomSlot[] sidewaysRomSlots = new SidewaysRomSlot[SidewaysRomBanks];
         private int selectedSidewaysRom = BasicRomBank;
         private BreakKeyPress pendingBreak;
@@ -604,7 +605,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 31;
+        private const int SaveStateVersion = 32;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -1637,6 +1638,7 @@ Examples:
             foreach (HostRomAction action in romActionScratch)
             {
                 romSlotsMayHaveChanged |= action.Kind is HostRomActionKind.Add
+                    or HostRomActionKind.AddRam
                     or HostRomActionKind.Remove
                     or HostRomActionKind.Move
                     or HostRomActionKind.ImportLayout;
@@ -1649,6 +1651,11 @@ Examples:
                             SetSidewaysRomBank(action.Bank, action.Path);
                             romPatternChangedWhileManagerOpen = true;
                             Console.WriteLine($"ROM bank {action.Bank}: {action.Path}");
+                            break;
+                        case HostRomActionKind.AddRam:
+                            SetSidewaysRamBank(action.Bank);
+                            romPatternChangedWhileManagerOpen = true;
+                            Console.WriteLine($"ROM bank {action.Bank}: 16K sideways RAM");
                             break;
                         case HostRomActionKind.Remove:
                             ClearSidewaysRomBank(action.Bank);
@@ -1663,13 +1670,13 @@ Examples:
                         case HostRomActionKind.ImportLayout:
                             ImportSidewaysRomLayout(action.Path);
                             romPatternChangedWhileManagerOpen = true;
-                            display.ShowNotification("ROM layout imported", Path.GetFileName(action.Path), 2000);
-                            Console.WriteLine($"ROM layout imported: {action.Path}");
+                            display.ShowNotification("Memory layout imported", Path.GetFileName(action.Path), 2000);
+                            Console.WriteLine($"Sideways memory layout imported: {action.Path}");
                             break;
                         case HostRomActionKind.ExportLayout:
                             ExportSidewaysRomLayout(action.Path);
-                            display.ShowNotification("ROM layout exported", Path.GetFileName(action.Path), 2000);
-                            Console.WriteLine($"ROM layout exported: {action.Path}");
+                            display.ShowNotification("Memory layout exported", Path.GetFileName(action.Path), 2000);
+                            Console.WriteLine($"Sideways memory layout exported: {action.Path}");
                             break;
                     }
                 }
@@ -1678,8 +1685,8 @@ Examples:
                     or InvalidDataException
                     or InvalidOperationException)
                 {
-                    display.ShowNotification("ROM manager", ex.Message, 4000);
-                    Console.WriteLine($"ROM manager failed: {ex.Message}");
+                    display.ShowNotification("Sideways Memory", ex.Message, 4000);
+                    Console.WriteLine($"Sideways Memory failed: {ex.Message}");
                 }
             }
 
@@ -2565,7 +2572,10 @@ Examples:
 
             writer.Write(sidewaysRomPaths.Length);
             for (int bank = 0; bank < sidewaysRomPaths.Length; bank++)
+            {
                 WriteString(writer, sidewaysRomPaths[bank]);
+                writer.Write(sidewaysRamBanks[bank]);
+            }
         }
 
         private void LoadRomState(BinaryReader reader)
@@ -2582,7 +2592,10 @@ Examples:
                 throw new InvalidDataException("Save state has an incompatible sideways ROM path block.");
 
             for (int bank = 0; bank < sidewaysRomPaths.Length; bank++)
+            {
                 sidewaysRomPaths[bank] = ReadString(reader);
+                sidewaysRamBanks[bank] = reader.ReadBoolean();
+            }
 
             RefreshSidewaysRomSlotsFromSavedBytes();
         }
@@ -2961,6 +2974,7 @@ Examples:
         private void PowerOnResetAfterRomChange(Display display)
         {
             Array.Clear(Memory.Memory);
+            ClearSidewaysRamContents();
             Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
             pendingBreak = default;
             pendingBootExecScript = null;
@@ -2982,6 +2996,7 @@ Examples:
             try
             {
                 Array.Clear(Memory.Memory);
+                ClearSidewaysRamContents();
                 Memory.Load(OsRomStart, File.ReadAllBytes(OsRomPath));
                 pendingBreak = default;
                 pendingBootExecScript = null;
@@ -3579,9 +3594,14 @@ Examples:
 
             Array.Fill(sidewaysRoms, (byte)0xFF);
             Array.Clear(sidewaysRomPaths);
+            Array.Clear(sidewaysRamBanks);
+            for (int bank = SidewaysRamFirstBank; bank <= SidewaysRamLastBank; bank++)
+                sidewaysRamBanks[bank] = true;
             LoadDefaultSidewaysRoms();
             if (tubeEnabled)
                 ApplyTubeHostSidewaysRoms();
+
+            ClearSidewaysRamContents();
 
             UpdateAmxMouseRomState();
 
@@ -3647,7 +3667,29 @@ Examples:
             string fullPath = Path.GetFullPath(path);
             LoadSidewaysRomBank(fullPath, bank);
             sidewaysRomPaths[bank] = fullPath;
+            sidewaysRamBanks[bank] = false;
             RefreshSidewaysRomSlot(bank);
+        }
+
+        private void SetSidewaysRamBank(int bank)
+        {
+            if (bank < 0 || bank >= SidewaysRomBanks)
+                throw new ArgumentOutOfRangeException(nameof(bank));
+
+            int bankOffset = bank * RomSize;
+            Array.Fill(sidewaysRoms, (byte)0xFF, bankOffset, RomSize);
+            sidewaysRomPaths[bank] = null;
+            sidewaysRamBanks[bank] = true;
+            RefreshSidewaysRomSlot(bank);
+        }
+
+        private void ClearSidewaysRamContents()
+        {
+            for (int bank = 0; bank < sidewaysRamBanks.Length; bank++)
+            {
+                if (sidewaysRamBanks[bank])
+                    Array.Clear(sidewaysRoms, bank * RomSize, RomSize);
+            }
         }
 
         private void ClearSidewaysRomBank(int bank)
@@ -3658,6 +3700,7 @@ Examples:
             int bankOffset = bank * RomSize;
             Array.Fill(sidewaysRoms, (byte)0xFF, bankOffset, RomSize);
             sidewaysRomPaths[bank] = null;
+            sidewaysRamBanks[bank] = false;
             RefreshSidewaysRomSlot(bank);
         }
 
@@ -3667,9 +3710,9 @@ Examples:
                 throw new ArgumentOutOfRangeException(nameof(bank));
             if (targetBank < 0 || targetBank >= SidewaysRomBanks)
                 throw new ArgumentOutOfRangeException(nameof(targetBank));
-            if (sidewaysRomPaths[bank] is null)
+            if (sidewaysRomPaths[bank] is null && !sidewaysRamBanks[bank])
                 throw new InvalidOperationException($"ROM bank {bank} is empty.");
-            if (sidewaysRomPaths[targetBank] is not null)
+            if (sidewaysRomPaths[targetBank] is not null || sidewaysRamBanks[targetBank])
                 throw new InvalidOperationException($"ROM bank {targetBank} is not empty.");
 
             int sourceOffset = bank * RomSize;
@@ -3677,29 +3720,39 @@ Examples:
             Array.Copy(sidewaysRoms, sourceOffset, sidewaysRoms, targetOffset, RomSize);
             Array.Fill(sidewaysRoms, (byte)0xFF, sourceOffset, RomSize);
             sidewaysRomPaths[targetBank] = sidewaysRomPaths[bank];
+            sidewaysRamBanks[targetBank] = sidewaysRamBanks[bank];
             sidewaysRomPaths[bank] = null;
+            sidewaysRamBanks[bank] = false;
             RefreshSidewaysRomSlot(bank);
             RefreshSidewaysRomSlot(targetBank);
         }
 
         private void ExportSidewaysRomLayout(string path)
         {
-            SidewaysRomLayoutFile.FromPaths(sidewaysRomPaths).Save(path);
+            SidewaysRomLayoutFile.FromSlots(sidewaysRomPaths, sidewaysRamBanks).Save(path);
         }
 
         private void ImportSidewaysRomLayout(string path)
         {
             SidewaysRomLayoutFile layout = SidewaysRomLayoutFile.Load(path);
             string?[] importedPaths = new string?[SidewaysRomBanks];
+            bool[] importedRamBanks = new bool[SidewaysRomBanks];
 
             foreach (SidewaysRomLayoutBank entry in layout.Banks)
             {
                 if (entry.Bank < 0 || entry.Bank >= SidewaysRomBanks)
-                    throw new InvalidDataException($"ROM layout bank {entry.Bank} is outside 0-15.");
-                if (importedPaths[entry.Bank] is not null)
-                    throw new InvalidDataException($"ROM layout contains bank {entry.Bank} more than once.");
+                    throw new InvalidDataException($"Memory layout bank {entry.Bank} is outside 0-15.");
+                if (importedPaths[entry.Bank] is not null || importedRamBanks[entry.Bank])
+                    throw new InvalidDataException($"Memory layout contains bank {entry.Bank} more than once.");
+                if (entry.Ram)
+                {
+                    if (!string.IsNullOrWhiteSpace(entry.Path))
+                        throw new InvalidDataException($"Memory layout bank {entry.Bank} cannot contain both ROM and RAM.");
+                    importedRamBanks[entry.Bank] = true;
+                    continue;
+                }
                 if (string.IsNullOrWhiteSpace(entry.Path))
-                    throw new InvalidDataException($"ROM layout bank {entry.Bank} has no ROM path.");
+                    throw new InvalidDataException($"Memory layout bank {entry.Bank} has no ROM path.");
 
                 string fullPath = Path.GetFullPath(entry.Path);
                 _ = ReadRomFileForBank(fullPath);
@@ -3708,7 +3761,9 @@ Examples:
 
             for (int bank = 0; bank < SidewaysRomBanks; bank++)
             {
-                if (importedPaths[bank] is null)
+                if (importedRamBanks[bank])
+                    SetSidewaysRamBank(bank);
+                else if (importedPaths[bank] is null)
                     ClearSidewaysRomBank(bank);
                 else
                     SetSidewaysRomBank(bank, importedPaths[bank]!);
@@ -3732,7 +3787,7 @@ Examples:
             if (path is not null && File.Exists(path))
                 rom = ReadRomFileForBank(path);
 
-            sidewaysRomSlots[bank] = SidewaysRomHeader.Inspect(bank, path, rom);
+            sidewaysRomSlots[bank] = SidewaysRomHeader.Inspect(bank, path, rom, sidewaysRamBanks[bank]);
         }
 
         private void RefreshSidewaysRomSlotsFromSavedBytes()
@@ -3742,7 +3797,11 @@ Examples:
                 string? path = sidewaysRomPaths[bank];
                 byte[] rom = new byte[RomSize];
                 Array.Copy(sidewaysRoms, bank * RomSize, rom, 0, RomSize);
-                sidewaysRomSlots[bank] = SidewaysRomHeader.Inspect(bank, path, IsEmptyRomBank(rom) ? null : rom);
+                sidewaysRomSlots[bank] = SidewaysRomHeader.Inspect(
+                    bank,
+                    path,
+                    IsEmptyRomBank(rom) ? null : rom,
+                    sidewaysRamBanks[bank]);
             }
         }
 
@@ -3824,7 +3883,7 @@ Examples:
 
                 if (addr >= SidewaysRomStart && addr <= SidewaysRomEnd)
                 {
-                    if (IsSidewaysRamBank(selectedSidewaysRom))
+                    if (sidewaysRamBanks[selectedSidewaysRom])
                     {
                         int bankOffset = selectedSidewaysRom * RomSize;
                         int romOffset = addr - SidewaysRomStart;
@@ -3838,11 +3897,6 @@ Examples:
 
                 return false;
             };
-        }
-
-        private static bool IsSidewaysRamBank(int bank)
-        {
-            return bank >= SidewaysRamFirstBank && bank <= SidewaysRamLastBank;
         }
 
         private int ComputeBusStretchCycles(ulong address)

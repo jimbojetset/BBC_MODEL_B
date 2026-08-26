@@ -9,6 +9,8 @@ Run("WD1770 keeps independent spindle timers for each drive", IndependentDriveMo
 Run("WD1770 Force Interrupt supports immediate interrupt", ForceImmediate);
 Run("WD1770 Force Interrupt supports ready transitions", ForceReadyTransitions);
 Run("WD1770 Force Interrupt supports the next index pulse", ForceIndex);
+Run("Sideways RAM banks are writable and independently paged", SidewaysRamPaging);
+Run("Sideways ROM and empty sockets reject writes", SidewaysRomWriteProtection);
 
 Console.WriteLine("All BBC Model B regression tests passed.");
 
@@ -84,6 +86,36 @@ static void ForceIndex()
     controller.Write(Command, 0xD4);
     controller.Tick(400_000);
     True(controller.NmiLineAsserted, "next index pulse should assert INTRQ");
+}
+
+static void SidewaysRamPaging()
+{
+    using Emulator emulator = new();
+    emulator.Initialise();
+
+    emulator.Memory.WriteByte(0xFE30, 4);
+    emulator.Memory.WriteByte(0x8000, 0x5A);
+    emulator.Memory.WriteByte(0xBFFF, 0xA5);
+    emulator.Memory.WriteByte(0xFE30, 5);
+    Equal((byte)0x00, emulator.Memory.ReadByte(0x8000), "bank 5 must not alias bank 4");
+    emulator.Memory.WriteByte(0xFE30, 4);
+    Equal((byte)0x5A, emulator.Memory.ReadByte(0x8000), "bank 4 low address");
+    Equal((byte)0xA5, emulator.Memory.ReadByte(0xBFFF), "bank 4 high address");
+}
+
+static void SidewaysRomWriteProtection()
+{
+    using Emulator emulator = new();
+    emulator.Initialise();
+
+    emulator.Memory.WriteByte(0xFE30, 15);
+    byte basicByte = emulator.Memory.ReadByte(0x8000);
+    emulator.Memory.WriteByte(0x8000, (byte)~basicByte);
+    Equal(basicByte, emulator.Memory.ReadByte(0x8000), "BASIC ROM must remain read-only");
+
+    emulator.Memory.WriteByte(0xFE30, 3);
+    emulator.Memory.WriteByte(0x8000, 0x55);
+    Equal((byte)0xFF, emulator.Memory.ReadByte(0x8000), "an empty socket must not behave as RAM");
 }
 
 static WD1770_Disk NewControllerWithDisc()

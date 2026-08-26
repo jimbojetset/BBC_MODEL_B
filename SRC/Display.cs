@@ -59,7 +59,7 @@ namespace BBC
         private const int RomSlotGapX = 11;
         private const int RomSlotGapY = 24;
         private const int RomPanelPadding = 16;
-        private const int RomPanelTitleHeight = 24;
+        private const int RomPanelTitleHeight = 38;
         private const int RomBankNumberHeight = 10;
         private const int RomLabelMaxCharacters = 14;
         private const int RomLayoutButtonWidth = InputActionButtonWidth;
@@ -2276,10 +2276,18 @@ namespace BBC
             _ = SDL_SetRenderDrawColor(renderer, 150, 150, 150, 255);
             DrawRectOutline(panel);
 
-            DrawRendererText("ROM Manager", panel.X + 14, panel.Y + 12, 240, 240, 240);
+            DrawRendererText("Sideways Memory", panel.X + 14, panel.Y + 12, 240, 240, 240);
+            DrawRendererText("Banks 0-11: expansion", panel.X + 14, panel.Y + 28, 165, 165, 165);
 
             for (int bank = 0; bank < romSlots.Length; bank++)
                 DrawRomSlot(bank, GetRomSlotRect(panel, bank));
+
+            const string motherboardLabel = "Motherboard sockets";
+            SdlRect bank12 = GetRomSlotRect(panel, 12);
+            SdlRect bank15 = GetRomSlotRect(panel, 15);
+            int motherboardGroupWidth = bank15.X + bank15.W - bank12.X;
+            int motherboardLabelX = bank12.X + ((motherboardGroupWidth - GetRendererTextWidth(motherboardLabel)) / 2);
+            DrawRendererText(motherboardLabel, motherboardLabelX, bank12.Y - 24, 125, 195, 235);
 
             if (movingRomSlot >= 0)
                 DrawRendererText("Click an empty bank", panel.X + 12, panel.Y + panel.H - 18, 210, 210, 130);
@@ -2315,13 +2323,26 @@ namespace BBC
             bool occupied = slot.Occupied;
             bool hovered = bank == hoveredRomSlot;
             bool movingSource = bank == movingRomSlot;
+            bool motherboardSocket = bank >= 12;
 
             int numberX = slotRect.X + (slotRect.W / 2) - (GetRendererTextWidth(bank.ToString(CultureInfo.InvariantCulture)) / 2);
-            DrawRendererText(bank.ToString(CultureInfo.InvariantCulture), numberX, slotRect.Y - RomBankNumberHeight, 210, 210, 210);
+            DrawRendererText(
+                bank.ToString(CultureInfo.InvariantCulture),
+                numberX,
+                slotRect.Y - RomBankNumberHeight,
+                motherboardSocket ? (byte)125 : (byte)190,
+                motherboardSocket ? (byte)195 : (byte)190,
+                motherboardSocket ? (byte)235 : (byte)190);
 
             IntPtr glyphTexture = occupied ? occupiedRomSocketTexture : emptyRomSocketTexture;
             if (glyphTexture != IntPtr.Zero)
                 _ = SDL_RenderCopy(renderer, glyphTexture, IntPtr.Zero, ref slotRect);
+
+            if (motherboardSocket)
+            {
+                _ = SDL_SetRenderDrawColor(renderer, 90, 150, 185, 255);
+                DrawRectOutline(new SdlRect(slotRect.X - 1, slotRect.Y - 1, slotRect.W + 2, slotRect.H + 2));
+            }
 
             if (hovered || movingSource)
             {
@@ -2384,6 +2405,13 @@ namespace BBC
                 return;
             }
 
+            if (!romSlots[activeRomSlot].Occupied)
+            {
+                DrawRendererText("Add ROM", popup.X + 8, popup.Y + 6, 230, 230, 230);
+                DrawRendererText("Add RAM", popup.X + 8, popup.Y + 6 + RomActionRowHeight, 230, 230, 230);
+                return;
+            }
+
             DrawRendererText("Remove", popup.X + 8, popup.Y + 6, 230, 230, 230);
             DrawRendererText("Move", popup.X + 8, popup.Y + 6 + RomActionRowHeight, 230, 230, 230);
             DrawRendererText("Info", popup.X + 8, popup.Y + 6 + (RomActionRowHeight * 2), 230, 230, 230);
@@ -2410,7 +2438,8 @@ namespace BBC
             int columns = Math.Max(1, (info.W - 18) / MenuTextCellWidth);
 
             int y = info.Y + 10;
-            DrawRendererText(TrimRendererText($"Bank {slot.Bank}: {slot.Title}", columns), info.X + 9, y, 245, 245, 245);
+            string location = slot.Bank >= 12 ? "motherboard socket" : "expansion bank";
+            DrawRendererText(TrimRendererText($"Bank {slot.Bank} ({location}): {slot.Title}", columns), info.X + 9, y, 245, 245, 245);
             y += 18;
             DrawRendererText(TrimRendererText(slot.RomType, columns), info.X + 9, y, 190, 190, 190);
             y += 14;
@@ -2493,18 +2522,8 @@ namespace BBC
                 return true;
             }
 
-            if (slot.Occupied)
-            {
-                activeRomSlot = bank;
-                infoRomSlot = -1;
-                return true;
-            }
-
-            string? path = SelectNativeRomFile();
-            if (!string.IsNullOrWhiteSpace(path))
-                pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.Add, bank, -1, path));
-
-            activeRomSlot = -1;
+            activeRomSlot = bank;
+            infoRomSlot = -1;
             return true;
         }
 
@@ -2525,7 +2544,7 @@ namespace BBC
             SdlRect export = GetRomExportButtonRect(panel);
             if (x >= export.X && x < export.X + export.W && y >= export.Y && y < export.Y + export.H)
             {
-                string? path = SelectNativeSaveRomLayoutFile("BBC-ROM-Layout.json");
+                string? path = SelectNativeSaveRomLayoutFile("BBC-Sideways-Memory-Layout.json");
                 if (!string.IsNullOrWhiteSpace(path))
                     pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.ExportLayout, -1, -1, EnsureRomLayoutExtension(path)));
                 activeRomSlot = -1;
@@ -2561,6 +2580,21 @@ namespace BBC
                 return;
             }
 
+            if (!romSlots[bank].Occupied)
+            {
+                if (action == 0)
+                {
+                    string? path = SelectNativeRomFile();
+                    if (!string.IsNullOrWhiteSpace(path))
+                        pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.Add, bank, -1, path));
+                }
+                else if (action == 1)
+                {
+                    pendingRomActions.Enqueue(new HostRomAction(HostRomActionKind.AddRam, bank, -1, string.Empty));
+                }
+                return;
+            }
+
             switch (action)
             {
                 case 0:
@@ -2591,6 +2625,9 @@ namespace BBC
                 return action == 0 ? 2 : -1;
 
             if (IsDfsRomBank(activeRomSlot))
+                return action is >= 0 and <= 1 ? action : -1;
+
+            if (!romSlots[activeRomSlot].Occupied)
                 return action is >= 0 and <= 1 ? action : -1;
 
             return action is >= 0 and <= 2 ? action : -1;
@@ -2634,6 +2671,7 @@ namespace BBC
             int row = bank / RomSlotColumns;
             int x = panel.X + RomPanelPadding + (column * (RomSlotWidth + RomSlotGapX));
             int y = panel.Y + RomPanelPadding + RomPanelTitleHeight + RomBankNumberHeight + (row * (RomSlotHeight + RomSlotGapY + RomBankNumberHeight));
+            y += row == 0 ? -3 : 5;
             return new SdlRect(x, y, RomSlotWidth, RomSlotHeight);
         }
 
@@ -2658,11 +2696,13 @@ namespace BBC
             return new SdlRect(import.X + RomLayoutButtonWidth + InputActionButtonGap, import.Y, RomLayoutButtonWidth, RomLayoutButtonHeight);
         }
 
-        private static int GetRomActionRowCount(int bank)
+        private int GetRomActionRowCount(int bank)
         {
             if (IsBasicRomBank(bank))
                 return 1;
             if (IsDfsRomBank(bank))
+                return 2;
+            if (!romSlots[bank].Occupied)
                 return 2;
             return 3;
         }
@@ -5228,7 +5268,7 @@ namespace BBC
                     new MenuItem("Intel 8271 + Acorn DFS 1.20", "", MenuCommand.SelectIntel8271),
                     new MenuItem("WD1770 + Acorn 1770 DFS", "", MenuCommand.SelectWd1770)
                 ]),
-                new MenuDefinition("ROM Manager", [], MenuCommand.OpenRomManager),
+                new MenuDefinition("Sideways Memory", [], MenuCommand.OpenRomManager),
                 new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper)
             ];
 
@@ -5750,13 +5790,13 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        $"Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.SaveFileDialog; $dialog.Title = 'Export BBC ROM layout'; $dialog.Filter = 'BBC ROM layout (*.json)|*.json'; $dialog.DefaultExt = 'json'; $dialog.FileName = '{defaultFileName}'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ $dialog.FileName }}");
+                        $"Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.SaveFileDialog; $dialog.Title = 'Export BBC sideways memory layout'; $dialog.Filter = 'BBC sideways memory layout (*.json)|*.json'; $dialog.DefaultExt = 'json'; $dialog.FileName = '{defaultFileName}'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ $dialog.FileName }}");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", $"POSIX path of (choose file name with prompt \"Export BBC ROM layout\" default name \"{defaultFileName}\")");
+                    return RunProcessForSingleLine("osascript", "-e", $"POSIX path of (choose file name with prompt \"Export BBC sideways memory layout\" default name \"{defaultFileName}\")");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--save", "--confirm-overwrite", "--title=Export BBC ROM layout", $"--filename={defaultFileName}");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--save", "--confirm-overwrite", "--title=Export BBC sideways memory layout", $"--filename={defaultFileName}");
             }
             catch
             {
@@ -5776,13 +5816,13 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Import BBC ROM layout'; $dialog.Filter = 'BBC ROM layout (*.json)|*.json|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Import BBC sideways memory layout'; $dialog.Filter = 'BBC sideways memory layout (*.json)|*.json|All files (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Import BBC ROM layout\")");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Import BBC sideways memory layout\")");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Import BBC ROM layout", "--file-filter=BBC ROM layout (*.json) | *.json");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Import BBC sideways memory layout", "--file-filter=BBC sideways memory layout (*.json) | *.json");
             }
             catch
             {

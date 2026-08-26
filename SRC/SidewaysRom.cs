@@ -24,9 +24,10 @@ namespace BBC
         string RomType,
         ushort? LanguageEntry,
         ushort? ServiceEntry,
-        bool Missing)
+        bool Missing,
+        bool Writable)
     {
-        public bool Occupied => Path is not null;
+        public bool Occupied => Path is not null || Writable;
     }
 
     public readonly record struct HostRomAction(HostRomActionKind Kind, int Bank, int TargetBank, string Path);
@@ -34,6 +35,7 @@ namespace BBC
     public enum HostRomActionKind
     {
         Add,
+        AddRam,
         Remove,
         Move,
         ImportLayout,
@@ -42,17 +44,19 @@ namespace BBC
 
     public sealed class SidewaysRomLayoutFile
     {
-        public int Version { get; set; } = 1;
+        public int Version { get; set; } = 2;
 
         public List<SidewaysRomLayoutBank> Banks { get; set; } = new List<SidewaysRomLayoutBank>();
 
-        public static SidewaysRomLayoutFile FromPaths(IReadOnlyList<string?> romPaths)
+        public static SidewaysRomLayoutFile FromSlots(IReadOnlyList<string?> romPaths, IReadOnlyList<bool> writableBanks)
         {
             SidewaysRomLayoutFile layout = new SidewaysRomLayoutFile();
             for (int bank = 0; bank < romPaths.Count; bank++)
             {
                 if (!string.IsNullOrWhiteSpace(romPaths[bank]))
                     layout.Banks.Add(new SidewaysRomLayoutBank { Bank = bank, Path = romPaths[bank]! });
+                else if (writableBanks[bank])
+                    layout.Banks.Add(new SidewaysRomLayoutBank { Bank = bank, Ram = true });
             }
 
             return layout;
@@ -62,8 +66,8 @@ namespace BBC
         {
             string json = File.ReadAllText(path);
             SidewaysRomLayoutFile? layout = JsonSerializer.Deserialize<SidewaysRomLayoutFile>(json, JsonOptions);
-            if (layout is null || layout.Version != 1)
-                throw new InvalidDataException("Unsupported sideways ROM layout.");
+            if (layout is null || layout.Version is < 1 or > 2)
+                throw new InvalidDataException("Unsupported sideways memory layout.");
 
             layout.Banks ??= new List<SidewaysRomLayoutBank>();
             return layout;
@@ -86,14 +90,18 @@ namespace BBC
         public int Bank { get; set; }
 
         public string Path { get; set; } = string.Empty;
+
+        public bool Ram { get; set; }
     }
 
     public static class SidewaysRomHeader
     {
-        public static SidewaysRomSlot Inspect(int bank, string? path, byte[]? rom)
+        public static SidewaysRomSlot Inspect(int bank, string? path, byte[]? rom, bool writable = false)
         {
+            if (writable && path is null)
+                return new SidewaysRomSlot(bank, null, "RAM", "Sideways RAM", string.Empty, "16K RAM", null, null, false, true);
             if (path is null)
-                return new SidewaysRomSlot(bank, null, "EMPTY", string.Empty, string.Empty, "Empty", null, null, false);
+                return new SidewaysRomSlot(bank, null, "EMPTY", string.Empty, string.Empty, "Empty", null, null, false, false);
 
             string fallbackName = System.IO.Path.GetFileNameWithoutExtension(path);
             if (string.IsNullOrWhiteSpace(fallbackName))
@@ -110,7 +118,8 @@ namespace BBC
                     "Missing",
                     null,
                     null,
-                    true);
+                    true,
+                    writable);
             }
 
             string title = ReadNullTerminatedAscii(rom, 9, 64);
@@ -140,7 +149,8 @@ namespace BBC
                 romType,
                 languageEntry,
                 serviceEntry,
-                false);
+                false,
+                writable);
         }
 
         private static string DecodeRomType(byte[] rom)
