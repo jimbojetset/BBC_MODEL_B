@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Folder Include="ROMS\" />
+    <Compile Remove="Tests\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>

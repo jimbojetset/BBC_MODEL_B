@@ -44,6 +44,12 @@ Build it:
 dotnet build BBC_MODEL_B.csproj
 ```
 
+Run the hardware regression checks:
+
+```bash
+dotnet run --project Tests/BBC_MODEL_B.RegressionTests.csproj
+```
+
 Start at BASIC:
 
 ```bash

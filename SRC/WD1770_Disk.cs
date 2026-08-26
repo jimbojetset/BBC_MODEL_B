@@ -11,8 +11,8 @@
 namespace BBC
 {
     /// <summary>
-    /// Acorn's 1770 upgrade maps its drive latch at &amp;FE80-&amp;FE83 and the
-    /// WD1770 registers at &amp;FE84-&amp;FE87. DRQ and INTRQ are ORed onto the BBC NMI line.
+    /// Acorn's 1770 upgrade maps its drive latch at &FE80-&FE83 and the
+    /// WD1770 registers at &FE84-&FE87. DRQ and INTRQ are ORed onto the BBC NMI line.
     /// </summary>
     public sealed class WD1770_Disk : IDiscController
     {
@@ -62,11 +62,14 @@ namespace BBC
         private int dataRequestDeadlineCycles;
         private int commandCompletionCycles;
         private byte pendingCompletionError;
-        private int motorIdleCycles;
-        private int cyclesUntilIndex;
-        private int physicalTrack;
+        private readonly int[] motorIdleCycles = new int[2];
+        private readonly int[] cyclesUntilIndex = [IndexPeriodCycles, IndexPeriodCycles];
+        private readonly int[] physicalTrack = new int[2];
         private int lastStepDirection = 1;
         private bool interruptOnIndex;
+        private bool interruptOnReadyLoss;
+        private bool interruptOnReadyGain;
+        private bool forceInterruptReady;
         private bool readTransferActive;
         private int transferBytes;
         private PendingWrite? pendingWrite;
@@ -87,7 +90,8 @@ namespace BBC
         public string MountedDriveSummary => media.MountedDriveSummary;
         public bool NmiLineAsserted => interruptRequest || dataRequest;
         public bool TickRequired => requestDelayCycles > 0 || dataRequestDeadlineCycles > 0
-            || commandCompletionCycles > 0 || motorIdleCycles > 0;
+            || commandCompletionCycles > 0 || motorIdleCycles.Any(value => value > 0)
+            || interruptOnReadyLoss || interruptOnReadyGain;
 
         public event Action<int>? DriveMotorStarted;
         public event Action<int>? DriveMotorStopped;
@@ -106,18 +110,21 @@ namespace BBC
         {
             ClearDeletedSectors(drive);
             media.Mount(path, drive);
+            UpdateReadyInterrupt();
         }
 
         public void MountImage(byte[] image, int drive, string? sourcePath, string displayName, bool readOnly)
         {
             ClearDeletedSectors(drive);
             media.MountImage(image, drive, sourcePath, displayName, readOnly);
+            UpdateReadyInterrupt();
         }
 
         public void EjectPhysicalDrive(int drive)
         {
             ClearDeletedSectors(drive);
             media.EjectPhysicalDrive(drive);
+            UpdateReadyInterrupt();
         }
         public bool Flush() => media.Flush();
         public bool IsPhysicalDriveMounted(int drive) => media.IsPhysicalDriveMounted(drive);
@@ -143,11 +150,14 @@ namespace BBC
             dataRequestDeadlineCycles = 0;
             commandCompletionCycles = 0;
             pendingCompletionError = 0;
-            motorIdleCycles = 0;
-            cyclesUntilIndex = IndexPeriodCycles;
-            physicalTrack = 0;
+            Array.Clear(motorIdleCycles);
+            Array.Fill(cyclesUntilIndex, IndexPeriodCycles);
+            Array.Clear(physicalTrack);
             lastStepDirection = 1;
             interruptOnIndex = false;
+            interruptOnReadyLoss = false;
+            interruptOnReadyGain = false;
+            forceInterruptReady = false;
             readTransferActive = false;
             transferBytes = 0;
             media.SetRawActivityLed(0, false);
@@ -156,9 +166,11 @@ namespace BBC
 
         public void PowerOff()
         {
-            int drive = SelectedPhysicalDrive;
-            if (motorIdleCycles > 0 && drive >= 0)
-                DriveMotorStopped?.Invoke(drive);
+            for (int drive = 0; drive < motorIdleCycles.Length; drive++)
+            {
+                if (motorIdleCycles[drive] > 0)
+                    DriveMotorStopped?.Invoke(drive);
+            }
             Reset();
         }
 
@@ -208,13 +220,14 @@ namespace BBC
             bool typeOneStatus = (command & 0x80) == 0 || (command & 0xF0) == 0xD0;
             if (typeOneStatus)
             {
+                int drive = SelectedPhysicalDrive;
                 value &= unchecked((byte)~(StatusMotorOn | StatusWriteProtected
                     | StatusSpinUpComplete | StatusTrackZero | StatusDrq));
-                if (motorIdleCycles > 0 && cyclesUntilIndex <= IndexPulseCycles)
+                if (drive >= 0 && motorIdleCycles[drive] > 0 && cyclesUntilIndex[drive] <= IndexPulseCycles)
                     value |= StatusDrq;
-                if (physicalTrack == 0)
+                if (drive >= 0 && physicalTrack[drive] == 0)
                     value |= StatusTrackZero;
-                if (motorIdleCycles > 0)
+                if (drive >= 0 && motorIdleCycles[drive] > 0)
                     value |= StatusMotorOn | StatusSpinUpComplete;
                 if (media.RawWriteProtected)
                     value |= StatusWriteProtected;
@@ -249,8 +262,6 @@ namespace BBC
 
         private void WriteControl(byte value)
         {
-            int oldDrive = SelectedPhysicalDrive;
-            bool wasRunning = motorIdleCycles > 0;
             control = value;
             if (TraceEnabled)
                 Console.WriteLine($"1770 control ${value:X2} drive {SelectedPhysicalDrive} side {((value & ControlSide) != 0 ? 1 : 0)}");
@@ -269,10 +280,14 @@ namespace BBC
                 dataRequestDeadlineCycles = 0;
                 commandCompletionCycles = 0;
                 pendingCompletionError = 0;
-                if (wasRunning && oldDrive >= 0)
-                    DriveMotorStopped?.Invoke(oldDrive);
-                motorIdleCycles = 0;
+                for (int drive = 0; drive < motorIdleCycles.Length; drive++)
+                {
+                    if (motorIdleCycles[drive] > 0)
+                        DriveMotorStopped?.Invoke(drive);
+                }
+                Array.Clear(motorIdleCycles);
             }
+            UpdateReadyInterrupt();
         }
 
         private void BeginCommand(byte value)
@@ -282,7 +297,7 @@ namespace BBC
             if ((value & 0xF0) == 0xD0)
             {
                 command = value;
-                AbortCommand((value & 0x08) != 0, (value & 0x04) != 0);
+                AbortCommand(value);
                 return;
             }
 
@@ -291,6 +306,8 @@ namespace BBC
 
             command = value;
             interruptOnIndex = false;
+            interruptOnReadyLoss = false;
+            interruptOnReadyGain = false;
             interruptRequest = false;
             dataRequest = false;
             requestDelayCycles = 0;
@@ -312,17 +329,17 @@ namespace BBC
                     break;
                 case 0x20:
                 case 0x30:
-                    SeekTo(physicalTrack + lastStepDirection, (value & 0x10) != 0);
+                    SeekTo(GetSelectedPhysicalTrack() + lastStepDirection, (value & 0x10) != 0);
                     break;
                 case 0x40:
                 case 0x50:
                     lastStepDirection = 1;
-                    SeekTo(physicalTrack + 1, (value & 0x10) != 0);
+                    SeekTo(GetSelectedPhysicalTrack() + 1, (value & 0x10) != 0);
                     break;
                 case 0x60:
                 case 0x70:
                     lastStepDirection = -1;
-                    SeekTo(physicalTrack - 1, (value & 0x10) != 0);
+                    SeekTo(GetSelectedPhysicalTrack() - 1, (value & 0x10) != 0);
                     break;
                 case 0x80:
                 case 0x90:
@@ -349,22 +366,26 @@ namespace BBC
 
         private void SeekTo(int destination, bool updateTrackRegister)
         {
+            int drive = SelectedPhysicalDrive;
+            int currentPhysicalTrack = drive >= 0 ? physicalTrack[drive] : 0;
             int bounded = Math.Clamp(destination, 0, 79);
-            int delta = bounded - physicalTrack;
+            int delta = bounded - currentPhysicalTrack;
             if (delta != 0)
             {
                 if (TraceEnabled)
-                    Console.WriteLine($"1770 seek {physicalTrack}->{bounded}, rate {GetStepRateCycles() * 1000 / CpuClockHz}ms");
-                DriveSeek?.Invoke(Math.Max(0, SelectedPhysicalDrive), delta);
+                    Console.WriteLine($"1770 seek drive {drive} {currentPhysicalTrack}->{bounded}, rate {GetStepRateCycles() * 1000 / CpuClockHz}ms");
+                if (drive >= 0)
+                    DriveSeek?.Invoke(drive, delta);
             }
-            physicalTrack = bounded;
+            if (drive >= 0)
+                physicalTrack[drive] = bounded;
             if (updateTrackRegister)
                 track = (byte)bounded;
             int seekCycles = Math.Max(CommandDelayCycles, Math.Abs(delta) * GetStepRateCycles());
             if ((command & 0x04) != 0)
             {
-                bool trackIdMatches = IsReady(SelectedImageSide) && track == physicalTrack
-                    && media.TryReadRawSector(SelectedImageSide, physicalTrack, 0, new byte[SectorSize]);
+                bool trackIdMatches = drive >= 0 && IsReady(SelectedImageSide) && track == physicalTrack[drive]
+                    && media.TryReadRawSector(SelectedImageSide, physicalTrack[drive], 0, new byte[SectorSize]);
                 pendingCompletionError = trackIdMatches ? (byte)0 : StatusRecordNotFound;
                 seekCycles += trackIdMatches ? HeadSettleCycles : RecordSearchCycles;
             }
@@ -731,18 +752,53 @@ namespace BBC
             && media.IsPhysicalDriveMounted(imageDrive & 1)
             && (imageDrive < 2 || media.IsPhysicalDriveDoubleSided(imageDrive & 1));
 
+        private int GetSelectedPhysicalTrack()
+        {
+            int drive = SelectedPhysicalDrive;
+            return drive >= 0 ? physicalTrack[drive] : 0;
+        }
+
+        private void UpdateReadyInterrupt()
+        {
+            if (!interruptOnReadyLoss && !interruptOnReadyGain)
+                return;
+
+            bool ready = IsReady(SelectedImageSide);
+            if ((forceInterruptReady && !ready && interruptOnReadyLoss)
+                || (!forceInterruptReady && ready && interruptOnReadyGain))
+            {
+                interruptRequest = true;
+                interruptOnReadyLoss = false;
+                interruptOnReadyGain = false;
+            }
+            forceInterruptReady = ready;
+        }
+
+        private void LoseReadByte()
+        {
+            transferBytes++;
+            if (MultiSector && transferBytes % SectorSize == 0)
+                sector++;
+            if (readData.Count > 0)
+            {
+                requestDelayCycles = ByteDelayCycles;
+                return;
+            }
+            commandCompletionCycles = ByteDelayCycles;
+        }
+
         private void StartMotor()
         {
             int drive = SelectedPhysicalDrive;
             if (drive < 0)
                 return;
-            if (motorIdleCycles <= 0)
+            if (motorIdleCycles[drive] <= 0)
             {
                 if (TraceEnabled)
                     Console.WriteLine($"1770 motor start drive {drive}");
                 DriveMotorStarted?.Invoke(drive);
             }
-            motorIdleCycles = MotorIdleCycles;
+            motorIdleCycles[drive] = MotorIdleCycles;
         }
 
         private void CompleteCommand()
@@ -772,7 +828,7 @@ namespace BBC
             CompleteCommand();
         }
 
-        private void AbortCommand(bool immediateInterrupt, bool indexInterrupt)
+        private void AbortCommand(byte forceCommand)
         {
             readData.Clear();
             writeData.Clear();
@@ -785,14 +841,18 @@ namespace BBC
             dataRequest = false;
             readTransferActive = false;
             transferBytes = 0;
-            interruptRequest = immediateInterrupt;
-            interruptOnIndex = indexInterrupt;
+            interruptRequest = (forceCommand & 0x08) != 0;
+            interruptOnIndex = (forceCommand & 0x04) != 0;
+            interruptOnReadyLoss = (forceCommand & 0x02) != 0;
+            interruptOnReadyGain = (forceCommand & 0x01) != 0;
+            forceInterruptReady = IsReady(SelectedImageSide);
             media.SetRawActivityLed(0, false);
             media.SetRawActivityLed(1, false);
         }
 
         public void Tick(int cycles)
         {
+            UpdateReadyInterrupt();
             bool transferAdvanced = false;
             if (requestDelayCycles > 0)
             {
@@ -804,7 +864,7 @@ namespace BBC
                         data = readData.Dequeue();
                     dataRequest = true;
                     status |= StatusDrq;
-                    dataRequestDeadlineCycles = readTransferActive || writeTrackActive ? 0 : ByteDelayCycles;
+                    dataRequestDeadlineCycles = ByteDelayCycles;
                     transferAdvanced = true;
                 }
             }
@@ -817,7 +877,10 @@ namespace BBC
                     dataRequestDeadlineCycles = 0;
                     dataRequest = false;
                     status = (byte)((status & ~StatusDrq) | StatusLostData);
-                    AcceptWriteByte(0);
+                    if (readTransferActive)
+                        LoseReadByte();
+                    else
+                        AcceptWriteByte(0);
                     transferAdvanced = true;
                 }
             }
@@ -832,28 +895,30 @@ namespace BBC
                 }
             }
 
-            if (motorIdleCycles > 0)
+            for (int drive = 0; drive < motorIdleCycles.Length; drive++)
             {
-                cyclesUntilIndex -= cycles;
-                while (cyclesUntilIndex <= 0)
+                if (motorIdleCycles[drive] <= 0)
+                    continue;
+
+                cyclesUntilIndex[drive] -= cycles;
+                while (cyclesUntilIndex[drive] <= 0)
                 {
-                    cyclesUntilIndex += IndexPeriodCycles;
-                    if (interruptOnIndex)
+                    cyclesUntilIndex[drive] += IndexPeriodCycles;
+                    if (interruptOnIndex && drive == SelectedPhysicalDrive)
+                    {
                         interruptRequest = true;
+                        interruptOnIndex = false;
+                    }
                 }
 
-                motorIdleCycles -= cycles;
-                if (motorIdleCycles <= 0)
+                motorIdleCycles[drive] -= cycles;
+                if (motorIdleCycles[drive] <= 0)
                 {
-                    motorIdleCycles = 0;
-                    cyclesUntilIndex = IndexPeriodCycles;
-                    int drive = SelectedPhysicalDrive;
-                    if (drive >= 0)
-                    {
-                        if (TraceEnabled)
-                            Console.WriteLine($"1770 motor stop drive {drive}");
-                        DriveMotorStopped?.Invoke(drive);
-                    }
+                    motorIdleCycles[drive] = 0;
+                    cyclesUntilIndex[drive] = IndexPeriodCycles;
+                    if (TraceEnabled)
+                        Console.WriteLine($"1770 motor stop drive {drive}");
+                    DriveMotorStopped?.Invoke(drive);
                 }
             }
         }
@@ -873,11 +938,17 @@ namespace BBC
             writer.Write(dataRequestDeadlineCycles);
             writer.Write(commandCompletionCycles);
             writer.Write(pendingCompletionError);
-            writer.Write(motorIdleCycles);
-            writer.Write(cyclesUntilIndex);
-            writer.Write(physicalTrack);
+            for (int drive = 0; drive < 2; drive++)
+            {
+                writer.Write(motorIdleCycles[drive]);
+                writer.Write(cyclesUntilIndex[drive]);
+                writer.Write(physicalTrack[drive]);
+            }
             writer.Write(lastStepDirection);
             writer.Write(interruptOnIndex);
+            writer.Write(interruptOnReadyLoss);
+            writer.Write(interruptOnReadyGain);
+            writer.Write(forceInterruptReady);
             writer.Write(readTransferActive);
             writer.Write(transferBytes);
             writer.Write(readData.Count);
@@ -917,11 +988,17 @@ namespace BBC
             dataRequestDeadlineCycles = reader.ReadInt32();
             commandCompletionCycles = reader.ReadInt32();
             pendingCompletionError = reader.ReadByte();
-            motorIdleCycles = reader.ReadInt32();
-            cyclesUntilIndex = reader.ReadInt32();
-            physicalTrack = reader.ReadInt32();
+            for (int drive = 0; drive < 2; drive++)
+            {
+                motorIdleCycles[drive] = reader.ReadInt32();
+                cyclesUntilIndex[drive] = reader.ReadInt32();
+                physicalTrack[drive] = reader.ReadInt32();
+            }
             lastStepDirection = reader.ReadInt32();
             interruptOnIndex = reader.ReadBoolean();
+            interruptOnReadyLoss = reader.ReadBoolean();
+            interruptOnReadyGain = reader.ReadBoolean();
+            forceInterruptReady = reader.ReadBoolean();
             readTransferActive = reader.ReadBoolean();
             transferBytes = reader.ReadInt32();
             readData.Clear();
