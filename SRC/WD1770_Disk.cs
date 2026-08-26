@@ -774,19 +774,6 @@ namespace BBC
             forceInterruptReady = ready;
         }
 
-        private void LoseReadByte()
-        {
-            transferBytes++;
-            if (MultiSector && transferBytes % SectorSize == 0)
-                sector++;
-            if (readData.Count > 0)
-            {
-                requestDelayCycles = ByteDelayCycles;
-                return;
-            }
-            commandCompletionCycles = ByteDelayCycles;
-        }
-
         private void StartMotor()
         {
             int drive = SelectedPhysicalDrive;
@@ -864,7 +851,9 @@ namespace BBC
                         data = readData.Dequeue();
                     dataRequest = true;
                     status |= StatusDrq;
-                    dataRequestDeadlineCycles = ByteDelayCycles;
+                    // A sector image has no following address mark with which to time an abandoned
+                    // read. DFS can deliberately leave bytes unread before starting another command.
+                    dataRequestDeadlineCycles = readTransferActive || writeTrackActive ? 0 : ByteDelayCycles;
                     transferAdvanced = true;
                 }
             }
@@ -877,10 +866,7 @@ namespace BBC
                     dataRequestDeadlineCycles = 0;
                     dataRequest = false;
                     status = (byte)((status & ~StatusDrq) | StatusLostData);
-                    if (readTransferActive)
-                        LoseReadByte();
-                    else
-                        AcceptWriteByte(0);
+                    AcceptWriteByte(0);
                     transferAdvanced = true;
                 }
             }

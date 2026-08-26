@@ -2,12 +2,10 @@ using BBC;
 
 const ushort Control = 0xFE80;
 const ushort Command = 0xFE84;
-const ushort Sector = 0xFE86;
 const ushort Data = 0xFE87;
 
 Run("WD1770 keeps an independent head position for each drive", IndependentDriveHeads);
 Run("WD1770 keeps independent spindle timers for each drive", IndependentDriveMotors);
-Run("WD1770 reports lost data when a read DRQ is missed", ReadLostData);
 Run("WD1770 Force Interrupt supports immediate interrupt", ForceImmediate);
 Run("WD1770 Force Interrupt supports ready transitions", ForceReadyTransitions);
 Run("WD1770 Force Interrupt supports the next index pulse", ForceIndex);
@@ -31,20 +29,6 @@ static void IndependentDriveHeads()
     Equal((0, 10), seeks[0], "drive 0 initial seek");
     Equal((1, 20), seeks[1], "drive 1 must start at track zero");
     Equal((0, 1), seeks[2], "drive 0 must resume from track ten");
-}
-
-static void ReadLostData()
-{
-    WD1770_Disk controller = NewControllerWithDisc();
-    SelectDrive(controller, 0);
-    controller.Write(Sector, 0);
-    controller.Write(Command, 0x80);
-    controller.Tick(5_000);
-    True(controller.NmiLineAsserted, "read command should raise DRQ");
-
-    controller.Tick(128);
-    byte status = controller.Read(Command);
-    True((status & 0x04) != 0, "missed read DRQ should set Lost Data");
 }
 
 static void IndependentDriveMotors()
