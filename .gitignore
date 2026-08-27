@@ -8,12 +8,8 @@ obj/
 
 .DS_Store
 *.log
-SSD/*.png
-ROMS/*.crdownload
-ROMS/DFS-2.26.rom
-ROMS/ADFS-1.30.rom
+ROMS/
 .vs/
-NotWorking/
 AGENTS.md
 Properties/
 .vscode/settings.json
