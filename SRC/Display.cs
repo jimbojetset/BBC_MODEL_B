@@ -15,6 +15,7 @@ using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO.Compression;
+using System.Reflection;
 using System.Text;
 
 namespace BBC
@@ -35,6 +36,7 @@ namespace BBC
         private const int MenuShortcutGap = 18;
         private const int TubeMenuStatusGap = 6;
         private const string TubeMenuStatusLabel = "SECOND PROCESSOR";
+        private const string GithubUrl = "https://github.com/jimbojetset/BBC_MODEL_B";
         private const int TubeCoProcessorImageWidth = 93;
         private const int TubeCoProcessorImageHeight = 61;
         private const int TubeCoProcessorImageRightInset = 12;
@@ -3002,6 +3004,9 @@ namespace BBC
                 case MenuCommand.ToggleFullScreen:
                     SetFullScreen(!fullScreenEnabled);
                     break;
+                case MenuCommand.ShowAbout:
+                    ShowAbout();
+                    break;
                 case MenuCommand.OpenRomManager:
                     romManagerOpen = true;
                     inputMapperOpen = false;
@@ -3018,6 +3023,27 @@ namespace BBC
                     activeMenuIndex = -1;
                     break;
             }
+        }
+
+        private void ShowAbout()
+        {
+            Assembly assembly = typeof(Display).Assembly;
+            string version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                ?? assembly.GetName().Version?.ToString()
+                ?? "Unknown";
+            int buildMetadata = version.IndexOf('+');
+            if (buildMetadata >= 0)
+                version = version[..buildMetadata];
+
+            string message = $"BBC Model B Emulator\n\n"
+                + $"Author: James Booth\n"
+                + $"Version: {version}\n"
+                + $"GitHub: {GithubUrl}\n\n"
+                + "A BBC Micro Model B emulator written in C# and .NET.\n"
+                + "Licensed under GPL-2.0-only.\n\n"
+                + "BBC Micro ROMs remain the property of their respective rights holders.";
+
+            _ = SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "About BBC Model B", message, window);
         }
 
         private void CloseRomManager()
@@ -5233,6 +5259,7 @@ namespace BBC
             ToggleScanlines,
             ToggleBbcLogo,
             ToggleFullScreen,
+            ShowAbout,
             OpenRomManager,
             OpenInputMapper
         }
@@ -5296,7 +5323,9 @@ namespace BBC
                 [
                     new MenuItem("Fullscreen", "Ctrl+Shift+F", MenuCommand.ToggleFullScreen),
                     new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines),
-                    new MenuItem("BBC logo", "", MenuCommand.ToggleBbcLogo)
+                    new MenuItem("BBC logo", "", MenuCommand.ToggleBbcLogo),
+                    MenuSeparator(),
+                    new MenuItem("About", "", MenuCommand.ShowAbout)
                 ]));
 
             return definitions.ToArray();
@@ -6047,6 +6076,7 @@ namespace BBC
         private const string SdlLibrary = "SDL2";
 
         private const uint SDL_INIT_VIDEO = 0x00000020;
+        private const uint SDL_MESSAGEBOX_INFORMATION = 0x00000040;
         private const uint SDL_INIT_JOYSTICK = 0x00000200;
         private const uint SDL_INIT_GAMECONTROLLER = 0x00002000;
         private const uint SDL_WINDOW_SHOWN = 0x00000004;
@@ -6212,6 +6242,9 @@ namespace BBC
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern uint SDL_GetWindowID(IntPtr window);
+
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        private static extern int SDL_ShowSimpleMessageBox(uint flags, string title, string message, IntPtr window);
 
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)]
         private static extern int SDL_SetWindowFullscreen(IntPtr window, uint flags);

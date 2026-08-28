@@ -6,7 +6,28 @@
     <UseAppHost>false</UseAppHost>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <InformationalVersion>0.0</InformationalVersion>
   </PropertyGroup>
+
+  <Target Name="SetGitCommitVersion" BeforeTargets="GetAssemblyVersion" Condition="Exists('$(MSBuildProjectDirectory)/.git')">
+    <Exec Command="git rev-list --count --merges origin/main"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          ConsoleToMSBuild="true"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" ItemName="GitMajorVersion" />
+      <Output TaskParameter="ExitCode" PropertyName="GitMajorVersionExitCode" />
+    </Exec>
+    <Exec Command="git rev-list --count --no-merges origin/main"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          ConsoleToMSBuild="true"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" ItemName="GitMinorVersion" />
+      <Output TaskParameter="ExitCode" PropertyName="GitMinorVersionExitCode" />
+    </Exec>
+    <PropertyGroup Condition="'$(GitMajorVersionExitCode)' == '0' and '$(GitMinorVersionExitCode)' == '0'">
+      <InformationalVersion>@(GitMajorVersion).@(GitMinorVersion)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
 
   <ItemGroup>
     <Folder Include="ROMS\" />
