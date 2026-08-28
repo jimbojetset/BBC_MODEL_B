@@ -188,8 +188,8 @@ namespace BBC
 
         private static IEnumerable<string> GetDefaultDirectories()
         {
-            yield return Path.Combine(AppContext.BaseDirectory, "Assets");
-            yield return Path.Combine(Environment.CurrentDirectory, "Assets");
+            yield return Path.Combine(AppContext.BaseDirectory, "Assets", "Sound");
+            yield return Path.Combine(Environment.CurrentDirectory, "Assets", "Sound");
         }
 
         private sealed class WavSample

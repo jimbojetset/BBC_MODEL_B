@@ -2,7 +2,7 @@
 
 ## b-em Disc Drive WAV Samples
 
-The 5.25 inch disc drive WAV samples in `Assets/*.wav` are from the b-em BBC Micro emulator.
+The 5.25 inch disc drive WAV samples in `Assets/Sound/*.wav` are from the b-em BBC Micro emulator.
 
 - Project: b-em
 - Repository: https://github.com/stardot/b-em
@@ -12,7 +12,7 @@ The 5.25 inch disc drive WAV samples in `Assets/*.wav` are from the b-em BBC Mic
 
 ## DotMatrix Font
 
-`Assets/DotMatrix-Regular.ttf` is from the DotMatrix font project.
+`Assets/Fonts/DotMatrix-Regular.ttf` is from the DotMatrix font project.
 
 - Project: DotMatrix
 - Repository: https://github.com/Gissio/font_DotMatrix

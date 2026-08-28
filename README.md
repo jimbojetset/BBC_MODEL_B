@@ -207,7 +207,7 @@ You can create blank media from the menu or command line. DFS can also catalogue
 
 Blank UEF tapes created from the cassette menu are recordable 10-minute tapes. Loaded game UEFs are treated like tapes with the record tab removed, so `REC` is disabled for them.
 
-5.25 inch drive sounds are mixed into the main audio path from WAV samples in `Assets/`. The sample source is credited in `THIRD_PARTY_NOTICES.md`.
+5.25 inch drive sounds are mixed into the main audio path from WAV samples in `Assets/Sound/`. The sample source is credited in `THIRD_PARTY_NOTICES.md`.
 
 ## Optional Hardware
 

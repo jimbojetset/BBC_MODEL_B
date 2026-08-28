@@ -1946,7 +1946,7 @@ namespace BBC
                 return printerTypeface;
             }
 
-            string fontPath = Path.Combine(AppContext.BaseDirectory, "Assets", "DotMatrix-Regular.ttf");
+            string fontPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Fonts", "DotMatrix-Regular.ttf");
             printerTypeface = File.Exists(fontPath)
                 ? SKTypeface.FromFile(fontPath)
                 : SKTypeface.Default;
