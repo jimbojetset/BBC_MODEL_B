@@ -91,6 +91,7 @@ namespace BBC
         private WatchedAccess? pendingWatchedAccess;
         private WatchedAccess? stoppedWatchedAccess;
         private HardwareTab selectedHardwareTab;
+        private ClipboardPanel clipboardPanel = ClipboardPanel.Memory;
 
         public DebuggerWindow(
             CPU_6502 cpu,
@@ -215,6 +216,21 @@ namespace BBC
 
             if (type == SDL_KEYDOWN)
             {
+                int modifiers = SDL_GetModState();
+                if ((modifiers & (KMOD_CTRL | KMOD_GUI)) != 0)
+                {
+                    if (keySym == SDLK_C)
+                    {
+                        CopyPanelToClipboard();
+                        return true;
+                    }
+                    if (keySym == SDLK_V && commandFocus && activeAddressField == AddressField.None)
+                    {
+                        PasteCommandFromClipboard();
+                        return true;
+                    }
+                }
+
                 if (HandleAddressKey(keySym))
                     return true;
                 if (HandleCommandKey(keySym))
@@ -268,11 +284,13 @@ namespace BBC
                 }
                 else if (logicalY is >= 76 and < 110 && logicalX is >= 18 and < 338)
                 {
+                    clipboardPanel = ClipboardPanel.Memory;
                     BeginAddressEntry(AddressField.Memory);
                     commandFocus = false;
                 }
                 else if (logicalY is >= 76 and < 110 && logicalX is >= 368 and < 808)
                 {
+                    clipboardPanel = ClipboardPanel.Disassembly;
                     BeginAddressEntry(AddressField.Disassembly);
                     commandFocus = false;
                 }
@@ -284,18 +302,41 @@ namespace BBC
                 }
                 else if (logicalY is >= 78 and < 105 && logicalX is >= 926 and < 1204)
                 {
+                    clipboardPanel = ClipboardPanel.Hardware;
                     SelectHardwareTab(logicalX);
                     commandFocus = false;
                 }
                 else if (logicalX is >= 366 and < 410 && logicalY is >= 117 and < 517)
                 {
+                    clipboardPanel = ClipboardPanel.Disassembly;
                     int row = (int)((logicalY - 117) / 20);
                     ToggleBreakpoint(GetDisassemblyRowAddress(row));
                 }
                 else if (logicalY is >= CommandInputTop and < StatusTop)
                 {
+                    clipboardPanel = ClipboardPanel.CommandOutput;
                     activeAddressField = AddressField.None;
                     commandFocus = true;
+                }
+                else if (logicalY is >= 48 and < CommandTop && logicalX < 350)
+                {
+                    clipboardPanel = ClipboardPanel.Memory;
+                    commandFocus = false;
+                }
+                else if (logicalY is >= 48 and < CommandTop && logicalX is >= DisassemblyLeft and < DisassemblyRight)
+                {
+                    clipboardPanel = ClipboardPanel.Disassembly;
+                    commandFocus = false;
+                }
+                else if (logicalX >= HardwareLeft && logicalY is >= 48 and < HardwareBottom)
+                {
+                    clipboardPanel = ClipboardPanel.Hardware;
+                    commandFocus = false;
+                }
+                else if (logicalX < DisassemblyRight && logicalY is >= CommandTop and < CommandInputTop)
+                {
+                    clipboardPanel = ClipboardPanel.CommandOutput;
+                    commandFocus = false;
                 }
                 else
                 {
@@ -324,6 +365,98 @@ namespace BBC
             }
 
             return true;
+        }
+
+        private void CopyPanelToClipboard()
+        {
+            string text = clipboardPanel switch
+            {
+                ClipboardPanel.Memory => GetVisibleMemoryText(),
+                ClipboardPanel.Disassembly => GetVisibleDisassemblyText(),
+                ClipboardPanel.Hardware => GetVisibleHardwareText(),
+                ClipboardPanel.CommandOutput => string.Join(Environment.NewLine, commandOutput),
+                _ => string.Empty
+            };
+            if (text.Length > 0)
+                SDL_SetClipboardText(text);
+        }
+
+        private string GetVisibleMemoryText()
+        {
+            StringBuilder result = new StringBuilder();
+            ushort address = (ushort)(memoryAddress & 0xFFF8);
+            Span<char> ascii = stackalloc char[8];
+            for (int row = 0; row < 20; row++)
+            {
+                result.Append($"{address:X4}");
+                for (int column = 0; column < 8; column++)
+                {
+                    byte value = readByte((ushort)(address + column));
+                    result.Append($" {value:X2}");
+                    ascii[column] = value is >= 32 and <= 126 ? (char)value : '.';
+                }
+                result.Append("  ").Append(ascii);
+                if (row < 19) result.AppendLine();
+                address += 8;
+            }
+            return result.ToString();
+        }
+
+        private string GetVisibleDisassemblyText()
+        {
+            StringBuilder result = new StringBuilder();
+            ushort address = disassemblyAddress;
+            ushort pc = (ushort)cpu.registers.PC;
+            for (int row = 0; row < 20; row++)
+            {
+                DecodedInstruction instruction = Decode(address);
+                result.Append(address == pc ? "> " : "  ")
+                    .Append($"{address:X4}  {instruction.Bytes,-8} {instruction.Text}");
+                if (row < 19) result.AppendLine();
+                address = (ushort)(address + instruction.Length);
+            }
+            return result.ToString();
+        }
+
+        private string GetVisibleHardwareText()
+        {
+            if (selectedHardwareTab != HardwareTab.Cpu)
+                return string.Join(Environment.NewLine, GetHardwareState(selectedHardwareTab).Take(11));
+
+            Registers r = cpu.registers;
+            string flags = string.Join(' ', Convert.ToString(r.P, 2).PadLeft(8, '0').ToCharArray());
+            return string.Join(Environment.NewLine,
+            [
+                $"PC  ${r.PC & 0xFFFF:X4}",
+                $"A   ${r.A:X2}       X   ${r.X:X2}",
+                $"Y   ${r.Y:X2}       SP  ${r.S:X2}",
+                $"P   ${r.P:X2}",
+                "N V - B D I Z C",
+                flags,
+                $"IRQ  {(cpu.IrqLineAsserted ? "asserted" : "clear")}",
+                $"CPU  {(paused() ? "paused" : "running")}"
+            ]);
+        }
+
+        private void PasteCommandFromClipboard()
+        {
+            IntPtr textPointer = SDL_GetClipboardText();
+            if (textPointer == IntPtr.Zero)
+                return;
+
+            try
+            {
+                string? text = Marshal.PtrToStringUTF8(textPointer);
+                if (string.IsNullOrEmpty(text))
+                    return;
+                string singleLine = string.Join(' ', text.Split(['\r', '\n', '\t'], StringSplitOptions.RemoveEmptyEntries));
+                int available = Math.Max(0, 120 - commandLine.Length);
+                commandLine += singleLine[..Math.Min(singleLine.Length, available)];
+            }
+            finally
+            {
+                SDL_free(textPointer);
+            }
         }
 
         private void CloseAndResume()
@@ -648,11 +781,7 @@ namespace BBC
                 {
                     case "?":
                     case "help":
-                        WriteCommandOutput("run | pause | n [count] | over | out | r");
-                        WriteCommandOutput("m [address] [count] | e address byte [byte ...] | d [address] [count]");
-                        WriteCommandOutput("b address [end] | bc | wr address [end] | ww address [end] | wc");
-                        WriteCommandOutput("ss | su | sv | sd | st");
-                        WriteCommandOutput("sl path | sc | symbols [filter] | symbol name/address");
+                        WriteHelp();
                         break;
                     case "run":
                     case "g":
@@ -761,6 +890,49 @@ namespace BBC
             {
                 WriteCommandOutput($"Unable to load symbols: {ex.Message}");
             }
+        }
+
+        private void WriteHelp()
+        {
+            int firstHelpLine = commandOutput.Count;
+            string[] lines =
+            [
+                "EXECUTION",
+                "run (g)                 Resume 6502 execution.",
+                "pause                   Pause execution at the next instruction boundary.",
+                "n [count] (step)        Execute one instruction, or a decimal number of instructions.",
+                "over (o)                Step over JSR; otherwise execute one instruction.",
+                "out                     Run until the current subroutine returns.",
+                "r (regs)                Display the host 6502 registers and processor flags.",
+                "MEMORY AND CODE",
+                "m [address] [count]      Display bytes; count is decimal and defaults to 32.",
+                "e address byte [...]    Write hexadecimal bytes through the BBC bus while paused.",
+                "d [address] [count]      Disassemble instructions; count is decimal and defaults to 6.",
+                "BREAKPOINTS AND WATCHPOINTS",
+                "b address [end]         Toggle one execution breakpoint, or set an inclusive range.",
+                "bc                      Clear every execution breakpoint.",
+                "wr address [end]        Toggle a read watchpoint or inclusive address range.",
+                "ww address [end]        Toggle a write watchpoint or inclusive address range.",
+                "wc                      Clear every read and write watchpoint.",
+                "clear                   Clear all breakpoints and watchpoints.",
+                "HARDWARE",
+                "ss / su                 Show System VIA / User VIA state.",
+                "sv / sd / st            Show video / disc controller / Tube state.",
+                "SYMBOLS",
+                "sl path                 Load an external symbol file, replacing the previous one.",
+                "sc                      Unload external symbols; built-in BBC symbols remain.",
+                "symbols [filter]        List symbols, optionally filtered by part of the name.",
+                "symbol name/address     Resolve a symbol to an address or an address to a symbol.",
+                "Addresses are hexadecimal and accept $, &, or 0x prefixes; symbol+offset is valid.",
+                "Ctrl+C copies the selected panel; command output copies its complete retained history.",
+                "Ctrl+V pastes clipboard text into the command entry as one command line.",
+                "Use the mouse wheel over command output to read the rest of this help."
+            ];
+
+            foreach (string line in lines)
+                WriteCommandOutput(line);
+
+            commandScrollOffset = Math.Max(0, commandOutput.Count - firstHelpLine - CommandOutputVisibleLines);
         }
 
         private void StartCommandSteps(int count)
@@ -1435,6 +1607,7 @@ namespace BBC
         private enum AddressMode { Imp, Acc, Imm, Zp, ZpX, ZpY, Abs, AbsX, AbsY, Ind, IndX, IndY, Rel }
         private enum AddressField { None, Memory, Disassembly }
         private enum HardwareTab { Cpu, SystemVia, UserVia, Video, Disc, Tube }
+        private enum ClipboardPanel { Memory, Disassembly, Hardware, CommandOutput }
 
         private static readonly OpCode[] OpCodes = CreateOpCodes();
 
@@ -1484,6 +1657,8 @@ namespace BBC
         private const int SDLK_ESCAPE = 27;
         private const int SDLK_BACKSPACE = 8;
         private const int SDLK_RETURN = 13;
+        private const int SDLK_C = 99;
+        private const int SDLK_V = 118;
         private const int SDLK_F5 = 1073741886;
         private const int SDLK_F6 = 1073741887;
         private const int SDLK_F10 = 1073741891;
@@ -1493,6 +1668,8 @@ namespace BBC
         private const int SDLK_DOWN = 1073741905;
         private const int SDLK_UP = 1073741906;
         private const int KMOD_SHIFT = 0x0003;
+        private const int KMOD_CTRL = 0x00C0;
+        private const int KMOD_GUI = 0x0C00;
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const uint SDL_WINDOW_HIDDEN = 0x00000008;
         private const uint SDL_WINDOW_RESIZABLE = 0x00000020;
@@ -1516,6 +1693,9 @@ namespace BBC
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_RenderWindowToLogical(IntPtr renderer, int windowX, int windowY, out float logicalX, out float logicalY);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern uint SDL_GetMouseState(out int x, out int y);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_GetModState();
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)] private static extern int SDL_SetClipboardText([MarshalAs(UnmanagedType.LPUTF8Str)] string text);
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr SDL_GetClipboardText();
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern void SDL_free(IntPtr memblock);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr SDL_CreateTexture(IntPtr renderer, uint format, int access, int w, int h);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern void SDL_DestroyTexture(IntPtr texture);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_UpdateTexture(IntPtr texture, IntPtr rect, IntPtr pixels, int pitch);
