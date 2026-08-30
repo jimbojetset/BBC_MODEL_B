@@ -93,6 +93,21 @@ namespace BBC
             || commandCompletionCycles > 0 || motorIdleCycles.Any(value => value > 0)
             || interruptOnReadyLoss || interruptOnReadyGain;
 
+        public string[] GetDebuggerState() =>
+        [
+            "WD1770",
+            $"Control ${control:X2}  Status ${status:X2}",
+            $"Command ${command:X2}  Data ${data:X2}",
+            $"Track ${track:X2}  Sector ${sector:X2}",
+            $"Drive {SelectedPhysicalDrive}  Side {((control & ControlSide) != 0 ? 1 : 0)}",
+            $"Density {((control & ControlDensity) != 0 ? "FM" : "MFM")}",
+            $"INTRQ {(interruptRequest ? "active" : "clear")}",
+            $"DRQ {(dataRequest ? "active" : "clear")}",
+            $"Transfer {transferBytes} bytes",
+            $"Media {(HasMountedDisc ? MountedDriveSummary : "none")}",
+            $"Dirty {(ImageDirty ? "yes" : "no")}"
+        ];
+
         public event Action<int>? DriveMotorStarted;
         public event Action<int>? DriveMotorStopped;
         public event Action<int, int>? DriveSeek;

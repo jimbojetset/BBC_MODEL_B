@@ -155,6 +155,20 @@ namespace BBC
 
         public bool NmiLineAsserted => nmiPending && nmiDelayCycles <= 0;
 
+        public string[] GetDebuggerState() =>
+        [
+            "Intel 8271",
+            $"Status ${(busy ? StatusBusy : 0) | (readData.Count > 0 ? StatusDataRequest : 0) | (nmiPending ? StatusInterrupt : 0) | (resultAvailable ? StatusResultFull : 0):X2}",
+            $"Command ${command:X2}  Result ${result:X2}",
+            $"Drive {selectedDrive}  Track {currentTrack[Math.Clamp(ActiveDrive, 0, 3)]}",
+            $"Parameters {parameters.Count}  Data {readData.Count}",
+            $"Busy {(busy ? "yes" : "no")}  NMI {(NmiLineAsserted ? "active" : "clear")}",
+            $"Motor {(motorSpinning.Any(value => value) ? "on" : "off")}",
+            $"Media {(HasMountedDisc ? MountedDriveSummary : "none")}",
+            $"Write protect {(writeProtected ? "on" : "off")}",
+            $"Dirty {(ImageDirty ? "yes" : "no")}"
+        ];
+
         public event Action<int>? DriveMotorStarted;
 
         public event Action<int>? DriveMotorStopped;

@@ -225,6 +225,20 @@ namespace BBC
 
         public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;
 
+        public string[] GetDebuggerState() =>
+        [
+            $"ORA ${portA:X2}   DDRA ${dataDirectionA:X2}",
+            $"ORB ${portB:X2}   DDRB ${dataDirectionB:X2}",
+            $"T1C ${timer1Counter & 0xFFFF:X4}  T1L ${timer1Latch & 0xFFFF:X4}",
+            $"T2C ${timer2Counter & 0xFFFF:X4}  T2L ${timer2Latch & 0xFFFF:X4}",
+            $"ACR ${registers[11]:X2}   PCR ${registers[12]:X2}",
+            $"IFR ${interruptFlags:X2}   IER ${interruptEnable:X2}",
+            $"IC32 ${addressableLatch:X2}",
+            $"IRQ {(IrqAsserted ? "asserted" : "clear")}",
+            $"VSYNC {(vsyncLineActive ? "active" : "inactive")}",
+            $"Screen ${ScreenMemoryStart:X4}+{ScreenMemorySize:X4}"
+        ];
+
         public bool ExternalVsyncLineEnabled
         {
             get => externalVsyncLineEnabled;

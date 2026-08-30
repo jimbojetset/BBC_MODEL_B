@@ -40,6 +40,13 @@ namespace BBC
         private readonly Action resume;
         private readonly Func<bool> step;
         private readonly Func<bool> paused;
+        private readonly System6522Via systemVia;
+        private readonly User6522Via userVia;
+        private readonly HD6845_Video video;
+        private readonly Func<IDiscController> discController;
+        private readonly TubeUla tubeUla;
+        private readonly Func<bool> tubeEnabled;
+        private readonly DebuggerSymbols symbols = new DebuggerSymbols();
         private readonly HashSet<ushort> breakpoints = new HashSet<ushort>();
         private readonly HashSet<ushort> temporaryBreakpoints = new HashSet<ushort>();
         private readonly List<WatchRange> readWatchpoints = new List<WatchRange>();
@@ -73,6 +80,7 @@ namespace BBC
         private string? temporaryStopDescription;
         private WatchedAccess? pendingWatchedAccess;
         private WatchedAccess? stoppedWatchedAccess;
+        private HardwareTab selectedHardwareTab;
 
         public DebuggerWindow(
             CPU_6502 cpu,
@@ -80,7 +88,13 @@ namespace BBC
             Action pause,
             Action resume,
             Func<bool> step,
-            Func<bool> paused)
+            Func<bool> paused,
+            System6522Via systemVia,
+            User6522Via userVia,
+            HD6845_Video video,
+            Func<IDiscController> discController,
+            TubeUla tubeUla,
+            Func<bool> tubeEnabled)
         {
             this.cpu = cpu;
             this.readByte = readByte;
@@ -88,6 +102,12 @@ namespace BBC
             this.resume = resume;
             this.step = step;
             this.paused = paused;
+            this.systemVia = systemVia;
+            this.userVia = userVia;
+            this.video = video;
+            this.discController = discController;
+            this.tubeUla = tubeUla;
+            this.tubeEnabled = tubeEnabled;
             cpu.ShouldBreakBeforeInstruction = HasBreakpoint;
 
             bitmap = new SKBitmap(new SKImageInfo(Width, Height, SKColorType.Bgra8888, SKAlphaType.Premul));
@@ -148,11 +168,22 @@ namespace BBC
                 return true;
             }
 
-            if (type == SDL_TEXTINPUT && commandFocus && activeAddressField == AddressField.None)
+            if (type == SDL_TEXTINPUT)
             {
                 int length = Array.IndexOf(textInput, (byte)0);
                 if (length < 0) length = textInput.Length;
                 string text = Encoding.UTF8.GetString(textInput, 0, length);
+                if (activeAddressField != AddressField.None)
+                {
+                    foreach (char character in text)
+                    {
+                        if (!char.IsWhiteSpace(character) && !char.IsControl(character) && addressEntry.Length < 64)
+                            addressEntry += character;
+                    }
+                    return true;
+                }
+                if (!commandFocus)
+                    return true;
                 foreach (char character in text)
                 {
                     if (!char.IsControl(character) && commandLine.Length < 120)
@@ -228,6 +259,11 @@ namespace BBC
                 {
                     disassemblyAddress = (ushort)cpu.registers.PC;
                     activeAddressField = AddressField.None;
+                    commandFocus = false;
+                }
+                else if (logicalY is >= 78 and < 105 && logicalX is >= 990 and < 1268)
+                {
+                    SelectHardwareTab(logicalX);
                     commandFocus = false;
                 }
                 else if (logicalX is >= 366 and < 410 && logicalY is >= 117 and < 512)
@@ -375,7 +411,7 @@ namespace BBC
 
             DrawPanel(new SKRect(980, 48, 1272, CommandTop - 8), "CPU / HARDWARE");
             DrawHardwareTabs();
-            DrawRegisters(996, 126);
+            DrawSelectedHardware(996, 126);
 
             DrawPanel(new SKRect(8, CommandTop, 1272, CommandInputTop - 6), "COMMAND OUTPUT");
             DrawCommandOutput();
@@ -422,10 +458,39 @@ namespace BBC
             for (int i = 0; i < tabs.Length; i++)
             {
                 float width = widths[i];
-                Fill(new SKRect(x, 78, x + width, 105), i == 0 ? CurrentInstruction : PanelDark);
-                DrawText(tabs[i], x + 5, 96, i == 0 ? Text : DimText, small: true);
+                bool selected = i == (int)selectedHardwareTab;
+                Fill(new SKRect(x, 78, x + width, 105), selected ? CurrentInstruction : PanelDark);
+                DrawText(tabs[i], x + 5, 96, selected ? Text : DimText, small: true);
                 x += width + 2;
             }
+        }
+
+        private void SelectHardwareTab(float x)
+        {
+            float[] widths = [42, 42, 46, 48, 44, 44];
+            float left = 990;
+            for (int i = 0; i < widths.Length; i++)
+            {
+                if (x >= left && x < left + widths[i])
+                {
+                    selectedHardwareTab = (HardwareTab)i;
+                    return;
+                }
+                left += widths[i] + 2;
+            }
+        }
+
+        private void DrawSelectedHardware(float x, float y)
+        {
+            if (selectedHardwareTab == HardwareTab.Cpu)
+            {
+                DrawRegisters(x, y);
+                return;
+            }
+
+            string[] lines = GetHardwareState(selectedHardwareTab);
+            for (int i = 0; i < lines.Length && i < 18; i++)
+                DrawText(lines[i], x, y + i * 25, i == 0 ? Accent : Text, small: true);
         }
 
         private void DrawRegisters(float x, float y)
@@ -441,8 +506,6 @@ namespace BBC
             DrawText("Interrupts", x, y + 204, DimText);
             DrawText($"IRQ  {(cpu.IrqLineAsserted ? "asserted" : "clear")}", x, y + 232, Text);
             DrawText($"CPU  {(paused() ? "paused" : "running")}", x, y + 260, Text);
-            DrawText("Hardware tabs will be populated", x, y + 320, DimText, small: true);
-            DrawText("in later phases", x, y + 340, DimText, small: true);
         }
 
         private void DrawDisassembly(float x, float y)
@@ -492,7 +555,7 @@ namespace BBC
         {
             Fill(rect, PanelDark);
             Stroke(rect, activeAddressField == field ? Accent : Border);
-            string value = activeAddressField == field ? addressEntry.PadLeft(4, '0') : $"{address:X4}";
+            string value = activeAddressField == field ? addressEntry : $"{address:X4}";
             DrawText($"{label}:  ${value}", rect.Left + 10, rect.Top + 22, activeAddressField == field ? Accent : Text, small: true);
         }
 
@@ -560,7 +623,8 @@ namespace BBC
                         WriteCommandOutput("run | pause | n [count] | over | out | r");
                         WriteCommandOutput("m [address] [count] | d [address] [count]");
                         WriteCommandOutput("b address [end] | bc | wr address [end] | ww address [end] | wc");
-                        WriteCommandOutput("ss | su | sv | st");
+                        WriteCommandOutput("ss | su | sv | sd | st");
+                        WriteCommandOutput("sl path | sc | symbols [filter] | symbol name/address");
                         break;
                     case "run":
                     case "g":
@@ -619,10 +683,35 @@ namespace BBC
                         WriteCommandOutput("All breakpoints and watchpoints cleared");
                         break;
                     case "ss":
+                        WriteHardwareState(HardwareTab.SystemVia);
+                        break;
                     case "su":
+                        WriteHardwareState(HardwareTab.UserVia);
+                        break;
                     case "sv":
+                        WriteHardwareState(HardwareTab.Video);
+                        break;
+                    case "sd":
+                        WriteHardwareState(HardwareTab.Disc);
+                        break;
                     case "st":
-                        WriteCommandOutput("Hardware register commands will be available in phase 8");
+                        WriteHardwareState(HardwareTab.Tube);
+                        break;
+                    case "sl":
+                    case "symbols-load":
+                        LoadSymbols(entered);
+                        break;
+                    case "sc":
+                    case "symbols-clear":
+                        int unloaded = symbols.ExternalCount;
+                        symbols.Unload();
+                        WriteCommandOutput($"Unloaded {unloaded} external symbols; {symbols.BuiltInCount} built-in symbols remain");
+                        break;
+                    case "symbols":
+                        ListSymbols(parts.Length > 1 ? string.Join(' ', parts[1..]) : null);
+                        break;
+                    case "symbol":
+                        LookupSymbol(parts);
                         break;
                     default:
                         WriteCommandOutput($"Unknown command: {parts[0]} (type help)");
@@ -632,6 +721,14 @@ namespace BBC
             catch (ArgumentException ex)
             {
                 WriteCommandOutput(ex.Message);
+            }
+            catch (IOException ex)
+            {
+                WriteCommandOutput($"Unable to load symbols: {ex.Message}");
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                WriteCommandOutput($"Unable to load symbols: {ex.Message}");
             }
         }
 
@@ -737,6 +834,70 @@ namespace BBC
             WriteCommandOutput(FormatFlags(r.P));
         }
 
+        private void LoadSymbols(string entered)
+        {
+            int separator = entered.IndexOfAny([' ', '\t']);
+            if (separator < 0 || separator == entered.Length - 1)
+                throw new ArgumentException("Usage: sl path");
+
+            string path = entered[(separator + 1)..].Trim();
+            if (path.Length >= 2 && path[0] == '"' && path[^1] == '"')
+                path = path[1..^1];
+            int count = symbols.Load(path);
+            WriteCommandOutput($"Loaded {count} external symbols from {Path.GetFileName(path)}");
+        }
+
+        private void ListSymbols(string? filter)
+        {
+            (string Name, ushort Address, bool External)[] matches = symbols.Find(filter).Take(100).ToArray();
+            if (matches.Length == 0)
+            {
+                WriteCommandOutput(filter is null ? "No symbols loaded" : $"No symbols match: {filter}");
+                return;
+            }
+            foreach ((string name, ushort address, bool external) in matches)
+                WriteCommandOutput($"{address:X4}  {name}{(external ? "  [external]" : string.Empty)}");
+            if (matches.Length == 100)
+                WriteCommandOutput("First 100 matches shown; use a filter to narrow the list");
+        }
+
+        private void LookupSymbol(string[] parts)
+        {
+            if (parts.Length != 2)
+                throw new ArgumentException("Usage: symbol name/address");
+
+            if (symbols.TryAddress(parts[1], out ushort address))
+            {
+                WriteCommandOutput($"{parts[1]} = ${address:X4}");
+                return;
+            }
+            address = ParseAddress(parts[1]);
+            string? name = symbols.FormatAddress(address, nearest: true);
+            WriteCommandOutput(name is null ? $"No symbol for ${address:X4}" : $"${address:X4}  {name}");
+        }
+
+        private void WriteHardwareState(HardwareTab tab)
+        {
+            selectedHardwareTab = tab;
+            foreach (string line in GetHardwareState(tab))
+                WriteCommandOutput(line);
+        }
+
+        private string[] GetHardwareState(HardwareTab tab) => tab switch
+        {
+            HardwareTab.SystemVia => systemVia.GetDebuggerState(),
+            HardwareTab.UserVia => userVia.GetDebuggerState(),
+            HardwareTab.Video => video.GetDebuggerState(),
+            HardwareTab.Disc => discController() switch
+            {
+                Intel8271_Disk intel8271 => intel8271.GetDebuggerState(),
+                WD1770_Disk wd1770 => wd1770.GetDebuggerState(),
+                _ => ["Unknown disc controller"]
+            },
+            HardwareTab.Tube => tubeEnabled() ? tubeUla.GetDebuggerState() : ["Tube disabled"],
+            _ => []
+        };
+
         private void ExecuteWatchpointCommand(string[] parts, bool write)
         {
             if (parts.Length < 2)
@@ -770,14 +931,39 @@ namespace BBC
             ? $"${range.Start:X4}"
             : $"${range.Start:X4}-${range.End:X4}";
 
-        private static ushort ParseAddress(string value)
+        private ushort ParseAddress(string value)
+        {
+            string text = value.Trim();
+            if (TryParseNumericAddress(text, out ushort address))
+                return address;
+            if (symbols.TryAddress(text, out address))
+                return address;
+
+            int operatorIndex = text.IndexOfAny(['+', '-'], 1);
+            if (operatorIndex > 0 && symbols.TryAddress(text[..operatorIndex], out ushort baseAddress)
+                && TryParseHexOffset(text[(operatorIndex + 1)..], out int offset))
+            {
+                int result = text[operatorIndex] == '+' ? baseAddress + offset : baseAddress - offset;
+                if (result is >= 0 and <= 0xFFFF)
+                    return (ushort)result;
+            }
+            throw new ArgumentException($"Invalid address or unknown symbol: {value}");
+        }
+
+        private static bool TryParseNumericAddress(string value, out ushort address)
         {
             string text = value.Trim();
             if (text.StartsWith('$') || text.StartsWith('&')) text = text[1..];
             else if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
-            if (!ushort.TryParse(text, System.Globalization.NumberStyles.HexNumber, null, out ushort address))
-                throw new ArgumentException($"Invalid hexadecimal address: {value}");
-            return address;
+            return ushort.TryParse(text, System.Globalization.NumberStyles.HexNumber, null, out address);
+        }
+
+        private static bool TryParseHexOffset(string value, out int offset)
+        {
+            string text = value.Trim();
+            if (text.StartsWith('$') || text.StartsWith('&')) text = text[1..];
+            else if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
+            return int.TryParse(text, System.Globalization.NumberStyles.HexNumber, null, out offset);
         }
 
         private static int ParseCount(string value, int minimum, int maximum)
@@ -825,26 +1011,22 @@ namespace BBC
 
             if (keySym is SDLK_RETURN or SDLK_KP_ENTER)
             {
-                if (ushort.TryParse(addressEntry, System.Globalization.NumberStyles.HexNumber, null, out ushort address))
+                try
                 {
+                    ushort address = ParseAddress(addressEntry);
                     if (activeAddressField == AddressField.Memory)
                         memoryAddress = (ushort)(address & 0xFFF8);
                     else
                         disassemblyAddress = address;
                 }
+                catch (ArgumentException ex)
+                {
+                    WriteCommandOutput(ex.Message);
+                }
                 activeAddressField = AddressField.None;
                 addressEntry = string.Empty;
                 return true;
             }
-
-            char digit = keySym switch
-            {
-                >= '0' and <= '9' => (char)keySym,
-                >= 'a' and <= 'f' => char.ToUpperInvariant((char)keySym),
-                _ => '\0'
-            };
-            if (digit != '\0' && addressEntry.Length < 4)
-                addressEntry += digit;
             return true;
         }
 
@@ -1001,10 +1183,13 @@ namespace BBC
                 _ => $"{opcode:X2} {operand1:X2} {operand2:X2}"
             };
             string operand = FormatOperand(op.Mode, address, operand1, operand2);
-            return new DecodedInstruction(op.Length, bytes, string.IsNullOrEmpty(operand) ? op.Mnemonic : $"{op.Mnemonic} {operand}");
+            string instruction = string.IsNullOrEmpty(operand) ? op.Mnemonic : $"{op.Mnemonic} {operand}";
+            if (symbols.TryExactName(address, out string label))
+                instruction = $"{label}: {instruction}";
+            return new DecodedInstruction(op.Length, bytes, instruction);
         }
 
-        private static string FormatOperand(AddressMode mode, ushort address, byte lo, byte hi)
+        private string FormatOperand(AddressMode mode, ushort address, byte lo, byte hi)
         {
             ushort word = (ushort)(lo | hi << 8);
             return mode switch
@@ -1012,18 +1197,24 @@ namespace BBC
                 AddressMode.Imp => string.Empty,
                 AddressMode.Acc => "A",
                 AddressMode.Imm => $"#${lo:X2}",
-                AddressMode.Zp => $"${lo:X2}",
-                AddressMode.ZpX => $"${lo:X2},X",
-                AddressMode.ZpY => $"${lo:X2},Y",
-                AddressMode.Abs => $"${word:X4}",
-                AddressMode.AbsX => $"${word:X4},X",
-                AddressMode.AbsY => $"${word:X4},Y",
-                AddressMode.Ind => $"(${word:X4})",
+                AddressMode.Zp => FormatSymbolicAddress(lo, 2),
+                AddressMode.ZpX => $"{FormatSymbolicAddress(lo, 2)},X",
+                AddressMode.ZpY => $"{FormatSymbolicAddress(lo, 2)},Y",
+                AddressMode.Abs => FormatSymbolicAddress(word, 4),
+                AddressMode.AbsX => $"{FormatSymbolicAddress(word, 4)},X",
+                AddressMode.AbsY => $"{FormatSymbolicAddress(word, 4)},Y",
+                AddressMode.Ind => $"({FormatSymbolicAddress(word, 4)})",
                 AddressMode.IndX => $"(${lo:X2},X)",
                 AddressMode.IndY => $"(${lo:X2}),Y",
-                AddressMode.Rel => $"${(ushort)(address + 2 + (sbyte)lo):X4}",
+                AddressMode.Rel => FormatSymbolicAddress((ushort)(address + 2 + (sbyte)lo), 4),
                 _ => string.Empty
             };
+        }
+
+        private string FormatSymbolicAddress(ushort address, int digits)
+        {
+            string? name = symbols.FormatAddress(address, nearest: digits == 4);
+            return name is null ? $"${address.ToString($"X{digits}")}" : name;
         }
 
         private void DrawPanel(SKRect rect, string title)
@@ -1154,6 +1345,7 @@ namespace BBC
 
         private enum AddressMode { Imp, Acc, Imm, Zp, ZpX, ZpY, Abs, AbsX, AbsY, Ind, IndX, IndY, Rel }
         private enum AddressField { None, Memory, Disassembly }
+        private enum HardwareTab { Cpu, SystemVia, UserVia, Video, Disc, Tube }
 
         private static readonly OpCode[] OpCodes = CreateOpCodes();
 

@@ -81,6 +81,30 @@ namespace BBC
 
         public static bool IsParasiteAddress(ushort address) => address is >= 0xFEF8 and <= 0xFEFF;
 
+        public string[] GetDebuggerState()
+        {
+            lock (sync)
+            {
+                return
+                [
+                    $"Control ${internalStatus:X2}",
+                    $"Host R1 ${hostStatus[0]:X2}  R2 ${hostStatus[1]:X2}",
+                    $"Host R3 ${hostStatus[2]:X2}  R4 ${hostStatus[3]:X2}",
+                    $"Parasite R1 ${parasiteStatus[0]:X2}",
+                    $"Parasite R2 ${parasiteStatus[1]:X2}",
+                    $"Parasite R3 ${parasiteStatus[2]:X2}",
+                    $"Parasite R4 ${parasiteStatus[3]:X2}",
+                    $"R1 FIFO {parasiteToHostR1Count}/{R1ParasiteToHostSize}",
+                    $"R3 P>H {parasiteToHostR3Count}/2",
+                    $"R3 H>P {hostToParasiteR3Count}/2",
+                    $"Host IRQ {(hostIrqAsserted ? "active" : "clear")}",
+                    $"Parasite IRQ {(parasiteIrqAsserted ? "active" : "clear")}",
+                    $"Parasite NMI {(parasiteNmiAsserted ? "active" : "clear")}",
+                    $"Parasite reset {(parasiteResetAsserted ? "active" : "clear")}"
+                ];
+            }
+        }
+
         public void SaveState(BinaryWriter writer)
         {
             lock (sync)

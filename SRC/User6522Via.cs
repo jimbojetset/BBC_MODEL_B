@@ -73,6 +73,20 @@ namespace BBC
         public string TraceState =>
             $"t1c={timer1Counter} t1l={timer1Latch} t2c={timer2Counter} t2l={timer2Latch} justHit={justHit} ifr=${interruptFlags:X2} ier=${interruptEnable:X2}";
 
+        public string[] GetDebuggerState() =>
+        [
+            $"ORA ${portA:X2}   DDRA ${dataDirectionA:X2}",
+            $"ORB ${portB:X2}   DDRB ${dataDirectionB:X2}",
+            $"T1C ${timer1Counter & 0xFFFF:X4}  T1L ${timer1Latch & 0xFFFF:X4}",
+            $"T2C ${timer2Counter & 0xFFFF:X4}  T2L ${timer2Latch & 0xFFFF:X4}",
+            $"ACR ${registers[11]:X2}   PCR ${registers[12]:X2}",
+            $"IFR ${interruptFlags:X2}   IER ${interruptEnable:X2}",
+            $"IRQ {(IrqAsserted ? "asserted" : "clear")}",
+            $"Printer {(PrinterEnabled ? "enabled" : "disabled")}",
+            $"PB input ${externalPortBValue:X2}",
+            $"PB mask  ${externalPortBMask:X2}"
+        ];
+
         /// <summary>External user-port devices drive PB lines only where their mask owns the pin.</summary>
         public void SetPortBInputBits(byte mask, byte value)
         {

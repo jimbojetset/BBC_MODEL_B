@@ -170,6 +170,22 @@ namespace BBC
 
         public byte UlaControl { get; private set; }
 
+        public string[] GetDebuggerState() =>
+        [
+            $"Mode {(int)CurrentMode}   ULA ${UlaControl:X2}",
+            $"CRTC selected R{selectedCrtcRegister}",
+            $"R0  ${crtcRegisters[0]:X2}  R1  ${crtcRegisters[1]:X2}",
+            $"R2  ${crtcRegisters[2]:X2}  R3  ${crtcRegisters[3]:X2}",
+            $"R4  ${crtcRegisters[4]:X2}  R5  ${crtcRegisters[5]:X2}",
+            $"R6  ${crtcRegisters[6]:X2}  R7  ${crtcRegisters[7]:X2}",
+            $"R8  ${crtcRegisters[8]:X2}  R9  ${crtcRegisters[9]:X2}",
+            $"R10 ${crtcRegisters[10]:X2}  R11 ${crtcRegisters[11]:X2}",
+            $"R12 ${crtcRegisters[12]:X2}  R13 ${crtcRegisters[13]:X2}",
+            $"R14 ${crtcRegisters[14]:X2}  R15 ${crtcRegisters[15]:X2}",
+            $"Beam H {beamHorizontalCounter} V {beamVerticalCounter}",
+            $"Raster {beamScanlineCounter}  MA ${beamAddress & 0x3FFF:X4}"
+        ];
+
         /// <summary>Raised when the CRTC VSYNC output changes before it reaches the system 6522 VIA.</summary>
         public event Action<bool>? VsyncChanged;
 

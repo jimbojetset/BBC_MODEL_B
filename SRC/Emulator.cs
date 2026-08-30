@@ -764,7 +764,13 @@ Examples:
                 PauseForDebugger,
                 ResumeFromDebugger,
                 StepHostInstruction,
-                () => DebuggerPaused);
+                () => DebuggerPaused,
+                systemVia,
+                userVia,
+                Video,
+                () => discController,
+                tubeUla,
+                () => tube6502Configured);
             Display.AttachDebugger(debugger);
             Cpu.OnBreakpointHit = address => Interlocked.Exchange(ref debuggerBreakpointPending, address + 1);
 
