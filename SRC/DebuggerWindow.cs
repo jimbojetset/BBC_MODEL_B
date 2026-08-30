@@ -19,12 +19,17 @@ namespace BBC
 {
     public sealed class DebuggerWindow : IDisposable
     {
-        private const int Width = 1280;
-        private const int Height = 800;
+        private const int Width = 1216;
+        private const int Height = 766;
         private const int ToolbarHeight = 42;
-        private const int CommandTop = 570;
-        private const int CommandInputTop = 736;
-        private const int StatusTop = 770;
+        private const int CommandTop = 536;
+        private const int CommandInputTop = 702;
+        private const int StatusTop = 736;
+        private const int CommandOutputVisibleLines = 6;
+        private const int DisassemblyLeft = 358;
+        private const int DisassemblyRight = 908;
+        private const int HardwareLeft = 916;
+        private const int ContentRight = Width - 8;
         private const uint Background = 0xFF15181C;
         private const uint Panel = 0xFF20242A;
         private const uint PanelDark = 0xFF191D22;
@@ -250,23 +255,23 @@ namespace BBC
                     BeginAddressEntry(AddressField.Memory);
                     commandFocus = false;
                 }
-                else if (logicalY is >= 76 and < 110 && logicalX is >= 368 and < 872)
+                else if (logicalY is >= 76 and < 110 && logicalX is >= 368 and < 808)
                 {
                     BeginAddressEntry(AddressField.Disassembly);
                     commandFocus = false;
                 }
-                else if (logicalY is >= 76 and < 110 && logicalX is >= 884 and < 956)
+                else if (logicalY is >= 76 and < 110 && logicalX is >= 820 and < 892)
                 {
                     disassemblyAddress = (ushort)cpu.registers.PC;
                     activeAddressField = AddressField.None;
                     commandFocus = false;
                 }
-                else if (logicalY is >= 78 and < 105 && logicalX is >= 990 and < 1268)
+                else if (logicalY is >= 78 and < 105 && logicalX is >= 926 and < 1204)
                 {
                     SelectHardwareTab(logicalX);
                     commandFocus = false;
                 }
-                else if (logicalX is >= 366 and < 410 && logicalY is >= 117 and < 512)
+                else if (logicalX is >= 366 and < 410 && logicalY is >= 117 and < 517)
                 {
                     int row = (int)((logicalY - 117) / 20);
                     ToggleBreakpoint(GetDisassemblyRowAddress(row));
@@ -291,12 +296,12 @@ namespace BBC
                 {
                     if (logicalX < 350)
                         memoryAddress = (ushort)(memoryAddress - mouseWheelY * 8);
-                    else if (logicalX is >= 358 and < 972)
+                    else if (logicalX is >= DisassemblyLeft and < DisassemblyRight)
                         MoveDisassembly(mouseWheelY > 0 ? -1 : 1, Math.Abs(mouseWheelY));
                 }
                 else if (logicalY is >= CommandTop and < CommandInputTop)
                 {
-                    int maximum = Math.Max(0, commandOutput.Count - 7);
+                    int maximum = Math.Max(0, commandOutput.Count - CommandOutputVisibleLines);
                     commandScrollOffset = Math.Clamp(commandScrollOffset + mouseWheelY, 0, maximum);
                 }
                 return true;
@@ -404,26 +409,26 @@ namespace BBC
             DrawAddressField(new SKRect(18, 76, 338, 108), "Address", memoryAddress, AddressField.Memory);
             DrawMemory(20, 132);
 
-            DrawPanel(new SKRect(358, 48, 972, CommandTop - 8), "DISASSEMBLY");
-            DrawAddressField(new SKRect(368, 76, 872, 108), "Address", disassemblyAddress, AddressField.Disassembly);
-            DrawButton(new SKRect(884, 78, 956, 106), "PC", false);
+            DrawPanel(new SKRect(DisassemblyLeft, 48, DisassemblyRight, CommandTop - 8), "DISASSEMBLY");
+            DrawAddressField(new SKRect(368, 76, 808, 108), "Address", disassemblyAddress, AddressField.Disassembly);
+            DrawButton(new SKRect(820, 78, 892, 106), "PC", false);
             DrawDisassembly(374, 132);
 
-            DrawPanel(new SKRect(980, 48, 1272, CommandTop - 8), "CPU / HARDWARE");
+            DrawPanel(new SKRect(HardwareLeft, 48, ContentRight, CommandTop - 8), "CPU / HARDWARE");
             DrawHardwareTabs();
-            DrawSelectedHardware(996, 126);
+            DrawSelectedHardware(932, 126);
 
-            DrawPanel(new SKRect(8, CommandTop, 1272, CommandInputTop - 6), "COMMAND OUTPUT");
+            DrawPanel(new SKRect(8, CommandTop, ContentRight, CommandInputTop - 6), "COMMAND OUTPUT");
             DrawCommandOutput();
 
-            Fill(new SKRect(8, CommandInputTop, 1272, StatusTop - 6), PanelDark);
-            Stroke(new SKRect(8, CommandInputTop, 1272, StatusTop - 6), Border);
-            DrawText(">", 20, CommandInputTop + 24, Accent);
-            DrawText(commandLine, 42, CommandInputTop + 24, commandFocus ? Text : DimText);
+            Fill(new SKRect(8, CommandInputTop, ContentRight, StatusTop - 6), PanelDark);
+            Stroke(new SKRect(8, CommandInputTop, ContentRight, StatusTop - 6), Border);
+            DrawText(">", 20, CommandInputTop + 20, Accent);
+            DrawText(commandLine, 42, CommandInputTop + 20, commandFocus ? Text : DimText);
             if (commandFocus && (Environment.TickCount64 / 500 & 1) == 0)
             {
                 float caretX = 42 + textPaint.MeasureText(commandLine);
-                Line(caretX, CommandInputTop + 9, caretX, CommandInputTop + 27, Accent);
+                Line(caretX, CommandInputTop + 5, caretX, CommandInputTop + 23, Accent);
             }
 
             Fill(new SKRect(0, StatusTop, Width, Height), PanelDark);
@@ -434,9 +439,9 @@ namespace BBC
                 : paused() && temporaryStopDescription is not null
                     ? temporaryStopDescription
                     : paused() ? "PAUSED" : "RUNNING";
-            DrawText(state, 14, 791, paused() ? 0xFFFFC857 : 0xFF67D391);
-            DrawText($"PC ${cpu.registers.PC & 0xFFFF:X4}", 260, 791, Text);
-            DrawText($"{cpu.TotalCycles:N0} cycles", 1030, 791, DimText);
+            DrawText(state, 14, StatusTop + 21, paused() ? 0xFFFFC857 : 0xFF67D391);
+            DrawText($"PC ${cpu.registers.PC & 0xFFFF:X4}", 260, StatusTop + 21, Text);
+            DrawText($"{cpu.TotalCycles:N0} cycles", 966, StatusTop + 21, DimText);
         }
 
         private void DrawToolbar()
@@ -447,14 +452,14 @@ namespace BBC
             DrawButton(new SKRect(176, 7, 250, 35), "Step F10", false);
             DrawButton(new SKRect(256, 7, 350, 35), "Over F11", false);
             DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F11", false);
-            DrawText($"F9 breakpoint    {BreakpointCount} break / {WatchpointCount} watch    Host 6502", 820, 27, Accent, small: true);
+            DrawText($"F9 breakpoint    {BreakpointCount} break / {WatchpointCount} watch    Host 6502", 756, 27, Accent, small: true);
         }
 
         private void DrawHardwareTabs()
         {
             string[] tabs = ["CPU", "SYS", "USER", "VIDEO", "DISC", "TUBE"];
             float[] widths = [42, 42, 46, 48, 44, 44];
-            float x = 990;
+            float x = 926;
             for (int i = 0; i < tabs.Length; i++)
             {
                 float width = widths[i];
@@ -468,7 +473,7 @@ namespace BBC
         private void SelectHardwareTab(float x)
         {
             float[] widths = [42, 42, 46, 48, 44, 44];
-            float left = 990;
+            float left = 926;
             for (int i = 0; i < widths.Length; i++)
             {
                 if (x >= left && x < left + widths[i])
@@ -512,13 +517,15 @@ namespace BBC
         {
             ushort address = disassemblyAddress;
             ushort pc = (ushort)cpu.registers.PC;
-            for (int row = 0; row < 19; row++)
+            canvas.Save();
+            canvas.ClipRect(new SKRect(DisassemblyLeft + 1, 83, DisassemblyRight - 1, CommandTop - 9));
+            for (int row = 0; row < 20; row++)
             {
                 DecodedInstruction instruction = Decode(address);
                 float baseline = y + row * 20;
                 bool current = address == pc;
                 if (current)
-                    Fill(new SKRect(x - 8, baseline - 15, 956, baseline + 5), CurrentInstruction);
+                    Fill(new SKRect(x - 8, baseline - 15, DisassemblyRight - 16, baseline + 5), CurrentInstruction);
 
                 if (HasPermanentBreakpoint(address))
                     Circle(x + 4, baseline - 5, 5, 0xFFE05252);
@@ -530,6 +537,7 @@ namespace BBC
                 DrawText(instruction.Text, x + 184, baseline, Text);
                 address = (ushort)(address + instruction.Length);
             }
+            canvas.Restore();
         }
 
         private void DrawMemory(float x, float y)
@@ -984,10 +992,13 @@ namespace BBC
         private void DrawCommandOutput()
         {
             int last = Math.Max(0, commandOutput.Count - commandScrollOffset);
-            int first = Math.Max(0, last - 7);
+            int first = Math.Max(0, last - CommandOutputVisibleLines);
             float y = CommandTop + 48;
+            canvas.Save();
+            canvas.ClipRect(new SKRect(9, CommandTop + 35, ContentRight - 1, CommandInputTop - 7));
             for (int i = first; i < last; i++, y += 19)
                 DrawText(commandOutput[i], 24, y, commandOutput[i].StartsWith('>') ? Accent : Text, small: true);
+            canvas.Restore();
         }
 
         private bool HandleAddressKey(int keySym)
