@@ -11,6 +11,7 @@
 // ============================================================================
 
 using System.Runtime.InteropServices;
+using System.Text;
 using BBC.CPU;
 using SkiaSharp;
 
@@ -58,6 +59,14 @@ namespace BBC
         private AddressField activeAddressField;
         private string addressEntry = string.Empty;
         private ushort? breakpointHitAt;
+        private readonly List<string> commandOutput = new List<string>();
+        private readonly List<string> commandHistory = new List<string>();
+        private string commandLine = string.Empty;
+        private int commandHistoryIndex;
+        private bool commandFocus = true;
+        private int pendingCommandSteps;
+        private long observedCompletedSteps;
+        private int commandScrollOffset;
 
         public DebuggerWindow(
             CPU_6502 cpu,
@@ -93,6 +102,7 @@ namespace BBC
             disassemblyAddress = (ushort)cpu.registers.PC;
             activeAddressField = AddressField.None;
             addressEntry = string.Empty;
+            commandFocus = true;
             SDL_ShowWindow(window);
             SDL_RaiseWindow(window);
             Present();
@@ -105,7 +115,7 @@ namespace BBC
             disassemblyAddress = address;
         }
 
-        public bool HandleEvent(uint type, uint eventWindowId, byte windowEvent, int keySym, byte mouseButton, int mouseX, int mouseY, int mouseWheelY)
+        public bool HandleEvent(uint type, uint eventWindowId, byte windowEvent, int keySym, byte mouseButton, int mouseX, int mouseY, int mouseWheelY, byte[] textInput)
         {
             if (windowId == 0 || eventWindowId != windowId)
                 return false;
@@ -116,9 +126,24 @@ namespace BBC
                 return true;
             }
 
+            if (type == SDL_TEXTINPUT && commandFocus && activeAddressField == AddressField.None)
+            {
+                int length = Array.IndexOf(textInput, (byte)0);
+                if (length < 0) length = textInput.Length;
+                string text = Encoding.UTF8.GetString(textInput, 0, length);
+                foreach (char character in text)
+                {
+                    if (!char.IsControl(character) && commandLine.Length < 120)
+                        commandLine += character;
+                }
+                return true;
+            }
+
             if (type == SDL_KEYDOWN)
             {
                 if (HandleAddressKey(keySym))
+                    return true;
+                if (HandleCommandKey(keySym))
                     return true;
 
                 switch (keySym)
@@ -163,20 +188,32 @@ namespace BBC
                 else if (logicalY is >= 76 and < 110 && logicalX is >= 18 and < 338)
                 {
                     BeginAddressEntry(AddressField.Memory);
+                    commandFocus = false;
                 }
                 else if (logicalY is >= 76 and < 110 && logicalX is >= 368 and < 872)
                 {
                     BeginAddressEntry(AddressField.Disassembly);
+                    commandFocus = false;
                 }
                 else if (logicalY is >= 76 and < 110 && logicalX is >= 884 and < 956)
                 {
                     disassemblyAddress = (ushort)cpu.registers.PC;
                     activeAddressField = AddressField.None;
+                    commandFocus = false;
                 }
                 else if (logicalX is >= 366 and < 410 && logicalY is >= 117 and < 512)
                 {
                     int row = (int)((logicalY - 117) / 20);
                     ToggleBreakpoint(GetDisassemblyRowAddress(row));
+                }
+                else if (logicalY is >= CommandInputTop and < StatusTop)
+                {
+                    activeAddressField = AddressField.None;
+                    commandFocus = true;
+                }
+                else
+                {
+                    commandFocus = false;
                 }
                 return true;
             }
@@ -191,6 +228,11 @@ namespace BBC
                         memoryAddress = (ushort)(memoryAddress - mouseWheelY * 8);
                     else if (logicalX is >= 358 and < 972)
                         MoveDisassembly(mouseWheelY > 0 ? -1 : 1, Math.Abs(mouseWheelY));
+                }
+                else if (logicalY is >= CommandTop and < CommandInputTop)
+                {
+                    int maximum = Math.Max(0, commandOutput.Count - 7);
+                    commandScrollOffset = Math.Clamp(commandScrollOffset + mouseWheelY, 0, maximum);
                 }
                 return true;
             }
@@ -217,6 +259,7 @@ namespace BBC
             if (!visible || renderer == IntPtr.Zero)
                 return;
 
+            ContinueCommandSteps();
             DrawWindow();
             SDL_UpdateTexture(texture, IntPtr.Zero, bitmap.GetPixels(), bitmap.RowBytes);
             SDL_RenderClear(renderer);
@@ -243,12 +286,17 @@ namespace BBC
             DrawRegisters(996, 126);
 
             DrawPanel(new SKRect(8, CommandTop, 1272, CommandInputTop - 6), "COMMAND OUTPUT");
-            DrawPlaceholder(24, CommandTop + 48, "Command history and results will be added in phase 5");
+            DrawCommandOutput();
 
             Fill(new SKRect(8, CommandInputTop, 1272, StatusTop - 6), PanelDark);
             Stroke(new SKRect(8, CommandInputTop, 1272, StatusTop - 6), Border);
             DrawText(">", 20, CommandInputTop + 24, Accent);
-            DrawText("Command entry will be added in phase 5", 42, CommandInputTop + 24, DimText);
+            DrawText(commandLine, 42, CommandInputTop + 24, commandFocus ? Text : DimText);
+            if (commandFocus && (Environment.TickCount64 / 500 & 1) == 0)
+            {
+                float caretX = 42 + textPaint.MeasureText(commandLine);
+                Line(caretX, CommandInputTop + 9, caretX, CommandInputTop + 27, Accent);
+            }
 
             Fill(new SKRect(0, StatusTop, Width, Height), PanelDark);
             string state = breakpointHitAt.HasValue ? $"BREAKPOINT ${breakpointHitAt.Value:X4}" : paused() ? "PAUSED" : "RUNNING";
@@ -352,6 +400,253 @@ namespace BBC
         {
             activeAddressField = field;
             addressEntry = string.Empty;
+        }
+
+        private bool HandleCommandKey(int keySym)
+        {
+            if (!commandFocus || activeAddressField != AddressField.None)
+                return false;
+
+            switch (keySym)
+            {
+                case SDLK_BACKSPACE:
+                    if (commandLine.Length > 0)
+                        commandLine = commandLine[..^1];
+                    return true;
+                case SDLK_RETURN:
+                case SDLK_KP_ENTER:
+                    ExecuteCommand();
+                    return true;
+                case SDLK_UP:
+                    if (commandHistory.Count > 0)
+                    {
+                        commandHistoryIndex = Math.Max(0, commandHistoryIndex - 1);
+                        commandLine = commandHistory[commandHistoryIndex];
+                    }
+                    return true;
+                case SDLK_DOWN:
+                    if (commandHistoryIndex < commandHistory.Count - 1)
+                        commandLine = commandHistory[++commandHistoryIndex];
+                    else
+                    {
+                        commandHistoryIndex = commandHistory.Count;
+                        commandLine = string.Empty;
+                    }
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private void ExecuteCommand()
+        {
+            string entered = commandLine.Trim();
+            commandLine = string.Empty;
+            if (entered.Length == 0)
+                return;
+
+            commandHistory.Add(entered);
+            commandHistoryIndex = commandHistory.Count;
+            WriteCommandOutput($"> {entered}");
+
+            string[] parts = entered.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string command = parts[0].ToLowerInvariant();
+            try
+            {
+                switch (command)
+                {
+                    case "?":
+                    case "help":
+                        WriteCommandOutput("run | pause | n [count] | r");
+                        WriteCommandOutput("m [address] [count] | d [address] [count]");
+                        WriteCommandOutput("b address [end] | bc | ss | su | sv | st");
+                        break;
+                    case "run":
+                    case "g":
+                        pendingCommandSteps = 0;
+                        ResumeExecution();
+                        WriteCommandOutput("Running");
+                        break;
+                    case "pause":
+                        pause();
+                        WriteCommandOutput($"Paused at ${cpu.registers.PC & 0xFFFF:X4}");
+                        break;
+                    case "n":
+                    case "step":
+                        StartCommandSteps(parts.Length > 1 ? ParseCount(parts[1], 1, 10000) : 1);
+                        break;
+                    case "r":
+                    case "regs":
+                        WriteRegisters();
+                        break;
+                    case "m":
+                    case "memory":
+                        ExecuteMemoryCommand(parts);
+                        break;
+                    case "d":
+                    case "disassemble":
+                        ExecuteDisassembleCommand(parts);
+                        break;
+                    case "b":
+                    case "breakpoint":
+                        ExecuteBreakpointCommand(parts);
+                        break;
+                    case "bc":
+                    case "clear":
+                        ClearBreakpoints();
+                        WriteCommandOutput("All breakpoints cleared");
+                        break;
+                    case "ss":
+                    case "su":
+                    case "sv":
+                    case "st":
+                        WriteCommandOutput("Hardware register commands will be available in phase 8");
+                        break;
+                    default:
+                        WriteCommandOutput($"Unknown command: {parts[0]} (type help)");
+                        break;
+                }
+            }
+            catch (ArgumentException ex)
+            {
+                WriteCommandOutput(ex.Message);
+            }
+        }
+
+        private void StartCommandSteps(int count)
+        {
+            if (!paused())
+            {
+                WriteCommandOutput("Pause the CPU before stepping");
+                return;
+            }
+
+            pendingCommandSteps = count;
+            observedCompletedSteps = cpu.CompletedSingleSteps;
+            if (!step())
+            {
+                pendingCommandSteps = 0;
+                WriteCommandOutput("Unable to request a CPU step");
+            }
+        }
+
+        private void ContinueCommandSteps()
+        {
+            if (pendingCommandSteps <= 0 || cpu.CompletedSingleSteps == observedCompletedSteps)
+                return;
+
+            observedCompletedSteps = cpu.CompletedSingleSteps;
+            pendingCommandSteps--;
+            disassemblyAddress = (ushort)cpu.registers.PC;
+            if (pendingCommandSteps == 0)
+            {
+                WriteCommandOutput($"Stopped at ${cpu.registers.PC & 0xFFFF:X4}");
+                return;
+            }
+
+            if (!step())
+            {
+                pendingCommandSteps = 0;
+                WriteCommandOutput("Stepping stopped");
+            }
+        }
+
+        private void ExecuteMemoryCommand(string[] parts)
+        {
+            ushort address = parts.Length > 1 ? ParseAddress(parts[1]) : memoryAddress;
+            int count = parts.Length > 2 ? ParseCount(parts[2], 1, 256) : 32;
+            memoryAddress = (ushort)(address & 0xFFF8);
+            for (int offset = 0; offset < count; offset += 8)
+            {
+                int lineCount = Math.Min(8, count - offset);
+                StringBuilder line = new StringBuilder($"{(ushort)(address + offset):X4}:");
+                for (int i = 0; i < lineCount; i++)
+                    line.Append($" {readByte((ushort)(address + offset + i)):X2}");
+                WriteCommandOutput(line.ToString());
+            }
+        }
+
+        private void ExecuteDisassembleCommand(string[] parts)
+        {
+            ushort address = parts.Length > 1 ? ParseAddress(parts[1]) : disassemblyAddress;
+            int count = parts.Length > 2 ? ParseCount(parts[2], 1, 32) : 6;
+            disassemblyAddress = address;
+            for (int i = 0; i < count; i++)
+            {
+                DecodedInstruction instruction = Decode(address);
+                WriteCommandOutput($"{address:X4}  {instruction.Bytes,-8} {instruction.Text}");
+                address = (ushort)(address + instruction.Length);
+            }
+        }
+
+        private void ExecuteBreakpointCommand(string[] parts)
+        {
+            if (parts.Length < 2)
+                throw new ArgumentException("Usage: b address [end]");
+
+            ushort start = ParseAddress(parts[1]);
+            if (parts.Length == 2)
+            {
+                bool added;
+                lock (breakpointLock)
+                {
+                    added = !breakpoints.Remove(start);
+                    if (added) breakpoints.Add(start);
+                }
+                WriteCommandOutput($"Breakpoint {(added ? "set" : "cleared")} at ${start:X4}");
+                return;
+            }
+
+            ushort end = ParseAddress(parts[2]);
+            if (end < start)
+                throw new ArgumentException("Breakpoint range end must not precede its start");
+            lock (breakpointLock)
+            {
+                for (int address = start; address <= end; address++)
+                    breakpoints.Add((ushort)address);
+            }
+            WriteCommandOutput($"Breakpoint range set ${start:X4}-${end:X4}");
+        }
+
+        private void WriteRegisters()
+        {
+            Registers r = cpu.registers;
+            WriteCommandOutput($"PC={r.PC & 0xFFFF:X4} A={r.A:X2} X={r.X:X2} Y={r.Y:X2} SP={r.S:X2} P={r.P:X2}");
+            WriteCommandOutput(FormatFlags(r.P));
+        }
+
+        private static ushort ParseAddress(string value)
+        {
+            string text = value.Trim();
+            if (text.StartsWith('$') || text.StartsWith('&')) text = text[1..];
+            else if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
+            if (!ushort.TryParse(text, System.Globalization.NumberStyles.HexNumber, null, out ushort address))
+                throw new ArgumentException($"Invalid hexadecimal address: {value}");
+            return address;
+        }
+
+        private static int ParseCount(string value, int minimum, int maximum)
+        {
+            if (!int.TryParse(value, out int count) || count < minimum || count > maximum)
+                throw new ArgumentException($"Count must be between {minimum} and {maximum}");
+            return count;
+        }
+
+        private void WriteCommandOutput(string line)
+        {
+            commandOutput.Add(line);
+            commandScrollOffset = 0;
+            if (commandOutput.Count > 200)
+                commandOutput.RemoveRange(0, commandOutput.Count - 200);
+        }
+
+        private void DrawCommandOutput()
+        {
+            int last = Math.Max(0, commandOutput.Count - commandScrollOffset);
+            int first = Math.Max(0, last - 7);
+            float y = CommandTop + 48;
+            for (int i = first; i < last; i++, y += 19)
+                DrawText(commandOutput[i], 24, y, commandOutput[i].StartsWith('>') ? Accent : Text, small: true);
         }
 
         private bool HandleAddressKey(int keySym)
@@ -666,6 +961,7 @@ namespace BBC
         private const string SdlLibrary = "SDL2";
         private const uint SDL_WINDOWEVENT = 0x200;
         private const uint SDL_KEYDOWN = 0x300;
+        private const uint SDL_TEXTINPUT = 0x303;
         private const uint SDL_MOUSEBUTTONDOWN = 0x401;
         private const uint SDL_MOUSEWHEEL = 0x403;
         private const byte SDL_WINDOWEVENT_CLOSE = 0x0E;
@@ -678,6 +974,8 @@ namespace BBC
         private const int SDLK_F10 = 1073741891;
         private const int SDLK_F9 = 1073741890;
         private const int SDLK_KP_ENTER = 1073741912;
+        private const int SDLK_DOWN = 1073741905;
+        private const int SDLK_UP = 1073741906;
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const uint SDL_WINDOW_HIDDEN = 0x00000008;
         private const uint SDL_WINDOW_RESIZABLE = 0x00000020;

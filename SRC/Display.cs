@@ -450,7 +450,16 @@ namespace BBC
                     continue;
                 }
 
-                if (debugger?.HandleEvent(ev.Type, ev.WindowId, ev.WindowEvent, ev.KeySym, ev.MouseButton, ev.MouseX, ev.MouseY, ev.MouseWheelY) == true)
+                if (debugger?.HandleEvent(
+                    ev.Type,
+                    ev.WindowId,
+                    ev.WindowEvent,
+                    ev.KeySym,
+                    ev.MouseButton,
+                    ev.MouseX,
+                    ev.MouseY,
+                    ev.MouseWheelY,
+                    ev.Type == SDL_TEXTINPUT ? ev.Text : []) == true)
                     continue;
 
                 if (printer?.HandleEvent(ev.Type, ev.WindowId, ev.WindowEvent, ev.MouseButton, ev.MouseX, ev.MouseY, ev.MouseWheelY) == true)
