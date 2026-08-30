@@ -43,6 +43,7 @@ namespace BBC
 
         private readonly CPU_6502 cpu;
         private readonly Func<ushort, byte> readByte;
+        private readonly Action<ushort, byte> writeByte;
         private readonly Action pause;
         private readonly Action resume;
         private readonly Func<bool> step;
@@ -94,6 +95,7 @@ namespace BBC
         public DebuggerWindow(
             CPU_6502 cpu,
             Func<ushort, byte> readByte,
+            Action<ushort, byte> writeByte,
             Action pause,
             Action resume,
             Func<bool> step,
@@ -110,6 +112,7 @@ namespace BBC
         {
             this.cpu = cpu;
             this.readByte = readByte;
+            this.writeByte = writeByte;
             this.pause = pause;
             this.resume = resume;
             this.step = step;
@@ -646,7 +649,7 @@ namespace BBC
                     case "?":
                     case "help":
                         WriteCommandOutput("run | pause | n [count] | over | out | r");
-                        WriteCommandOutput("m [address] [count] | d [address] [count]");
+                        WriteCommandOutput("m [address] [count] | e address byte [byte ...] | d [address] [count]");
                         WriteCommandOutput("b address [end] | bc | wr address [end] | ww address [end] | wc");
                         WriteCommandOutput("ss | su | sv | sd | st");
                         WriteCommandOutput("sl path | sc | symbols [filter] | symbol name/address");
@@ -679,6 +682,9 @@ namespace BBC
                     case "m":
                     case "memory":
                         ExecuteMemoryCommand(parts);
+                        break;
+                    case "e":
+                        ExecuteEnterMemoryCommand(parts);
                         break;
                     case "d":
                     case "disassemble":
@@ -808,6 +814,28 @@ namespace BBC
                     line.Append($" {readByte((ushort)(address + offset + i)):X2}");
                 WriteCommandOutput(line.ToString());
             }
+        }
+
+        private void ExecuteEnterMemoryCommand(string[] parts)
+        {
+            if (!paused())
+                throw new ArgumentException("Pause the CPU before editing memory");
+            if (parts.Length < 3)
+                throw new ArgumentException("Usage: e address byte [byte ...]");
+            if (parts.Length > 258)
+                throw new ArgumentException("A memory edit is limited to 256 bytes");
+
+            ushort start = ParseAddress(parts[1]);
+            byte[] values = parts[2..].Select(ParseByte).ToArray();
+            for (int i = 0; i < values.Length; i++)
+                writeByte((ushort)(start + i), values[i]);
+
+            int count = values.Length;
+            memoryAddress = (ushort)(start & 0xFFF8);
+            if (count == 1)
+                WriteCommandOutput($"${start:X4} = ${values[0]:X2}");
+            else
+                WriteCommandOutput($"Wrote {count} bytes at ${start:X4}-${(ushort)(start + count - 1):X4}");
         }
 
         private void ExecuteDisassembleCommand(string[] parts)
@@ -989,6 +1017,16 @@ namespace BBC
             if (text.StartsWith('$') || text.StartsWith('&')) text = text[1..];
             else if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
             return int.TryParse(text, System.Globalization.NumberStyles.HexNumber, null, out offset);
+        }
+
+        private static byte ParseByte(string value)
+        {
+            string text = value.Trim();
+            if (text.StartsWith('$') || text.StartsWith('&')) text = text[1..];
+            else if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) text = text[2..];
+            if (!byte.TryParse(text, System.Globalization.NumberStyles.HexNumber, null, out byte result))
+                throw new ArgumentException($"Invalid byte value: {value}");
+            return result;
         }
 
         private static int ParseCount(string value, int minimum, int maximum)

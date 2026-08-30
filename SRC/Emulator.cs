@@ -761,6 +761,7 @@ Examples:
             debugger ??= new DebuggerWindow(
                 Cpu,
                 DebuggerReadByte,
+                DebuggerWriteByte,
                 PauseForDebugger,
                 ResumeFromDebugger,
                 StepHostInstruction,
@@ -1779,6 +1780,8 @@ Examples:
             // SHEILA devices, so I/O pages expose their harmless backing byte.
             return Memory.Memory[address];
         }
+
+        private void DebuggerWriteByte(ushort address, byte value) => Memory.WriteByte(address, value);
 
         private void AdvancePausedFrames(int frames)
         {

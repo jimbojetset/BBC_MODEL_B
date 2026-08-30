@@ -150,6 +150,7 @@ Sideways Memory  Configure empty, ROM, and writable RAM banks and import/export 
 Keyboard Mapper
              Remap the BBC keyboard and import/export input profiles
 Printer      Screen printing, output viewer, page controls, PNG export, sound
+Debugger     Open the host 6502 debugger
 View         Fullscreen, scanlines, and BBC logo
 ```
 
@@ -190,12 +191,19 @@ Ctrl+V / Cmd+V          Paste clipboard text into the BBC
 Ctrl+Shift+P            Toggle printer
 Ctrl+Shift+R            Open Sideways Memory
 Ctrl+Shift+K            Open the Keyboard Mapper
+Ctrl+Home               Open the debugger
 Left Ctrl+Left Shift    Toggle BBC SHIFT LOCK
 ```
 
 Host arrow keys map to the BBC cursor keys, `F1` to `F10` map to BBC function keys, and `Insert` or `§` maps to BBC `COPY`.
 
 Open `Keyboard Mapper` from the menu bar. Click a BBC key, press the host key you want, then save the map if you want to keep it. If `Assets/DefaultInputProfile.json` exists, it is loaded at startup.
+
+## Debugger
+
+The separate SDL debugger provides host 6502 registers, memory and disassembly views, run/pause and step-over/out control, execution breakpoints, read/write watchpoints, hardware inspection, a command console, and built-in or external symbols. A half-resolution live BBC display preview makes it possible to relate machine state directly to the visible output while stepping.
+
+Open it from the `Debugger` menu or with `Ctrl+Home`. The complete command reference, practical examples, symbol-file guidance, screenshots, and functional tests are in the [Debugger Manual](https://github.com/jimbojetset/BBC_MODEL_B/wiki/Debugger).
 
 ## Discs, Tapes, And Drives
 
