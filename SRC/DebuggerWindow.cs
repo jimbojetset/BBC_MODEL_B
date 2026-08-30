@@ -92,6 +92,8 @@ namespace BBC
         private WatchedAccess? stoppedWatchedAccess;
         private HardwareTab selectedHardwareTab;
         private ClipboardPanel clipboardPanel = ClipboardPanel.Memory;
+        private float mouseX = -1;
+        private float mouseY = -1;
 
         public DebuggerWindow(
             CPU_6502 cpu,
@@ -190,6 +192,12 @@ namespace BBC
                 return true;
             }
 
+            if (type == SDL_MOUSEMOTION)
+            {
+                SDL_RenderWindowToLogical(renderer, mouseX, mouseY, out this.mouseX, out this.mouseY);
+                return true;
+            }
+
             if (type == SDL_TEXTINPUT)
             {
                 int length = Array.IndexOf(textInput, (byte)0);
@@ -269,6 +277,8 @@ namespace BBC
             if (type == SDL_MOUSEBUTTONDOWN && mouseButton == SDL_BUTTON_LEFT)
             {
                 SDL_RenderWindowToLogical(renderer, mouseX, mouseY, out float logicalX, out float logicalY);
+                this.mouseX = logicalX;
+                this.mouseY = logicalY;
                 if (logicalY >= 7 && logicalY < 35)
                 {
                     if (logicalX is >= 10 and < 82)
@@ -595,6 +605,7 @@ namespace BBC
             DrawText(state, 14, StatusTop + 21, paused() ? 0xFFFFC857 : 0xFF67D391);
             DrawText($"PC ${cpu.registers.PC & 0xFFFF:X4}", 260, StatusTop + 21, Text);
             DrawText($"{cpu.TotalCycles:N0} cycles", 1074, StatusTop + 21, DimText);
+            DrawToolbarTooltip();
         }
 
         private void DrawToolbar()
@@ -606,6 +617,35 @@ namespace BBC
             DrawButton(new SKRect(256, 7, 350, 35), "Over F11", false);
             DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F11", false);
             DrawText($"F9 breakpoint    {BreakpointCount} break / {WatchpointCount} watch    Host 6502", 756, 27, Accent, small: true);
+        }
+
+        private void DrawToolbarTooltip()
+        {
+            if ((SDL_GetModState() & KMOD_CTRL) == 0 || mouseY < 7 || mouseY >= 35)
+                return;
+
+            (float Left, float Right, string Text)[] buttons =
+            [
+                (10, 82, "Resume host 6502 execution."),
+                (88, 170, "Pause at the next 6502 instruction boundary."),
+                (176, 250, "Execute one instruction; enter a subroutine when it is a JSR."),
+                (256, 350, "Run a JSR to completion and stop after it; otherwise execute one instruction."),
+                (356, 442, "Finish the current subroutine and stop after returning to its caller.")
+            ];
+
+            foreach ((float left, float right, string text) in buttons)
+            {
+                if (mouseX < left || mouseX >= right)
+                    continue;
+
+                float width = smallPaint.MeasureText(text) + 20;
+                float x = Math.Clamp((left + right - width) / 2, 8, Width - width - 8);
+                SKRect box = new SKRect(x, ToolbarHeight + 4, x + width, ToolbarHeight + 32);
+                Fill(box, PanelDark);
+                Stroke(box, Accent);
+                DrawText(text, x + 10, ToolbarHeight + 23, Text, small: true);
+                return;
+            }
         }
 
         private void DrawHardwareTabs()
@@ -1650,6 +1690,7 @@ namespace BBC
         private const uint SDL_WINDOWEVENT = 0x200;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_TEXTINPUT = 0x303;
+        private const uint SDL_MOUSEMOTION = 0x400;
         private const uint SDL_MOUSEBUTTONDOWN = 0x401;
         private const uint SDL_MOUSEWHEEL = 0x403;
         private const byte SDL_WINDOWEVENT_CLOSE = 0x0E;
