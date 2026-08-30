@@ -51,6 +51,10 @@ namespace BBC
         private uint windowId;
         private bool visible;
         private bool disposed;
+        private ushort memoryAddress;
+        private ushort disassemblyAddress;
+        private AddressField activeAddressField;
+        private string addressEntry = string.Empty;
 
         public DebuggerWindow(
             CPU_6502 cpu,
@@ -82,12 +86,15 @@ namespace BBC
             EnsureWindow();
             visible = true;
             pause();
+            disassemblyAddress = (ushort)cpu.registers.PC;
+            activeAddressField = AddressField.None;
+            addressEntry = string.Empty;
             SDL_ShowWindow(window);
             SDL_RaiseWindow(window);
             Present();
         }
 
-        public bool HandleEvent(uint type, uint eventWindowId, byte windowEvent, int keySym, byte mouseButton, int mouseX, int mouseY)
+        public bool HandleEvent(uint type, uint eventWindowId, byte windowEvent, int keySym, byte mouseButton, int mouseX, int mouseY, int mouseWheelY)
         {
             if (windowId == 0 || eventWindowId != windowId)
                 return false;
@@ -100,6 +107,9 @@ namespace BBC
 
             if (type == SDL_KEYDOWN)
             {
+                if (HandleAddressKey(keySym))
+                    return true;
+
                 switch (keySym)
                 {
                     case SDLK_F5:
@@ -109,7 +119,8 @@ namespace BBC
                         pause();
                         break;
                     case SDLK_F10:
-                        step();
+                        if (step())
+                            disassemblyAddress = (ushort)cpu.registers.PC;
                         break;
                     case SDLK_ESCAPE:
                         visible = false;
@@ -130,6 +141,33 @@ namespace BBC
                         pause();
                     else if (logicalX is >= 176 and < 250)
                         step();
+                }
+                else if (logicalY is >= 76 and < 110 && logicalX is >= 18 and < 338)
+                {
+                    BeginAddressEntry(AddressField.Memory);
+                }
+                else if (logicalY is >= 76 and < 110 && logicalX is >= 368 and < 872)
+                {
+                    BeginAddressEntry(AddressField.Disassembly);
+                }
+                else if (logicalY is >= 76 and < 110 && logicalX is >= 884 and < 956)
+                {
+                    disassemblyAddress = (ushort)cpu.registers.PC;
+                    activeAddressField = AddressField.None;
+                }
+                return true;
+            }
+
+            if (type == SDL_MOUSEWHEEL)
+            {
+                SDL_GetMouseState(out int currentMouseX, out int currentMouseY);
+                SDL_RenderWindowToLogical(renderer, currentMouseX, currentMouseY, out float logicalX, out float logicalY);
+                if (logicalY is >= 76 and < CommandTop)
+                {
+                    if (logicalX < 350)
+                        memoryAddress = (ushort)(memoryAddress - mouseWheelY * 8);
+                    else if (logicalX is >= 358 and < 972)
+                        MoveDisassembly(mouseWheelY > 0 ? -1 : 1, Math.Abs(mouseWheelY));
                 }
                 return true;
             }
@@ -162,10 +200,13 @@ namespace BBC
             DrawToolbar();
 
             DrawPanel(new SKRect(8, 48, 350, CommandTop - 8), "MEMORY");
-            DrawPlaceholder(24, 94, "Memory viewer will be added in phase 3");
+            DrawAddressField(new SKRect(18, 76, 338, 108), "Address", memoryAddress, AddressField.Memory);
+            DrawMemory(20, 132);
 
             DrawPanel(new SKRect(358, 48, 972, CommandTop - 8), "DISASSEMBLY");
-            DrawDisassembly(374, 91);
+            DrawAddressField(new SKRect(368, 76, 872, 108), "Address", disassemblyAddress, AddressField.Disassembly);
+            DrawButton(new SKRect(884, 78, 956, 106), "PC", false);
+            DrawDisassembly(374, 132);
 
             DrawPanel(new SKRect(980, 48, 1272, CommandTop - 8), "CPU / HARDWARE");
             DrawHardwareTabs();
@@ -229,19 +270,124 @@ namespace BBC
 
         private void DrawDisassembly(float x, float y)
         {
-            ushort address = (ushort)cpu.registers.PC;
-            for (int row = 0; row < 22; row++)
+            ushort address = disassemblyAddress;
+            ushort pc = (ushort)cpu.registers.PC;
+            for (int row = 0; row < 19; row++)
             {
                 DecodedInstruction instruction = Decode(address);
                 float baseline = y + row * 20;
-                if (row == 0)
+                bool current = address == pc;
+                if (current)
                     Fill(new SKRect(x - 8, baseline - 15, 956, baseline + 5), CurrentInstruction);
 
-                DrawText(row == 0 ? "▶" : " ", x, baseline, row == 0 ? Accent : DimText);
-                DrawText($"{address:X4}", x + 24, baseline, row == 0 ? Accent : Text);
+                DrawText(current ? "▶" : " ", x, baseline, current ? Accent : DimText);
+                DrawText($"{address:X4}", x + 24, baseline, current ? Accent : Text);
                 DrawText(instruction.Bytes, x + 82, baseline, DimText);
                 DrawText(instruction.Text, x + 184, baseline, Text);
                 address = (ushort)(address + instruction.Length);
+            }
+        }
+
+        private void DrawMemory(float x, float y)
+        {
+            ushort address = (ushort)(memoryAddress & 0xFFF8);
+            Span<char> ascii = stackalloc char[8];
+            for (int row = 0; row < 20; row++)
+            {
+                float baseline = y + row * 20;
+                DrawText($"{address:X4}", x, baseline, Accent);
+                for (int column = 0; column < 8; column++)
+                {
+                    byte value = readByte((ushort)(address + column));
+                    DrawText($"{value:X2}", x + 54 + column * 24, baseline, Text, small: true);
+                    ascii[column] = value is >= 32 and <= 126 ? (char)value : '.';
+                }
+                DrawText(new string(ascii), x + 260, baseline, DimText, small: true);
+                address += 8;
+            }
+        }
+
+        private void DrawAddressField(SKRect rect, string label, ushort address, AddressField field)
+        {
+            Fill(rect, PanelDark);
+            Stroke(rect, activeAddressField == field ? Accent : Border);
+            string value = activeAddressField == field ? addressEntry.PadLeft(4, '0') : $"{address:X4}";
+            DrawText($"{label}:  ${value}", rect.Left + 10, rect.Top + 22, activeAddressField == field ? Accent : Text, small: true);
+        }
+
+        private void BeginAddressEntry(AddressField field)
+        {
+            activeAddressField = field;
+            addressEntry = string.Empty;
+        }
+
+        private bool HandleAddressKey(int keySym)
+        {
+            if (activeAddressField == AddressField.None)
+                return false;
+
+            if (keySym == SDLK_ESCAPE)
+            {
+                activeAddressField = AddressField.None;
+                addressEntry = string.Empty;
+                return true;
+            }
+
+            if (keySym == SDLK_BACKSPACE)
+            {
+                if (addressEntry.Length > 0)
+                    addressEntry = addressEntry[..^1];
+                return true;
+            }
+
+            if (keySym is SDLK_RETURN or SDLK_KP_ENTER)
+            {
+                if (ushort.TryParse(addressEntry, System.Globalization.NumberStyles.HexNumber, null, out ushort address))
+                {
+                    if (activeAddressField == AddressField.Memory)
+                        memoryAddress = (ushort)(address & 0xFFF8);
+                    else
+                        disassemblyAddress = address;
+                }
+                activeAddressField = AddressField.None;
+                addressEntry = string.Empty;
+                return true;
+            }
+
+            char digit = keySym switch
+            {
+                >= '0' and <= '9' => (char)keySym,
+                >= 'a' and <= 'f' => char.ToUpperInvariant((char)keySym),
+                _ => '\0'
+            };
+            if (digit != '\0' && addressEntry.Length < 4)
+                addressEntry += digit;
+            return true;
+        }
+
+        private void MoveDisassembly(int direction, int count)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                if (direction > 0)
+                {
+                    disassemblyAddress = (ushort)(disassemblyAddress + Decode(disassemblyAddress).Length);
+                    continue;
+                }
+
+                // A 6502 instruction is at most three bytes. Prefer the furthest
+                // valid predecessor so scrolling remains aligned with displayed code.
+                ushort previous = (ushort)(disassemblyAddress - 1);
+                for (int length = 3; length >= 1; length--)
+                {
+                    ushort candidate = (ushort)(disassemblyAddress - length);
+                    if (Decode(candidate).Length == length)
+                    {
+                        previous = candidate;
+                        break;
+                    }
+                }
+                disassemblyAddress = previous;
             }
         }
 
@@ -398,6 +544,7 @@ namespace BBC
         }
 
         private enum AddressMode { Imp, Acc, Imm, Zp, ZpX, ZpY, Abs, AbsX, AbsY, Ind, IndX, IndY, Rel }
+        private enum AddressField { None, Memory, Disassembly }
 
         private static readonly OpCode[] OpCodes = CreateOpCodes();
 
@@ -440,12 +587,16 @@ namespace BBC
         private const uint SDL_WINDOWEVENT = 0x200;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_MOUSEBUTTONDOWN = 0x401;
+        private const uint SDL_MOUSEWHEEL = 0x403;
         private const byte SDL_WINDOWEVENT_CLOSE = 0x0E;
         private const byte SDL_BUTTON_LEFT = 1;
         private const int SDLK_ESCAPE = 27;
+        private const int SDLK_BACKSPACE = 8;
+        private const int SDLK_RETURN = 13;
         private const int SDLK_F5 = 1073741886;
         private const int SDLK_F6 = 1073741887;
         private const int SDLK_F10 = 1073741891;
+        private const int SDLK_KP_ENTER = 1073741912;
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const uint SDL_WINDOW_HIDDEN = 0x00000008;
         private const uint SDL_WINDOW_RESIZABLE = 0x00000020;
@@ -467,6 +618,7 @@ namespace BBC
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern void SDL_DestroyRenderer(IntPtr renderer);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_RenderSetLogicalSize(IntPtr renderer, int w, int h);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_RenderWindowToLogical(IntPtr renderer, int windowX, int windowY, out float logicalX, out float logicalY);
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern uint SDL_GetMouseState(out int x, out int y);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr SDL_CreateTexture(IntPtr renderer, uint format, int access, int w, int h);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern void SDL_DestroyTexture(IntPtr texture);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_UpdateTexture(IntPtr texture, IntPtr rect, IntPtr pixels, int pitch);
