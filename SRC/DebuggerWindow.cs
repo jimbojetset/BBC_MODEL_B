@@ -10,6 +10,7 @@
 //              This emulator is for educational purposes only.
 // ============================================================================
 
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text;
 using BBC.CPU;
@@ -39,6 +40,7 @@ namespace BBC
         private const uint Text = 0xFFD8DEE9;
         private const uint DimText = 0xFF89929D;
         private const uint Accent = 0xFF58A6FF;
+        private const uint Changed = 0xFFFFC857;
         private const uint CurrentInstruction = 0xFF293E55;
 
         private readonly CPU_6502 cpu;
@@ -56,9 +58,13 @@ namespace BBC
         private readonly Func<bool> tubeEnabled;
         private readonly DebuggerSymbols symbols = new DebuggerSymbols();
         private readonly HashSet<ushort> breakpoints = new HashSet<ushort>();
+        private readonly Dictionary<ushort, StopCondition> breakpointConditions = new Dictionary<ushort, StopCondition>();
         private readonly HashSet<ushort> temporaryBreakpoints = new HashSet<ushort>();
         private readonly List<WatchRange> readWatchpoints = new List<WatchRange>();
         private readonly List<WatchRange> writeWatchpoints = new List<WatchRange>();
+        private readonly List<HardwareRule> hardwareTraceRules = new List<HardwareRule>();
+        private readonly List<HardwareRule> hardwareBreakRules = new List<HardwareRule>();
+        private readonly ConcurrentQueue<string> pendingTraceLines = new ConcurrentQueue<string>();
         private readonly object breakpointLock = new object();
         private readonly SKBitmap bitmap;
         private readonly SKCanvas canvas;
@@ -90,6 +96,10 @@ namespace BBC
         private string? temporaryStopDescription;
         private WatchedAccess? pendingWatchedAccess;
         private WatchedAccess? stoppedWatchedAccess;
+        private int pendingTraceLineCount;
+        private int droppedTraceLineCount;
+        private RegisterSnapshot? comparisonRegisters;
+        private readonly Dictionary<ushort, byte> comparisonMemory = new Dictionary<ushort, byte>();
         private HardwareTab selectedHardwareTab;
         private ClipboardPanel clipboardPanel = ClipboardPanel.Memory;
         private float mouseX = -1;
@@ -165,7 +175,8 @@ namespace BBC
                 WatchedAccess? watchedAccess = stoppedWatchedAccess;
                 if (watchedAccess is WatchedAccess access)
                 {
-                    WriteCommandOutput($"{(access.Write ? "Write" : "Read")} watchpoint ${access.Address:X4} = ${access.Value:X2}, instruction ${access.InstructionAddress:X4}");
+                    string kind = access.Hardware ? "hardware break" : "watchpoint";
+                    WriteCommandOutput($"{(access.Write ? "Write" : "Read")} {kind} ${access.Address:X4} = ${access.Value:X2}, instruction ${access.InstructionAddress:X4}");
                 }
                 bool temporary = temporaryBreakpoints.Remove(address);
                 if (watchedAccess.HasValue)
@@ -267,6 +278,7 @@ namespace BBC
                     case SDLK_ESCAPE:
                         ClearBreakpoints();
                         ClearWatchpoints();
+                        ClearHardwareRules();
                         visible = false;
                         SDL_HideWindow(window);
                         break;
@@ -473,6 +485,7 @@ namespace BBC
         {
             ClearBreakpoints();
             ClearWatchpoints();
+            ClearHardwareRules();
             visible = false;
             SDL_HideWindow(window);
             ResumeExecution();
@@ -480,6 +493,7 @@ namespace BBC
 
         private void ResumeExecution()
         {
+            CaptureComparisonState();
             ClearTemporaryBreakpoints();
             breakpointHitAt = null;
             temporaryStopDescription = null;
@@ -497,6 +511,7 @@ namespace BBC
         private void StepOnce()
         {
             ClearTemporaryBreakpoints();
+            CaptureComparisonState();
             if (step())
             {
                 breakpointHitAt = null;
@@ -539,6 +554,7 @@ namespace BBC
 
         private void RunToTemporaryBreakpoint(ushort address, string description)
         {
+            CaptureComparisonState();
             lock (breakpointLock)
                 temporaryBreakpoints.Add(address);
             breakpointHitAt = null;
@@ -551,6 +567,7 @@ namespace BBC
             if (!visible || renderer == IntPtr.Zero)
                 return;
 
+            DrainHardwareTrace();
             ContinueCommandSteps();
             DrawWindow();
             SDL_UpdateTexture(texture, IntPtr.Zero, bitmap.GetPixels(), bitmap.RowBytes);
@@ -598,7 +615,7 @@ namespace BBC
             string state = breakpointHitAt.HasValue
                 ? $"BREAKPOINT ${breakpointHitAt.Value:X4}"
                 : stoppedWatchedAccess.HasValue
-                    ? $"{(stoppedWatchedAccess.Value.Write ? "WRITE" : "READ")} WATCH ${stoppedWatchedAccess.Value.Address:X4}"
+                    ? $"{(stoppedWatchedAccess.Value.Write ? "WRITE" : "READ")} {(stoppedWatchedAccess.Value.Hardware ? "HARDWARE" : "WATCH")} ${stoppedWatchedAccess.Value.Address:X4}"
                 : paused() && temporaryStopDescription is not null
                     ? temporaryStopDescription
                     : paused() ? "PAUSED" : "RUNNING";
@@ -606,6 +623,18 @@ namespace BBC
             DrawText($"PC ${cpu.registers.PC & 0xFFFF:X4}", 260, StatusTop + 21, Text);
             DrawText($"{cpu.TotalCycles:N0} cycles", 1074, StatusTop + 21, DimText);
             DrawToolbarTooltip();
+        }
+
+        private void DrainHardwareTrace()
+        {
+            while (pendingTraceLines.TryDequeue(out string? line))
+            {
+                Interlocked.Decrement(ref pendingTraceLineCount);
+                WriteCommandOutput(line);
+            }
+            int dropped = Interlocked.Exchange(ref droppedTraceLineCount, 0);
+            if (dropped > 0)
+                WriteCommandOutput($"Hardware trace omitted {dropped:N0} accesses while output was pending");
         }
 
         private void DrawToolbar()
@@ -695,12 +724,26 @@ namespace BBC
         {
             Registers r = cpu.registers;
             byte p = r.P;
-            DrawText($"PC  ${r.PC & 0xFFFF:X4}", x, y, Accent);
-            DrawText($"A   ${r.A:X2}       X   ${r.X:X2}", x, y + 30, Text);
-            DrawText($"Y   ${r.Y:X2}       SP  ${r.S:X2}", x, y + 58, Text);
-            DrawText($"P   ${p:X2}", x, y + 86, Text);
+            RegisterSnapshot? previous = paused() ? comparisonRegisters : null;
+            DrawText("PC", x, y, Accent);
+            DrawText($"${r.PC & 0xFFFF:X4}", x + 36, y, previous.HasValue && previous.Value.PC != (ushort)r.PC ? Changed : Accent);
+            DrawText("A", x, y + 30, Text);
+            DrawText($"${r.A:X2}", x + 36, y + 30, previous.HasValue && previous.Value.A != r.A ? Changed : Text);
+            DrawText("X", x + 116, y + 30, Text);
+            DrawText($"${r.X:X2}", x + 152, y + 30, previous.HasValue && previous.Value.X != r.X ? Changed : Text);
+            DrawText("Y", x, y + 58, Text);
+            DrawText($"${r.Y:X2}", x + 36, y + 58, previous.HasValue && previous.Value.Y != r.Y ? Changed : Text);
+            DrawText("SP", x + 116, y + 58, Text);
+            DrawText($"${r.S:X2}", x + 152, y + 58, previous.HasValue && previous.Value.SP != r.S ? Changed : Text);
+            DrawText("P", x, y + 86, Text);
+            DrawText($"${p:X2}", x + 36, y + 86, previous.HasValue && previous.Value.P != p ? Changed : Text);
             DrawText("N V - B D I Z C", x, y + 126, DimText);
-            DrawText(string.Join(' ', Convert.ToString(p, 2).PadLeft(8, '0').ToCharArray()), x, y + 153, Text);
+            string bits = Convert.ToString(p, 2).PadLeft(8, '0');
+            for (int bit = 0; bit < 8; bit++)
+            {
+                bool flagChanged = previous.HasValue && ((previous.Value.P ^ p) & (0x80 >> bit)) != 0;
+                DrawText(bits[bit].ToString(), x + bit * 20, y + 153, flagChanged ? Changed : Text);
+            }
             DrawText("Interrupts", x + 190, y + 126, DimText);
             DrawText($"IRQ  {(cpu.IrqLineAsserted ? "asserted" : "clear")}", x + 190, y + 153, Text);
             DrawText($"CPU  {(paused() ? "paused" : "running")}", x + 190, y + 180, Text);
@@ -743,14 +786,34 @@ namespace BBC
                 DrawText($"{address:X4}", x, baseline, Accent);
                 for (int column = 0; column < 8; column++)
                 {
-                    byte value = readByte((ushort)(address + column));
-                    DrawText($"{value:X2}", x + 54 + column * 24, baseline, Text, small: true);
+                    ushort byteAddress = (ushort)(address + column);
+                    byte value = readByte(byteAddress);
+                    bool valueChanged = paused() && comparisonMemory.TryGetValue(byteAddress, out byte previousValue)
+                        && previousValue != value;
+                    DrawText($"{value:X2}", x + 54 + column * 24, baseline, valueChanged ? Changed : Text, small: true);
                     ascii[column] = value is >= 32 and <= 126 ? (char)value : '.';
                 }
                 DrawText(new string(ascii), x + 260, baseline, DimText, small: true);
                 address += 8;
             }
         }
+
+        private void CaptureComparisonState()
+        {
+            Registers r = cpu.registers;
+            comparisonRegisters = new RegisterSnapshot((ushort)r.PC, r.A, r.X, r.Y, r.S, r.P);
+            comparisonMemory.Clear();
+            ushort start = (ushort)(memoryAddress & 0xFFF8);
+            for (int offset = 0; offset < 160; offset++)
+            {
+                ushort mappedAddress = (ushort)(start + offset);
+                if (IsSafeDebuggerMemory(mappedAddress))
+                    comparisonMemory[mappedAddress] = readByte(mappedAddress);
+            }
+        }
+
+        // FRED, JIM and SHEILA debugger peeks are harmless backing bytes, not live device state, so do not mark them as changed.
+        private static bool IsSafeDebuggerMemory(ushort address) => address < 0xFC00 || address > 0xFEFF;
 
         private void DrawAddressField(SKRect rect, string label, ushort address, AddressField field)
         {
@@ -877,10 +940,24 @@ namespace BBC
                         ClearWatchpoints();
                         WriteCommandOutput("All watchpoints cleared");
                         break;
+                    case "ht":
+                        ExecuteHardwareRuleCommand(parts, breakOnAccess: false);
+                        break;
+                    case "hb":
+                        ExecuteHardwareRuleCommand(parts, breakOnAccess: true);
+                        break;
+                    case "hc":
+                        ClearHardwareRules();
+                        WriteCommandOutput("All hardware trace and break rules cleared");
+                        break;
+                    case "hl":
+                        ListHardwareRules();
+                        break;
                     case "clear":
                         ClearBreakpoints();
                         ClearWatchpoints();
-                        WriteCommandOutput("All breakpoints and watchpoints cleared");
+                        ClearHardwareRules();
+                        WriteCommandOutput("All breakpoints, watchpoints and hardware rules cleared");
                         break;
                     case "ss":
                         WriteHardwareState(HardwareTab.SystemVia);
@@ -949,12 +1026,20 @@ namespace BBC
                 "e address byte [...]    Write hexadecimal bytes through the BBC bus while paused.",
                 "d [address] [count]      Disassemble instructions; count is decimal and defaults to 6.",
                 "BREAKPOINTS AND WATCHPOINTS",
-                "b address [end]         Toggle one execution breakpoint, or set an inclusive range.",
+                "b address [end] [if condition]",
+                "                         Toggle/set an execution stop; condition examples: A=00, X<>FF.",
                 "bc                      Clear every execution breakpoint.",
-                "wr address [end]        Toggle a read watchpoint or inclusive address range.",
-                "ww address [end]        Toggle a write watchpoint or inclusive address range.",
+                "wr address [end] [if condition]",
+                "ww address [end] [if condition]",
+                "                         Toggle a read/write watch; VALUE is valid in its condition.",
                 "wc                      Clear every read and write watchpoint.",
-                "clear                   Clear all breakpoints and watchpoints.",
+                "ht r|w|rw device/range Toggle hardware tracing for reads, writes, or both.",
+                "hb r|w|rw device/range Toggle break-on-hardware-access.",
+                "hc                      Clear hardware trace and break rules.",
+                "hl                      List hardware trace and break rules.",
+                "                         Devices: sheila, fred, jim, video, sysvia, uservia,",
+                "                         disc, serial, adc, tube, romsel; address[-end] also works.",
+                "clear                   Clear all breakpoints, watchpoints and hardware rules.",
                 "HARDWARE",
                 "ss / su                 Show System VIA / User VIA state.",
                 "sv / sd / st            Show video / disc controller / Tube state.",
@@ -985,6 +1070,7 @@ namespace BBC
 
             pendingCommandSteps = count;
             observedCompletedSteps = cpu.CompletedSingleSteps;
+            CaptureComparisonState();
             if (!step())
             {
                 pendingCommandSteps = 0;
@@ -1006,6 +1092,7 @@ namespace BBC
                 return;
             }
 
+            CaptureComparisonState();
             if (!step())
             {
                 pendingCommandSteps = 0;
@@ -1066,18 +1153,34 @@ namespace BBC
         private void ExecuteBreakpointCommand(string[] parts)
         {
             if (parts.Length < 2)
-                throw new ArgumentException("Usage: b address [end]");
+                throw new ArgumentException("Usage: b address [end] [if condition]");
 
             ushort start = ParseAddress(parts[1]);
-            if (parts.Length == 2)
+            int conditionIndex = Array.FindIndex(parts, 2, part => part.Equals("if", StringComparison.OrdinalIgnoreCase));
+            int addressPartCount = conditionIndex < 0 ? parts.Length : conditionIndex;
+            if (addressPartCount > 3)
+                throw new ArgumentException("Usage: b address [end] [if condition]");
+            StopCondition? condition = conditionIndex < 0 ? null : ParseCondition(parts, conditionIndex + 1, allowValue: false);
+
+            if (addressPartCount == 2)
             {
                 bool added;
                 lock (breakpointLock)
                 {
-                    added = !breakpoints.Remove(start);
-                    if (added) breakpoints.Add(start);
+                    if (condition is null && breakpoints.Remove(start))
+                    {
+                        breakpointConditions.Remove(start);
+                        added = false;
+                    }
+                    else
+                    {
+                        breakpoints.Add(start);
+                        if (condition is StopCondition value) breakpointConditions[start] = value;
+                        else breakpointConditions.Remove(start);
+                        added = true;
+                    }
                 }
-                WriteCommandOutput($"Breakpoint {(added ? "set" : "cleared")} at ${start:X4}");
+                WriteCommandOutput($"Breakpoint {(added ? "set" : "cleared")} at ${start:X4}{FormatCondition(condition)}");
                 return;
             }
 
@@ -1087,9 +1190,13 @@ namespace BBC
             lock (breakpointLock)
             {
                 for (int address = start; address <= end; address++)
+                {
                     breakpoints.Add((ushort)address);
+                    if (condition is StopCondition value) breakpointConditions[(ushort)address] = value;
+                    else breakpointConditions.Remove((ushort)address);
+                }
             }
-            WriteCommandOutput($"Breakpoint range set ${start:X4}-${end:X4}");
+            WriteCommandOutput($"Breakpoint range set ${start:X4}-${end:X4}{FormatCondition(condition)}");
         }
 
         private void WriteRegisters()
@@ -1166,27 +1273,40 @@ namespace BBC
         private void ExecuteWatchpointCommand(string[] parts, bool write)
         {
             if (parts.Length < 2)
-                throw new ArgumentException($"Usage: {(write ? "ww" : "wr")} address [end]");
+                throw new ArgumentException($"Usage: {(write ? "ww" : "wr")} address [end] [if condition]");
 
             ushort start = ParseAddress(parts[1]);
-            ushort end = parts.Length > 2 ? ParseAddress(parts[2]) : start;
+            int conditionIndex = Array.FindIndex(parts, 2, part => part.Equals("if", StringComparison.OrdinalIgnoreCase));
+            int addressPartCount = conditionIndex < 0 ? parts.Length : conditionIndex;
+            if (addressPartCount > 3)
+                throw new ArgumentException($"Usage: {(write ? "ww" : "wr")} address [end] [if condition]");
+            ushort end = addressPartCount > 2 ? ParseAddress(parts[2]) : start;
             if (end < start)
                 throw new ArgumentException("Watchpoint range end must not precede its start");
+            StopCondition? condition = conditionIndex < 0 ? null : ParseCondition(parts, conditionIndex + 1, allowValue: true);
 
             lock (breakpointLock)
             {
                 List<WatchRange> watchpoints = write ? writeWatchpoints : readWatchpoints;
-                WatchRange range = new WatchRange(start, end);
-                int existing = watchpoints.IndexOf(range);
+                WatchRange range = new WatchRange(start, end, condition);
+                int existing = watchpoints.FindIndex(item => item.Start == start && item.End == end);
                 if (existing >= 0)
                 {
-                    watchpoints.RemoveAt(existing);
-                    WriteCommandOutput($"{(write ? "Write" : "Read")} watchpoint cleared {FormatRange(range)}");
+                    if (condition is StopCondition)
+                    {
+                        watchpoints[existing] = range;
+                        WriteCommandOutput($"{(write ? "Write" : "Read")} watchpoint updated {FormatRange(range)}{FormatCondition(condition)}");
+                    }
+                    else
+                    {
+                        watchpoints.RemoveAt(existing);
+                        WriteCommandOutput($"{(write ? "Write" : "Read")} watchpoint cleared {FormatRange(range)}");
+                    }
                 }
                 else
                 {
                     watchpoints.Add(range);
-                    WriteCommandOutput($"{(write ? "Write" : "Read")} watchpoint set {FormatRange(range)}");
+                    WriteCommandOutput($"{(write ? "Write" : "Read")} watchpoint set {FormatRange(range)}{FormatCondition(condition)}");
                 }
                 UpdateMemoryWatchCallbacks();
             }
@@ -1195,6 +1315,149 @@ namespace BBC
         private static string FormatRange(WatchRange range) => range.Start == range.End
             ? $"${range.Start:X4}"
             : $"${range.Start:X4}-${range.End:X4}";
+
+        private StopCondition ParseCondition(string[] parts, int start, bool allowValue)
+        {
+            if (start >= parts.Length)
+                throw new ArgumentException("A condition must follow 'if'");
+
+            string text = string.Concat(parts[start..]).ToUpperInvariant();
+            string[] operators = ["<=", ">=", "<>", "!=", "==", "=", "<", ">"];
+            string? comparison = operators.FirstOrDefault(text.Contains);
+            if (comparison is null)
+                throw new ArgumentException("Condition must use =, <>, !=, <, <=, >, or >=");
+
+            int operatorIndex = text.IndexOf(comparison, StringComparison.Ordinal);
+            string register = text[..operatorIndex];
+            string right = text[(operatorIndex + comparison.Length)..];
+            string[] names = allowValue ? ["A", "X", "Y", "SP", "P", "PC", "VALUE", "ADDRESS"] : ["A", "X", "Y", "SP", "P", "PC"];
+            if (!names.Contains(register))
+                throw new ArgumentException($"Unknown condition value: {register}");
+            if (!TryParseNumericAddress(right, out ushort expected))
+                throw new ArgumentException($"Invalid condition value: {right}");
+            if (register is not ("PC" or "ADDRESS") && expected > 0xFF)
+                throw new ArgumentException($"{register} conditions require an 8-bit value");
+
+            string formattedValue = expected.ToString(register is "PC" or "ADDRESS" ? "X4" : "X2");
+            return new StopCondition(register, comparison, expected, $"{register}{comparison}${formattedValue}");
+        }
+
+        private static string FormatCondition(StopCondition? condition) => condition is StopCondition value
+            ? $" if {value.Text}"
+            : string.Empty;
+
+        private bool ConditionMatches(StopCondition condition, ushort address = 0, byte value = 0)
+        {
+            Registers registers = cpu.registers;
+            ushort actual = condition.Left switch
+            {
+                "A" => registers.A,
+                "X" => registers.X,
+                "Y" => registers.Y,
+                "SP" => registers.S,
+                "P" => registers.P,
+                "PC" => (ushort)registers.PC,
+                "VALUE" => value,
+                "ADDRESS" => address,
+                _ => 0
+            };
+            return condition.Operator switch
+            {
+                "=" or "==" => actual == condition.Expected,
+                "<>" or "!=" => actual != condition.Expected,
+                "<" => actual < condition.Expected,
+                "<=" => actual <= condition.Expected,
+                ">" => actual > condition.Expected,
+                ">=" => actual >= condition.Expected,
+                _ => false
+            };
+        }
+
+        private void ExecuteHardwareRuleCommand(string[] parts, bool breakOnAccess)
+        {
+            if (parts.Length != 3)
+                throw new ArgumentException($"Usage: {(breakOnAccess ? "hb" : "ht")} r|w|rw device/address[-end]");
+
+            AccessKind access = parts[1].ToLowerInvariant() switch
+            {
+                "r" => AccessKind.Read,
+                "w" => AccessKind.Write,
+                "rw" or "wr" => AccessKind.ReadWrite,
+                _ => throw new ArgumentException("Hardware access must be r, w, or rw")
+            };
+            (ushort start, ushort end, string name) = ParseHardwareRange(parts[2]);
+            HardwareRule rule = new HardwareRule(start, end, access, name);
+            lock (breakpointLock)
+            {
+                List<HardwareRule> rules = breakOnAccess ? hardwareBreakRules : hardwareTraceRules;
+                int existing = rules.FindIndex(item => item.Start == start && item.End == end && item.Access == access);
+                if (existing >= 0)
+                {
+                    rules.RemoveAt(existing);
+                    WriteCommandOutput($"Hardware {(breakOnAccess ? "break" : "trace")} cleared: {FormatAccess(access)} {name}");
+                }
+                else
+                {
+                    rules.Add(rule);
+                    WriteCommandOutput($"Hardware {(breakOnAccess ? "break" : "trace")} set: {FormatAccess(access)} {name}");
+                }
+                UpdateMemoryWatchCallbacks();
+            }
+        }
+
+        private static string FormatAccess(AccessKind access) => access switch
+        {
+            AccessKind.Read => "read",
+            AccessKind.Write => "write",
+            _ => "read/write"
+        };
+
+        private void ListHardwareRules()
+        {
+            lock (breakpointLock)
+            {
+                if (hardwareTraceRules.Count == 0 && hardwareBreakRules.Count == 0)
+                {
+                    WriteCommandOutput("No hardware trace or break rules set");
+                    return;
+                }
+                foreach (HardwareRule rule in hardwareTraceRules)
+                    WriteCommandOutput($"TRACE {FormatAccess(rule.Access),-10} {rule.Name} (${rule.Start:X4}-${rule.End:X4})");
+                foreach (HardwareRule rule in hardwareBreakRules)
+                    WriteCommandOutput($"BREAK {FormatAccess(rule.Access),-10} {rule.Name} (${rule.Start:X4}-${rule.End:X4})");
+            }
+        }
+
+        private (ushort Start, ushort End, string Name) ParseHardwareRange(string value)
+        {
+            string name = value.ToLowerInvariant();
+            (ushort Start, ushort End)? known = name switch
+            {
+                "fred" => (0xFC00, 0xFCFF),
+                "jim" => (0xFD00, 0xFDFF),
+                "sheila" => (0xFE00, 0xFEFF),
+                "video" => (0xFE00, 0xFE23),
+                "romsel" => (0xFE30, 0xFE30),
+                "sysvia" => (0xFE40, 0xFE4F),
+                "uservia" => (0xFE60, 0xFE6F),
+                "disc" => (0xFE80, 0xFE9F),
+                "serial" => (0xFE08, 0xFE17),
+                "adc" => (0xFEC0, 0xFEC3),
+                "tube" => (0xFEE0, 0xFEEF),
+                _ => null
+            };
+            if (known.HasValue)
+                return (known.Value.Start, known.Value.End, name);
+
+            string[] range = value.Split('-', 2);
+            ushort start = ParseAddress(range[0]);
+            ushort end = range.Length == 2 ? ParseAddress(range[1]) : start;
+            if (end < start)
+                throw new ArgumentException("Hardware range end must not precede its start");
+            if (start < 0xFC00 || end > 0xFEFF)
+                throw new ArgumentException("Hardware tracing is limited to the BBC FRED, JIM and SHEILA pages ($FC00-$FEFF)");
+            return (start, end, start == end ? $"${start:X4}" : $"${start:X4}-${end:X4}");
+        }
 
         private ushort ParseAddress(string value)
         {
@@ -1376,6 +1639,7 @@ namespace BBC
             lock (breakpointLock)
             {
                 breakpoints.Clear();
+                breakpointConditions.Clear();
                 temporaryBreakpoints.Clear();
             }
             breakpointHitAt = null;
@@ -1396,15 +1660,23 @@ namespace BBC
 
         private void UpdateMemoryWatchCallbacks()
         {
-            cpu.OnMemoryRead = readWatchpoints.Count == 0 ? null : WatchMemoryRead;
-            cpu.OnMemoryWrite = writeWatchpoints.Count == 0 ? null : WatchMemoryWrite;
+            cpu.OnMemoryRead = readWatchpoints.Count == 0 && hardwareTraceRules.Count == 0 && hardwareBreakRules.Count == 0
+                ? null : WatchMemoryRead;
+            cpu.OnMemoryWrite = writeWatchpoints.Count == 0 && hardwareTraceRules.Count == 0 && hardwareBreakRules.Count == 0
+                ? null : WatchMemoryWrite;
         }
 
-        private void WatchMemoryRead(ushort address, byte value, ushort instructionAddress) =>
+        private void WatchMemoryRead(ushort address, byte value, ushort instructionAddress)
+        {
+            RecordHardwareAccess(address, value, instructionAddress, write: false);
             RecordWatchedAccess(address, value, instructionAddress, write: false);
+        }
 
-        private void WatchMemoryWrite(ushort address, byte value, ushort instructionAddress) =>
+        private void WatchMemoryWrite(ushort address, byte value, ushort instructionAddress)
+        {
+            RecordHardwareAccess(address, value, instructionAddress, write: true);
             RecordWatchedAccess(address, value, instructionAddress, write: true);
+        }
 
         private void RecordWatchedAccess(ushort address, byte value, ushort instructionAddress, bool write)
         {
@@ -1413,8 +1685,86 @@ namespace BBC
                 if (pendingWatchedAccess.HasValue)
                     return;
                 List<WatchRange> watchpoints = write ? writeWatchpoints : readWatchpoints;
-                if (watchpoints.Any(range => address >= range.Start && address <= range.End))
-                    pendingWatchedAccess = new WatchedAccess(address, value, instructionAddress, write);
+                if (watchpoints.Any(range => address >= range.Start && address <= range.End
+                    && (range.Condition is null || ConditionMatches(range.Condition.Value, address, value))))
+                    pendingWatchedAccess = new WatchedAccess(address, value, instructionAddress, write, false);
+            }
+        }
+
+        private void RecordHardwareAccess(ushort address, byte value, ushort instructionAddress, bool write)
+        {
+            if (address < 0xFC00 || address > 0xFEFF)
+                return;
+
+            AccessKind kind = write ? AccessKind.Write : AccessKind.Read;
+            lock (breakpointLock)
+            {
+                if (hardwareTraceRules.Any(rule => HardwareRuleMatches(rule, address, kind)))
+                {
+                    if (Interlocked.Increment(ref pendingTraceLineCount) <= 200)
+                        pendingTraceLines.Enqueue($"{(write ? 'W' : 'R')} {HardwareName(address),-7} ${address:X4}=${value:X2}  PC ${instructionAddress:X4}  cycle {cpu.TotalCycles:N0}");
+                    else
+                    {
+                        Interlocked.Decrement(ref pendingTraceLineCount);
+                        Interlocked.Increment(ref droppedTraceLineCount);
+                    }
+                }
+
+                if (!pendingWatchedAccess.HasValue && hardwareBreakRules.Any(rule => HardwareRuleMatches(rule, address, kind)))
+                    pendingWatchedAccess = new WatchedAccess(address, value, instructionAddress, write, true);
+            }
+        }
+
+        private bool HardwareRuleMatches(HardwareRule rule, ushort address, AccessKind access)
+        {
+            if ((rule.Access & access) == 0)
+                return false;
+            return rule.Name switch
+            {
+                "video" => HD6845_Video.IsSheilaAddress(address),
+                "sysvia" => System6522Via.IsAddress(address),
+                "uservia" => User6522Via.IsAddress(address),
+                "disc" => discController() switch
+                {
+                    Intel8271_Disk => Intel8271_Disk.IsAddress(address),
+                    WD1770_Disk => WD1770_Disk.IsAddress(address),
+                    _ => false
+                },
+                "serial" => SerialACIA.IsAddress(address),
+                "adc" => uPD7002_ADC.IsAddress(address),
+                "tube" => TubeUla.IsHostAddress(address),
+                "romsel" => address == 0xFE30,
+                _ => address >= rule.Start && address <= rule.End
+            };
+        }
+
+        private static string HardwareName(ushort address) => address switch
+        {
+            >= 0xFC00 and <= 0xFCFF => "FRED",
+            >= 0xFD00 and <= 0xFDFF => "JIM",
+            >= 0xFE40 and <= 0xFE4F => "SYSVIA",
+            >= 0xFE60 and <= 0xFE6F => "USERVIA",
+            >= 0xFE80 and <= 0xFE9F => "DISC",
+            >= 0xFEC0 and <= 0xFEC3 => "ADC",
+            >= 0xFEE0 and <= 0xFEEF => "TUBE",
+            0xFE30 => "ROMSEL",
+            >= 0xFE08 and <= 0xFE17 => "SERIAL",
+            >= 0xFE00 and <= 0xFE01 or >= 0xFE20 and <= 0xFE23 => "VIDEO",
+            _ => "SHEILA"
+        };
+
+        private void ClearHardwareRules()
+        {
+            lock (breakpointLock)
+            {
+                hardwareTraceRules.Clear();
+                hardwareBreakRules.Clear();
+                if (pendingWatchedAccess?.Hardware == true) pendingWatchedAccess = null;
+                if (stoppedWatchedAccess?.Hardware == true) stoppedWatchedAccess = null;
+                while (pendingTraceLines.TryDequeue(out _)) { }
+                Interlocked.Exchange(ref pendingTraceLineCount, 0);
+                Interlocked.Exchange(ref droppedTraceLineCount, 0);
+                UpdateMemoryWatchCallbacks();
             }
         }
 
@@ -1434,7 +1784,11 @@ namespace BBC
                     pendingWatchedAccess = null;
                     return true;
                 }
-                return breakpoints.Contains(address) || temporaryBreakpoints.Contains(address);
+                if (temporaryBreakpoints.Contains(address))
+                    return true;
+                if (!breakpoints.Contains(address))
+                    return false;
+                return !breakpointConditions.TryGetValue(address, out StopCondition condition) || ConditionMatches(condition);
             }
         }
 
@@ -1632,8 +1986,11 @@ namespace BBC
         }
 
         private readonly record struct DecodedInstruction(int Length, string Bytes, string Text);
-        private readonly record struct WatchRange(ushort Start, ushort End);
-        private readonly record struct WatchedAccess(ushort Address, byte Value, ushort InstructionAddress, bool Write);
+        private readonly record struct WatchRange(ushort Start, ushort End, StopCondition? Condition);
+        private readonly record struct WatchedAccess(ushort Address, byte Value, ushort InstructionAddress, bool Write, bool Hardware);
+        private readonly record struct StopCondition(string Left, string Operator, ushort Expected, string Text);
+        private readonly record struct HardwareRule(ushort Start, ushort End, AccessKind Access, string Name);
+        private readonly record struct RegisterSnapshot(ushort PC, byte A, byte X, byte Y, byte SP, byte P);
         private readonly record struct OpCode(string Mnemonic, AddressMode Mode)
         {
             public int Length => Mode switch
@@ -1648,6 +2005,8 @@ namespace BBC
         private enum AddressField { None, Memory, Disassembly }
         private enum HardwareTab { Cpu, SystemVia, UserVia, Video, Disc, Tube }
         private enum ClipboardPanel { Memory, Disassembly, Hardware, CommandOutput }
+        [Flags]
+        private enum AccessKind { Read = 1, Write = 2, ReadWrite = Read | Write }
 
         private static readonly OpCode[] OpCodes = CreateOpCodes();
 
