@@ -576,6 +576,7 @@ Examples:
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
         private readonly DotMatrixPrinter printer = new DotMatrixPrinter();
+        private DebuggerWindow? debugger;
         private byte printerEscCommand;
         private int printerEscParameterCount;
         private readonly List<byte> printerEscParameters = new List<byte>();
@@ -756,6 +757,14 @@ Examples:
                 Display = new Display();
             }
             Display.AttachPrinter(printer);
+            debugger ??= new DebuggerWindow(
+                Cpu,
+                DebuggerReadByte,
+                PauseForDebugger,
+                ResumeFromDebugger,
+                StepHostInstruction,
+                () => DebuggerPaused);
+            Display.AttachDebugger(debugger);
 
             Sound.Start();
             Sound.QueuePowerOnBeep();
@@ -1074,6 +1083,7 @@ Examples:
             DisposeHayesModem();
             tube6502?.Dispose();
             printer.Dispose();
+            debugger?.Dispose();
             Sound.Dispose();
             Display?.Dispose();
         }
@@ -1735,6 +1745,16 @@ Examples:
                 return false;
 
             return Cpu.RequestSingleStep();
+        }
+
+        private byte DebuggerReadByte(ushort address)
+        {
+            if (address >= SidewaysRomStart && address <= SidewaysRomEnd)
+                return ReadSidewaysRom(address);
+
+            // Debugger inspection must not acknowledge IRQs or consume data from
+            // SHEILA devices, so I/O pages expose their harmless backing byte.
+            return Memory.Memory[address];
         }
 
         private void AdvancePausedFrames(int frames)

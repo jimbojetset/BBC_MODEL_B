@@ -169,6 +169,7 @@ namespace BBC
         private readonly Dictionary<CachedTextKey, CachedTextTexture> tinyTextCache = new Dictionary<CachedTextKey, CachedTextTexture>();
         private readonly int pitchBytes;
         private DotMatrixPrinter? printer;
+        private DebuggerWindow? debugger;
 
         private IntPtr window;
         private uint windowId;
@@ -349,6 +350,11 @@ namespace BBC
             printer = dotMatrixPrinter;
         }
 
+        public void AttachDebugger(DebuggerWindow debuggerWindow)
+        {
+            debugger = debuggerWindow;
+        }
+
         public void ShowNotification(string title, string body, int durationMilliseconds = NotificationDurationMilliseconds)
         {
             notificationTitle = title.Trim();
@@ -443,6 +449,9 @@ namespace BBC
                     EnqueueDroppedFile(ev.DropFile);
                     continue;
                 }
+
+                if (debugger?.HandleEvent(ev.Type, ev.WindowId, ev.WindowEvent, ev.KeySym, ev.MouseButton, ev.MouseX, ev.MouseY) == true)
+                    continue;
 
                 if (printer?.HandleEvent(ev.Type, ev.WindowId, ev.WindowEvent, ev.MouseButton, ev.MouseX, ev.MouseY, ev.MouseWheelY) == true)
                     continue;
@@ -872,6 +881,7 @@ namespace BBC
 
             SDL_RenderPresent(renderer);
             printer?.Render();
+            debugger?.Present();
         }
 
         private void UpdateFrameTextureIfDirty()
@@ -950,7 +960,8 @@ namespace BBC
             for (int i = 0; i < menus.Length; i++)
             {
                 int width = GetTopMenuWidth(menus[i].Title);
-                bool active = i == activeMenuIndex || i == hoveredMenuIndex;
+                bool enabled = IsTopMenuEnabled(i);
+                bool active = enabled && (i == activeMenuIndex || i == hoveredMenuIndex);
                 if (active)
                 {
                     SdlRect hover = new SdlRect(x - 4, 3, width + 8, TopMenuHeight - 6);
@@ -960,7 +971,8 @@ namespace BBC
                     DrawRectOutline(hover);
                 }
 
-                DrawRendererText(menus[i].Title, x, 8, active ? (byte)245 : (byte)190, active ? (byte)245 : (byte)190, active ? (byte)245 : (byte)190);
+                byte textLevel = enabled ? active ? (byte)245 : (byte)190 : (byte)85;
+                DrawRendererText(menus[i].Title, x, 8, textLevel, textLevel, textLevel);
                 x += width + MenuPaddingX;
             }
 
@@ -1567,6 +1579,8 @@ namespace BBC
             uiMouseY = (int)Math.Round(logicalY);
 
             hoveredMenuIndex = GetMenuIndexAt((int)logicalX, (int)logicalY);
+            if (!IsTopMenuEnabled(hoveredMenuIndex))
+                hoveredMenuIndex = -1;
             hoveredMenuItemIndex = IsOpenMenuIndex(activeMenuIndex)
                 ? GetMenuItemIndexAt(activeMenuIndex, (int)logicalX, (int)logicalY)
                 : -1;
@@ -1606,6 +1620,9 @@ namespace BBC
                 return IsMenuArea(x, y);
 
             int menuIndex = GetMenuIndexAt(x, y);
+            if (!IsTopMenuEnabled(menuIndex))
+                return true;
+
             if (IsDirectMenu(menuIndex))
             {
                 ExecuteMenuCommand(menus[menuIndex].DirectCommand!.Value);
@@ -2840,6 +2857,14 @@ namespace BBC
             return menuIndex >= 0 && menuIndex < menus.Length && menus[menuIndex].DirectCommand.HasValue;
         }
 
+        private bool IsTopMenuEnabled(int menuIndex)
+        {
+            if (menuIndex < 0 || menuIndex >= menus.Length)
+                return true;
+
+            return menus[menuIndex].DirectCommand != MenuCommand.OpenDebugger || debugger?.Visible != true;
+        }
+
         private void ExecuteMenuCommand(MenuCommand command)
         {
             switch (command)
@@ -3020,6 +3045,10 @@ namespace BBC
                 case MenuCommand.OpenInputMapper:
                     OpenInputMapper();
                     romManagerOpen = false;
+                    activeMenuIndex = -1;
+                    break;
+                case MenuCommand.OpenDebugger:
+                    debugger?.Show();
                     activeMenuIndex = -1;
                     break;
             }
@@ -4580,6 +4609,12 @@ namespace BBC
                 return;
             }
 
+            if (keySym == SDLK_HOME && (modifiers & KMOD_CTRL) != 0)
+            {
+                debugger?.Show();
+                return;
+            }
+
             if (TryExecuteMenuShortcut(keySym, modifiers))
                 return;
 
@@ -5261,7 +5296,8 @@ namespace BBC
             ToggleFullScreen,
             ShowAbout,
             OpenRomManager,
-            OpenInputMapper
+            OpenInputMapper,
+            OpenDebugger
         }
 
         private MenuDefinition[] CreateMenus()
@@ -5296,7 +5332,8 @@ namespace BBC
                     new MenuItem("WD1770 + Acorn 1770 DFS", "", MenuCommand.SelectWd1770)
                 ]),
                 new MenuDefinition("Sideways Memory", [], MenuCommand.OpenRomManager),
-                new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper)
+                new MenuDefinition("Keyboard Mapper", [], MenuCommand.OpenInputMapper),
+                new MenuDefinition("Debugger", [], MenuCommand.OpenDebugger)
             ];
 
             if (PrinterEnabled)
@@ -6155,6 +6192,7 @@ namespace BBC
         private const int SDLK_LCTRL = 1073742048;
         private const int SDLK_LSHIFT = 1073742049;
         private const int SDLK_F12 = 1073741893;
+        private const int SDLK_HOME = 1073741898;
         private const int KMOD_SHIFT = 0x0003;
         private const int KMOD_CTRL = 0x00C0;
         private const int KMOD_LSHIFT = 0x0001;
