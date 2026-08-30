@@ -41,6 +41,7 @@ namespace BBC
         private readonly Func<bool> step;
         private readonly Func<bool> paused;
         private readonly HashSet<ushort> breakpoints = new HashSet<ushort>();
+        private readonly HashSet<ushort> temporaryBreakpoints = new HashSet<ushort>();
         private readonly object breakpointLock = new object();
         private readonly SKBitmap bitmap;
         private readonly SKCanvas canvas;
@@ -67,6 +68,7 @@ namespace BBC
         private int pendingCommandSteps;
         private long observedCompletedSteps;
         private int commandScrollOffset;
+        private string? temporaryStopDescription;
 
         public DebuggerWindow(
             CPU_6502 cpu,
@@ -110,7 +112,16 @@ namespace BBC
 
         public void ShowBreakpoint(ushort address)
         {
-            breakpointHitAt = address;
+            lock (breakpointLock)
+            {
+                bool temporary = temporaryBreakpoints.Remove(address);
+                if (breakpoints.Contains(address))
+                    breakpointHitAt = address;
+                else if (temporary)
+                    temporaryStopDescription ??= "STEP COMPLETE";
+                else
+                    breakpointHitAt = address;
+            }
             Show();
             disassemblyAddress = address;
         }
@@ -152,17 +163,19 @@ namespace BBC
                         ResumeExecution();
                         break;
                     case SDLK_F6:
-                        pause();
+                        PauseExecution();
                         break;
                     case SDLK_F10:
-                        if (step())
-                        {
-                            breakpointHitAt = null;
-                            disassemblyAddress = (ushort)cpu.registers.PC;
-                        }
+                        StepOnce();
                         break;
                     case SDLK_F9:
                         ToggleBreakpoint(disassemblyAddress);
+                        break;
+                    case SDLK_F11:
+                        if ((SDL_GetModState() & KMOD_SHIFT) != 0)
+                            StepOut();
+                        else
+                            StepOver();
                         break;
                     case SDLK_ESCAPE:
                         ClearBreakpoints();
@@ -181,9 +194,13 @@ namespace BBC
                     if (logicalX is >= 10 and < 82)
                         ResumeExecution();
                     else if (logicalX is >= 88 and < 170)
-                        pause();
+                        PauseExecution();
                     else if (logicalX is >= 176 and < 250)
-                        step();
+                        StepOnce();
+                    else if (logicalX is >= 256 and < 350)
+                        StepOver();
+                    else if (logicalX is >= 356 and < 442)
+                        StepOut();
                 }
                 else if (logicalY is >= 76 and < 110 && logicalX is >= 18 and < 338)
                 {
@@ -250,7 +267,68 @@ namespace BBC
 
         private void ResumeExecution()
         {
+            ClearTemporaryBreakpoints();
             breakpointHitAt = null;
+            temporaryStopDescription = null;
+            resume();
+        }
+
+        private void PauseExecution()
+        {
+            ClearTemporaryBreakpoints();
+            temporaryStopDescription = null;
+            pause();
+        }
+
+        private void StepOnce()
+        {
+            ClearTemporaryBreakpoints();
+            if (step())
+            {
+                breakpointHitAt = null;
+                temporaryStopDescription = null;
+                disassemblyAddress = (ushort)cpu.registers.PC;
+            }
+        }
+
+        private void StepOver()
+        {
+            if (!paused())
+                return;
+
+            ushort pc = (ushort)cpu.registers.PC;
+            if (readByte(pc) != 0x20) // JSR absolute
+            {
+                StepOnce();
+                return;
+            }
+
+            RunToTemporaryBreakpoint((ushort)(pc + 3), "STEP OVER COMPLETE");
+        }
+
+        private void StepOut()
+        {
+            if (!paused())
+                return;
+
+            byte stackPointer = cpu.registers.S;
+            if (stackPointer > 0xFD)
+            {
+                WriteCommandOutput("Step out requires a return address on the 6502 stack");
+                return;
+            }
+            byte low = readByte((ushort)(0x0100 | (byte)(stackPointer + 1)));
+            byte high = readByte((ushort)(0x0100 | (byte)(stackPointer + 2)));
+            ushort returnAddress = (ushort)(((high << 8) | low) + 1);
+            RunToTemporaryBreakpoint(returnAddress, "STEP OUT COMPLETE");
+        }
+
+        private void RunToTemporaryBreakpoint(ushort address, string description)
+        {
+            lock (breakpointLock)
+                temporaryBreakpoints.Add(address);
+            breakpointHitAt = null;
+            temporaryStopDescription = description;
             resume();
         }
 
@@ -299,7 +377,11 @@ namespace BBC
             }
 
             Fill(new SKRect(0, StatusTop, Width, Height), PanelDark);
-            string state = breakpointHitAt.HasValue ? $"BREAKPOINT ${breakpointHitAt.Value:X4}" : paused() ? "PAUSED" : "RUNNING";
+            string state = breakpointHitAt.HasValue
+                ? $"BREAKPOINT ${breakpointHitAt.Value:X4}"
+                : paused() && temporaryStopDescription is not null
+                    ? temporaryStopDescription
+                    : paused() ? "PAUSED" : "RUNNING";
             DrawText(state, 14, 791, paused() ? 0xFFFFC857 : 0xFF67D391);
             DrawText($"PC ${cpu.registers.PC & 0xFFFF:X4}", 260, 791, Text);
             DrawText($"{cpu.TotalCycles:N0} cycles", 1030, 791, DimText);
@@ -311,8 +393,8 @@ namespace BBC
             DrawButton(new SKRect(10, 7, 82, 35), "Run F5", !paused());
             DrawButton(new SKRect(88, 7, 170, 35), "Break F6", paused());
             DrawButton(new SKRect(176, 7, 250, 35), "Step F10", false);
-            DrawButton(new SKRect(256, 7, 350, 35), "Step over", false, enabled: false);
-            DrawButton(new SKRect(356, 7, 442, 35), "Step out", false, enabled: false);
+            DrawButton(new SKRect(256, 7, 350, 35), "Over F11", false);
+            DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F11", false);
             DrawText($"F9 breakpoint    {BreakpointCount} set    Host 6502", 900, 27, Accent, small: true);
         }
 
@@ -359,8 +441,10 @@ namespace BBC
                 if (current)
                     Fill(new SKRect(x - 8, baseline - 15, 956, baseline + 5), CurrentInstruction);
 
-                if (HasBreakpoint(address))
+                if (HasPermanentBreakpoint(address))
                     Circle(x + 4, baseline - 5, 5, 0xFFE05252);
+                else if (HasTemporaryBreakpoint(address))
+                    Circle(x + 4, baseline - 5, 5, 0xFFFFC857);
                 DrawText(current ? "▶" : " ", x, baseline, current ? Accent : DimText);
                 DrawText($"{address:X4}", x + 24, baseline, current ? Accent : Text);
                 DrawText(instruction.Bytes, x + 82, baseline, DimText);
@@ -457,7 +541,7 @@ namespace BBC
                 {
                     case "?":
                     case "help":
-                        WriteCommandOutput("run | pause | n [count] | r");
+                        WriteCommandOutput("run | pause | n [count] | over | out | r");
                         WriteCommandOutput("m [address] [count] | d [address] [count]");
                         WriteCommandOutput("b address [end] | bc | ss | su | sv | st");
                         break;
@@ -468,12 +552,19 @@ namespace BBC
                         WriteCommandOutput("Running");
                         break;
                     case "pause":
-                        pause();
+                        PauseExecution();
                         WriteCommandOutput($"Paused at ${cpu.registers.PC & 0xFFFF:X4}");
                         break;
                     case "n":
                     case "step":
                         StartCommandSteps(parts.Length > 1 ? ParseCount(parts[1], 1, 10000) : 1);
+                        break;
+                    case "o":
+                    case "over":
+                        StepOver();
+                        break;
+                    case "out":
+                        StepOut();
                         break;
                     case "r":
                     case "regs":
@@ -739,14 +830,36 @@ namespace BBC
         private void ClearBreakpoints()
         {
             lock (breakpointLock)
+            {
                 breakpoints.Clear();
+                temporaryBreakpoints.Clear();
+            }
             breakpointHitAt = null;
+            temporaryStopDescription = null;
+        }
+
+        private void ClearTemporaryBreakpoints()
+        {
+            lock (breakpointLock)
+                temporaryBreakpoints.Clear();
         }
 
         private bool HasBreakpoint(ushort address)
         {
             lock (breakpointLock)
+                return breakpoints.Contains(address) || temporaryBreakpoints.Contains(address);
+        }
+
+        private bool HasPermanentBreakpoint(ushort address)
+        {
+            lock (breakpointLock)
                 return breakpoints.Contains(address);
+        }
+
+        private bool HasTemporaryBreakpoint(ushort address)
+        {
+            lock (breakpointLock)
+                return temporaryBreakpoints.Contains(address);
         }
 
         private int BreakpointCount
@@ -973,9 +1086,11 @@ namespace BBC
         private const int SDLK_F6 = 1073741887;
         private const int SDLK_F10 = 1073741891;
         private const int SDLK_F9 = 1073741890;
+        private const int SDLK_F11 = 1073741892;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDLK_DOWN = 1073741905;
         private const int SDLK_UP = 1073741906;
+        private const int KMOD_SHIFT = 0x0003;
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const uint SDL_WINDOW_HIDDEN = 0x00000008;
         private const uint SDL_WINDOW_RESIZABLE = 0x00000020;
@@ -998,6 +1113,7 @@ namespace BBC
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_RenderSetLogicalSize(IntPtr renderer, int w, int h);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_RenderWindowToLogical(IntPtr renderer, int windowX, int windowY, out float logicalX, out float logicalY);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern uint SDL_GetMouseState(out int x, out int y);
+        [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_GetModState();
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr SDL_CreateTexture(IntPtr renderer, uint format, int access, int w, int h);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern void SDL_DestroyTexture(IntPtr texture);
         [DllImport(SdlLibrary, CallingConvention = CallingConvention.Cdecl)] private static extern int SDL_UpdateTexture(IntPtr texture, IntPtr rect, IntPtr pixels, int pitch);
