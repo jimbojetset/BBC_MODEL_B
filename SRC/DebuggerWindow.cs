@@ -19,7 +19,7 @@ namespace BBC
 {
     public sealed class DebuggerWindow : IDisposable
     {
-        private const int Width = 1216;
+        private const int Width = 1324;
         private const int Height = 766;
         private const int ToolbarHeight = 42;
         private const int CommandTop = 536;
@@ -29,6 +29,8 @@ namespace BBC
         private const int DisassemblyLeft = 358;
         private const int DisassemblyRight = 908;
         private const int HardwareLeft = 916;
+        private const int HardwareBottom = 384;
+        private const int DisplayTop = 392;
         private const int ContentRight = Width - 8;
         private const uint Background = 0xFF15181C;
         private const uint Panel = 0xFF20242A;
@@ -63,6 +65,8 @@ namespace BBC
         private readonly SKPaint textPaint;
         private readonly SKPaint titlePaint;
         private readonly SKPaint smallPaint;
+        private readonly SKBitmap displayFrame;
+        private GCHandle displayFrameHandle;
         private IntPtr window;
         private IntPtr renderer;
         private IntPtr texture;
@@ -99,7 +103,10 @@ namespace BBC
             HD6845_Video video,
             Func<IDiscController> discController,
             TubeUla tubeUla,
-            Func<bool> tubeEnabled)
+            Func<bool> tubeEnabled,
+            uint[] displayPixels,
+            int displayWidth,
+            int displayHeight)
         {
             this.cpu = cpu;
             this.readByte = readByte;
@@ -121,6 +128,12 @@ namespace BBC
             textPaint = CreatePaint(15, Text);
             titlePaint = CreatePaint(14, DimText, bold: true);
             smallPaint = CreatePaint(13, DimText);
+
+            displayFrameHandle = GCHandle.Alloc(displayPixels, GCHandleType.Pinned);
+            displayFrame = new SKBitmap();
+            SKImageInfo displayInfo = new SKImageInfo(displayWidth, displayHeight, SKColorType.Bgra8888, SKAlphaType.Opaque);
+            if (!displayFrame.InstallPixels(displayInfo, displayFrameHandle.AddrOfPinnedObject(), displayWidth * sizeof(uint)))
+                throw new InvalidOperationException("Unable to attach the debugger display preview to the emulator frame buffer.");
         }
 
         public bool Visible => visible;
@@ -299,7 +312,7 @@ namespace BBC
                     else if (logicalX is >= DisassemblyLeft and < DisassemblyRight)
                         MoveDisassembly(mouseWheelY > 0 ? -1 : 1, Math.Abs(mouseWheelY));
                 }
-                else if (logicalY is >= CommandTop and < CommandInputTop)
+                else if (logicalX < DisassemblyRight && logicalY is >= CommandTop and < CommandInputTop)
                 {
                     int maximum = Math.Max(0, commandOutput.Count - CommandOutputVisibleLines);
                     commandScrollOffset = Math.Clamp(commandScrollOffset + mouseWheelY, 0, maximum);
@@ -414,12 +427,16 @@ namespace BBC
             DrawButton(new SKRect(820, 78, 892, 106), "PC", false);
             DrawDisassembly(374, 132);
 
-            DrawPanel(new SKRect(HardwareLeft, 48, ContentRight, CommandTop - 8), "CPU / HARDWARE");
+            DrawPanel(new SKRect(HardwareLeft, 48, ContentRight, HardwareBottom), "CPU / HARDWARE");
             DrawHardwareTabs();
             DrawSelectedHardware(932, 126);
 
-            DrawPanel(new SKRect(8, CommandTop, ContentRight, CommandInputTop - 6), "COMMAND OUTPUT");
+            DrawPanel(new SKRect(8, CommandTop, DisassemblyRight, CommandInputTop - 6), "COMMAND OUTPUT");
             DrawCommandOutput();
+
+            Fill(new SKRect(HardwareLeft, DisplayTop, ContentRight, CommandInputTop - 6), Panel);
+            Stroke(new SKRect(HardwareLeft, DisplayTop, ContentRight, CommandInputTop - 6), Border);
+            DrawDisplayPreview(new SKRect(HardwareLeft + 8, DisplayTop + 8, ContentRight - 8, CommandInputTop - 14));
 
             Fill(new SKRect(8, CommandInputTop, ContentRight, StatusTop - 6), PanelDark);
             Stroke(new SKRect(8, CommandInputTop, ContentRight, StatusTop - 6), Border);
@@ -441,7 +458,7 @@ namespace BBC
                     : paused() ? "PAUSED" : "RUNNING";
             DrawText(state, 14, StatusTop + 21, paused() ? 0xFFFFC857 : 0xFF67D391);
             DrawText($"PC ${cpu.registers.PC & 0xFFFF:X4}", 260, StatusTop + 21, Text);
-            DrawText($"{cpu.TotalCycles:N0} cycles", 966, StatusTop + 21, DimText);
+            DrawText($"{cpu.TotalCycles:N0} cycles", 1074, StatusTop + 21, DimText);
         }
 
         private void DrawToolbar()
@@ -507,10 +524,10 @@ namespace BBC
             DrawText($"Y   ${r.Y:X2}       SP  ${r.S:X2}", x, y + 58, Text);
             DrawText($"P   ${p:X2}", x, y + 86, Text);
             DrawText("N V - B D I Z C", x, y + 126, DimText);
-            DrawText(FormatFlags(p), x, y + 153, Text);
-            DrawText("Interrupts", x, y + 204, DimText);
-            DrawText($"IRQ  {(cpu.IrqLineAsserted ? "asserted" : "clear")}", x, y + 232, Text);
-            DrawText($"CPU  {(paused() ? "paused" : "running")}", x, y + 260, Text);
+            DrawText(string.Join(' ', Convert.ToString(p, 2).PadLeft(8, '0').ToCharArray()), x, y + 153, Text);
+            DrawText("Interrupts", x + 190, y + 126, DimText);
+            DrawText($"IRQ  {(cpu.IrqLineAsserted ? "asserted" : "clear")}", x + 190, y + 153, Text);
+            DrawText($"CPU  {(paused() ? "paused" : "running")}", x + 190, y + 180, Text);
         }
 
         private void DrawDisassembly(float x, float y)
@@ -995,10 +1012,30 @@ namespace BBC
             int first = Math.Max(0, last - CommandOutputVisibleLines);
             float y = CommandTop + 48;
             canvas.Save();
-            canvas.ClipRect(new SKRect(9, CommandTop + 35, ContentRight - 1, CommandInputTop - 7));
+            canvas.ClipRect(new SKRect(9, CommandTop + 35, DisassemblyRight - 1, CommandInputTop - 7));
             for (int i = first; i < last; i++, y += 19)
                 DrawText(commandOutput[i], 24, y, commandOutput[i].StartsWith('>') ? Accent : Text, small: true);
             canvas.Restore();
+        }
+
+        private void DrawDisplayPreview(SKRect bounds)
+        {
+            float scale = Math.Min(bounds.Width / displayFrame.Width, bounds.Height / displayFrame.Height);
+            float width = displayFrame.Width * scale;
+            float height = displayFrame.Height * scale;
+            SKRect destination = new SKRect(
+                bounds.MidX - width / 2,
+                bounds.MidY - height / 2,
+                bounds.MidX + width / 2,
+                bounds.MidY + height / 2);
+
+            using SKPaint paint = new SKPaint
+            {
+                FilterQuality = SKFilterQuality.High,
+                IsAntialias = true
+            };
+            canvas.DrawBitmap(displayFrame, destination, paint);
+            Stroke(destination, Border);
         }
 
         private bool HandleAddressKey(int keySym)
@@ -1338,6 +1375,9 @@ namespace BBC
             typeface.Dispose();
             canvas.Dispose();
             bitmap.Dispose();
+            displayFrame.Dispose();
+            if (displayFrameHandle.IsAllocated)
+                displayFrameHandle.Free();
             disposed = true;
         }
 

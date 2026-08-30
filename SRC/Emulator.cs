@@ -770,7 +770,10 @@ Examples:
                 Video,
                 () => discController,
                 tubeUla,
-                () => tube6502Configured);
+                () => tube6502Configured,
+                Display.FrameBuffer,
+                Display.Width,
+                Display.Height);
             Display.AttachDebugger(debugger);
             Cpu.OnBreakpointHit = address => Interlocked.Exchange(ref debuggerBreakpointPending, address + 1);
 
@@ -865,6 +868,8 @@ Examples:
                 Display.PrinterEnabled = printer.Enabled;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
                 UpdateHayesModemLeds(Display);
+                if (Cpu.TotalCycles > 5_000_000 && !debugger.Visible)
+                    debugger.Show(); // Temporary wiki screenshot setup.
                 Display.Present();
 
                 WaitUntil(nextFrame);
