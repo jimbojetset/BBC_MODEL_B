@@ -868,8 +868,6 @@ Examples:
                 Display.PrinterEnabled = printer.Enabled;
                 Display.HayesLoopbackEnabled = hayesModem?.LoopbackEnabled == true;
                 UpdateHayesModemLeds(Display);
-                if (Cpu.TotalCycles > 5_000_000 && !debugger.Visible)
-                    debugger.Show(); // Temporary wiki screenshot setup.
                 Display.Present();
 
                 WaitUntil(nextFrame);
