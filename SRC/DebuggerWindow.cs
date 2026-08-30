@@ -39,6 +39,8 @@ namespace BBC
         private readonly Action resume;
         private readonly Func<bool> step;
         private readonly Func<bool> paused;
+        private readonly HashSet<ushort> breakpoints = new HashSet<ushort>();
+        private readonly object breakpointLock = new object();
         private readonly SKBitmap bitmap;
         private readonly SKCanvas canvas;
         private readonly SKTypeface typeface;
@@ -55,6 +57,7 @@ namespace BBC
         private ushort disassemblyAddress;
         private AddressField activeAddressField;
         private string addressEntry = string.Empty;
+        private ushort? breakpointHitAt;
 
         public DebuggerWindow(
             CPU_6502 cpu,
@@ -70,6 +73,7 @@ namespace BBC
             this.resume = resume;
             this.step = step;
             this.paused = paused;
+            cpu.ShouldBreakBeforeInstruction = HasBreakpoint;
 
             bitmap = new SKBitmap(new SKImageInfo(Width, Height, SKColorType.Bgra8888, SKAlphaType.Premul));
             canvas = new SKCanvas(bitmap);
@@ -94,6 +98,13 @@ namespace BBC
             Present();
         }
 
+        public void ShowBreakpoint(ushort address)
+        {
+            breakpointHitAt = address;
+            Show();
+            disassemblyAddress = address;
+        }
+
         public bool HandleEvent(uint type, uint eventWindowId, byte windowEvent, int keySym, byte mouseButton, int mouseX, int mouseY, int mouseWheelY)
         {
             if (windowId == 0 || eventWindowId != windowId)
@@ -113,16 +124,23 @@ namespace BBC
                 switch (keySym)
                 {
                     case SDLK_F5:
-                        resume();
+                        ResumeExecution();
                         break;
                     case SDLK_F6:
                         pause();
                         break;
                     case SDLK_F10:
                         if (step())
+                        {
+                            breakpointHitAt = null;
                             disassemblyAddress = (ushort)cpu.registers.PC;
+                        }
+                        break;
+                    case SDLK_F9:
+                        ToggleBreakpoint(disassemblyAddress);
                         break;
                     case SDLK_ESCAPE:
+                        ClearBreakpoints();
                         visible = false;
                         SDL_HideWindow(window);
                         break;
@@ -136,7 +154,7 @@ namespace BBC
                 if (logicalY >= 7 && logicalY < 35)
                 {
                     if (logicalX is >= 10 and < 82)
-                        resume();
+                        ResumeExecution();
                     else if (logicalX is >= 88 and < 170)
                         pause();
                     else if (logicalX is >= 176 and < 250)
@@ -154,6 +172,11 @@ namespace BBC
                 {
                     disassemblyAddress = (ushort)cpu.registers.PC;
                     activeAddressField = AddressField.None;
+                }
+                else if (logicalX is >= 366 and < 410 && logicalY is >= 117 and < 512)
+                {
+                    int row = (int)((logicalY - 117) / 20);
+                    ToggleBreakpoint(GetDisassemblyRowAddress(row));
                 }
                 return true;
             }
@@ -177,8 +200,15 @@ namespace BBC
 
         private void CloseAndResume()
         {
+            ClearBreakpoints();
             visible = false;
             SDL_HideWindow(window);
+            ResumeExecution();
+        }
+
+        private void ResumeExecution()
+        {
+            breakpointHitAt = null;
             resume();
         }
 
@@ -221,8 +251,9 @@ namespace BBC
             DrawText("Command entry will be added in phase 5", 42, CommandInputTop + 24, DimText);
 
             Fill(new SKRect(0, StatusTop, Width, Height), PanelDark);
-            DrawText(paused() ? "PAUSED" : "RUNNING", 14, 791, paused() ? 0xFFFFC857 : 0xFF67D391);
-            DrawText($"PC ${cpu.registers.PC & 0xFFFF:X4}", 116, 791, Text);
+            string state = breakpointHitAt.HasValue ? $"BREAKPOINT ${breakpointHitAt.Value:X4}" : paused() ? "PAUSED" : "RUNNING";
+            DrawText(state, 14, 791, paused() ? 0xFFFFC857 : 0xFF67D391);
+            DrawText($"PC ${cpu.registers.PC & 0xFFFF:X4}", 260, 791, Text);
             DrawText($"{cpu.TotalCycles:N0} cycles", 1030, 791, DimText);
         }
 
@@ -234,7 +265,7 @@ namespace BBC
             DrawButton(new SKRect(176, 7, 250, 35), "Step F10", false);
             DrawButton(new SKRect(256, 7, 350, 35), "Step over", false, enabled: false);
             DrawButton(new SKRect(356, 7, 442, 35), "Step out", false, enabled: false);
-            DrawText("Host 6502", 1150, 27, Accent);
+            DrawText($"F9 breakpoint    {BreakpointCount} set    Host 6502", 900, 27, Accent, small: true);
         }
 
         private void DrawHardwareTabs()
@@ -280,6 +311,8 @@ namespace BBC
                 if (current)
                     Fill(new SKRect(x - 8, baseline - 15, 956, baseline + 5), CurrentInstruction);
 
+                if (HasBreakpoint(address))
+                    Circle(x + 4, baseline - 5, 5, 0xFFE05252);
                 DrawText(current ? "▶" : " ", x, baseline, current ? Accent : DimText);
                 DrawText($"{address:X4}", x + 24, baseline, current ? Accent : Text);
                 DrawText(instruction.Bytes, x + 82, baseline, DimText);
@@ -391,6 +424,45 @@ namespace BBC
             }
         }
 
+        private ushort GetDisassemblyRowAddress(int row)
+        {
+            ushort address = disassemblyAddress;
+            for (int i = 0; i < row; i++)
+                address = (ushort)(address + Decode(address).Length);
+            return address;
+        }
+
+        private void ToggleBreakpoint(ushort address)
+        {
+            lock (breakpointLock)
+            {
+                if (!breakpoints.Remove(address))
+                    breakpoints.Add(address);
+            }
+        }
+
+        private void ClearBreakpoints()
+        {
+            lock (breakpointLock)
+                breakpoints.Clear();
+            breakpointHitAt = null;
+        }
+
+        private bool HasBreakpoint(ushort address)
+        {
+            lock (breakpointLock)
+                return breakpoints.Contains(address);
+        }
+
+        private int BreakpointCount
+        {
+            get
+            {
+                lock (breakpointLock)
+                    return breakpoints.Count;
+            }
+        }
+
         private DecodedInstruction Decode(ushort address)
         {
             byte opcode = readByte(address);
@@ -465,6 +537,12 @@ namespace BBC
             canvas.DrawRect(rect, paint);
         }
 
+        private void Circle(float x, float y, float radius, uint colour)
+        {
+            using SKPaint paint = new SKPaint { Color = new SKColor(colour), Style = SKPaintStyle.Fill, IsAntialias = true };
+            canvas.DrawCircle(x, y, radius, paint);
+        }
+
         private void Line(float x1, float y1, float x2, float y2, uint colour)
         {
             using SKPaint paint = new SKPaint { Color = new SKColor(colour), StrokeWidth = 1 };
@@ -523,6 +601,8 @@ namespace BBC
             if (texture != IntPtr.Zero) SDL_DestroyTexture(texture);
             if (renderer != IntPtr.Zero) SDL_DestroyRenderer(renderer);
             if (window != IntPtr.Zero) SDL_DestroyWindow(window);
+            if (cpu.ShouldBreakBeforeInstruction == HasBreakpoint)
+                cpu.ShouldBreakBeforeInstruction = null;
             textPaint.Dispose();
             titlePaint.Dispose();
             smallPaint.Dispose();
@@ -596,6 +676,7 @@ namespace BBC
         private const int SDLK_F5 = 1073741886;
         private const int SDLK_F6 = 1073741887;
         private const int SDLK_F10 = 1073741891;
+        private const int SDLK_F9 = 1073741890;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const uint SDL_WINDOW_HIDDEN = 0x00000008;

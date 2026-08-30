@@ -46,6 +46,8 @@ namespace BBC.CPU
         private bool paused;
         private int singleStepRequested;
         private long completedSingleSteps;
+        private int breakpointStoppedAt = -1;
+        private int breakpointSkipOnce = -1;
         public bool Paused => Volatile.Read(ref paused);
         public long CompletedSingleSteps => Interlocked.Read(ref completedSingleSteps);
         private bool jammed;
@@ -89,6 +91,8 @@ namespace BBC.CPU
         public long TotalCycles => Interlocked.Read(ref totalCycles);
         public Action<int>? OnCyclesExecuted;
         public Func<bool>? OnBeforeInstruction;
+        public Func<ushort, bool>? ShouldBreakBeforeInstruction;
+        public Action<ushort>? OnBreakpointHit;
         public Func<bool>? NmiLineAsserted;
         private int externalStallCycles;
 
@@ -159,7 +163,12 @@ namespace BBC.CPU
         {
             Volatile.Write(ref paused, value);
             if (!value)
+            {
                 Interlocked.Exchange(ref singleStepRequested, 0);
+                int stoppedAt = Interlocked.Exchange(ref breakpointStoppedAt, -1);
+                if (stoppedAt >= 0 && (ushort)registers.PC == stoppedAt)
+                    Interlocked.Exchange(ref breakpointSkipOnce, stoppedAt);
+            }
         }
 
         public bool RequestSingleStep()
@@ -167,6 +176,8 @@ namespace BBC.CPU
             if (!Volatile.Read(ref paused) || jammed)
                 return false;
 
+            Interlocked.Exchange(ref breakpointStoppedAt, -1);
+            Interlocked.Exchange(ref breakpointSkipOnce, -1);
             return Interlocked.CompareExchange(ref singleStepRequested, 1, 0) == 0;
         }
 
@@ -320,6 +331,10 @@ namespace BBC.CPU
                         }
                         if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
                             ProcessIRQ();
+
+                        if (CheckExecutionBreakpoint())
+                            break;
+
                         int beforeCycles = cyclesThisOperation;
                         cyclesNotifiedThisInstruction = 0;
                         bool handledByHost = OnBeforeInstruction?.Invoke() == true;
@@ -380,6 +395,21 @@ namespace BBC.CPU
             try { return TimeBeginPeriod(TimerResolutionMs) == 0 /* TIMERR_NOERROR */; }
             catch (DllNotFoundException) { return false; }
             catch (EntryPointNotFoundException) { return false; }
+        }
+
+        private bool CheckExecutionBreakpoint()
+        {
+            ushort address = (ushort)registers.PC;
+            if (Interlocked.CompareExchange(ref breakpointSkipOnce, -1, address) == address)
+                return false;
+
+            if (ShouldBreakBeforeInstruction?.Invoke(address) != true)
+                return false;
+
+            Interlocked.Exchange(ref breakpointStoppedAt, address);
+            Volatile.Write(ref paused, true);
+            OnBreakpointHit?.Invoke(address);
+            return true;
         }
 
         private static void TryEndHighResolutionTimer()

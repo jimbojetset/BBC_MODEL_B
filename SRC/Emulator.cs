@@ -540,6 +540,7 @@ Examples:
         private bool initialised;
         private Thread? cpuThread;
         private Exception? cpuException;
+        private int debuggerBreakpointPending;
         private readonly byte[] inputScratch = new byte[64];
         private readonly HostKeyChange[] keyChangeScratch = new HostKeyChange[64];
         private readonly HostJoystickChange[] joystickChangeScratch = new HostJoystickChange[16];
@@ -765,6 +766,7 @@ Examples:
                 StepHostInstruction,
                 () => DebuggerPaused);
             Display.AttachDebugger(debugger);
+            Cpu.OnBreakpointHit = address => Interlocked.Exchange(ref debuggerBreakpointPending, address + 1);
 
             Sound.Start();
             Sound.QueuePowerOnBeep();
@@ -789,6 +791,8 @@ Examples:
                     throw new InvalidOperationException("CPU execution failed.", cpuException);
                 if (tube6502?.CpuException is not null)
                     throw new InvalidOperationException("Tube 6502 execution failed.", tube6502.CpuException);
+
+                DrainDebuggerBreakpoint();
 
                 SynchronizeRomManagerPause(Display);
                 SynchronizeInputMapperPause(Display);
@@ -1206,6 +1210,16 @@ Examples:
             int count = display.DrainPauseToggleRequests();
             for (int i = 0; i < count; i++)
                 SetEmulationPaused(!emulationPaused);
+        }
+
+        private void DrainDebuggerBreakpoint()
+        {
+            int pending = Interlocked.Exchange(ref debuggerBreakpointPending, 0);
+            if (pending == 0)
+                return;
+
+            SetEmulationPaused(true);
+            debugger?.ShowBreakpoint((ushort)(pending - 1));
         }
 
         private void DrainHostSoundToggleRequests(Display display)
