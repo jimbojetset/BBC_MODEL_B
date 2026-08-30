@@ -93,8 +93,11 @@ namespace BBC.CPU
         public Func<bool>? OnBeforeInstruction;
         public Func<ushort, bool>? ShouldBreakBeforeInstruction;
         public Action<ushort>? OnBreakpointHit;
+        public Action<ushort, byte, ushort>? OnMemoryRead;
+        public Action<ushort, byte, ushort>? OnMemoryWrite;
         public Func<bool>? NmiLineAsserted;
         private int externalStallCycles;
+        private ushort currentInstructionAddress;
 
         /// <summary>
         /// BBC peripheral pages are slower than main RAM; SHEILA, FRED, and JIM
@@ -300,6 +303,7 @@ namespace BBC.CPU
                     cyclesThisOperation = 0;
                     while (cyclesThisOperation < sliceCycles)
                     {
+                        currentInstructionAddress = (ushort)registers.PC;
                         int stall = Interlocked.Exchange(ref externalStallCycles, 0);
                         if (stall > 0)
                         {
@@ -3218,6 +3222,7 @@ namespace BBC.CPU
             ulong masked = addr & 0xFFFF;
             NotifyCyclesDuringInstruction(1);
             byte value = bus.ReadByte(masked);
+            OnMemoryRead?.Invoke((ushort)masked, value, currentInstructionAddress);
             var stretch = OnAccessStretch;
             if (stretch != null)
             {
@@ -3243,6 +3248,7 @@ namespace BBC.CPU
             ulong masked = addr & 0xFFFF;
             NotifyCyclesDuringInstruction(1);
             bus.WriteByte(masked, value);
+            OnMemoryWrite?.Invoke((ushort)masked, value, currentInstructionAddress);
             var stretch = OnAccessStretch;
             if (stretch != null)
             {

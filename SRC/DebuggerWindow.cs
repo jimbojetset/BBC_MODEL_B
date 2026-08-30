@@ -42,6 +42,8 @@ namespace BBC
         private readonly Func<bool> paused;
         private readonly HashSet<ushort> breakpoints = new HashSet<ushort>();
         private readonly HashSet<ushort> temporaryBreakpoints = new HashSet<ushort>();
+        private readonly List<WatchRange> readWatchpoints = new List<WatchRange>();
+        private readonly List<WatchRange> writeWatchpoints = new List<WatchRange>();
         private readonly object breakpointLock = new object();
         private readonly SKBitmap bitmap;
         private readonly SKCanvas canvas;
@@ -69,6 +71,8 @@ namespace BBC
         private long observedCompletedSteps;
         private int commandScrollOffset;
         private string? temporaryStopDescription;
+        private WatchedAccess? pendingWatchedAccess;
+        private WatchedAccess? stoppedWatchedAccess;
 
         public DebuggerWindow(
             CPU_6502 cpu,
@@ -114,8 +118,15 @@ namespace BBC
         {
             lock (breakpointLock)
             {
+                WatchedAccess? watchedAccess = stoppedWatchedAccess;
+                if (watchedAccess is WatchedAccess access)
+                {
+                    WriteCommandOutput($"{(access.Write ? "Write" : "Read")} watchpoint ${access.Address:X4} = ${access.Value:X2}, instruction ${access.InstructionAddress:X4}");
+                }
                 bool temporary = temporaryBreakpoints.Remove(address);
-                if (breakpoints.Contains(address))
+                if (watchedAccess.HasValue)
+                    breakpointHitAt = null;
+                else if (breakpoints.Contains(address))
                     breakpointHitAt = address;
                 else if (temporary)
                     temporaryStopDescription ??= "STEP COMPLETE";
@@ -179,6 +190,7 @@ namespace BBC
                         break;
                     case SDLK_ESCAPE:
                         ClearBreakpoints();
+                        ClearWatchpoints();
                         visible = false;
                         SDL_HideWindow(window);
                         break;
@@ -260,6 +272,7 @@ namespace BBC
         private void CloseAndResume()
         {
             ClearBreakpoints();
+            ClearWatchpoints();
             visible = false;
             SDL_HideWindow(window);
             ResumeExecution();
@@ -270,6 +283,7 @@ namespace BBC
             ClearTemporaryBreakpoints();
             breakpointHitAt = null;
             temporaryStopDescription = null;
+            stoppedWatchedAccess = null;
             resume();
         }
 
@@ -379,6 +393,8 @@ namespace BBC
             Fill(new SKRect(0, StatusTop, Width, Height), PanelDark);
             string state = breakpointHitAt.HasValue
                 ? $"BREAKPOINT ${breakpointHitAt.Value:X4}"
+                : stoppedWatchedAccess.HasValue
+                    ? $"{(stoppedWatchedAccess.Value.Write ? "WRITE" : "READ")} WATCH ${stoppedWatchedAccess.Value.Address:X4}"
                 : paused() && temporaryStopDescription is not null
                     ? temporaryStopDescription
                     : paused() ? "PAUSED" : "RUNNING";
@@ -395,7 +411,7 @@ namespace BBC
             DrawButton(new SKRect(176, 7, 250, 35), "Step F10", false);
             DrawButton(new SKRect(256, 7, 350, 35), "Over F11", false);
             DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F11", false);
-            DrawText($"F9 breakpoint    {BreakpointCount} set    Host 6502", 900, 27, Accent, small: true);
+            DrawText($"F9 breakpoint    {BreakpointCount} break / {WatchpointCount} watch    Host 6502", 820, 27, Accent, small: true);
         }
 
         private void DrawHardwareTabs()
@@ -543,7 +559,8 @@ namespace BBC
                     case "help":
                         WriteCommandOutput("run | pause | n [count] | over | out | r");
                         WriteCommandOutput("m [address] [count] | d [address] [count]");
-                        WriteCommandOutput("b address [end] | bc | ss | su | sv | st");
+                        WriteCommandOutput("b address [end] | bc | wr address [end] | ww address [end] | wc");
+                        WriteCommandOutput("ss | su | sv | st");
                         break;
                     case "run":
                     case "g":
@@ -583,9 +600,23 @@ namespace BBC
                         ExecuteBreakpointCommand(parts);
                         break;
                     case "bc":
-                    case "clear":
                         ClearBreakpoints();
                         WriteCommandOutput("All breakpoints cleared");
+                        break;
+                    case "wr":
+                        ExecuteWatchpointCommand(parts, write: false);
+                        break;
+                    case "ww":
+                        ExecuteWatchpointCommand(parts, write: true);
+                        break;
+                    case "wc":
+                        ClearWatchpoints();
+                        WriteCommandOutput("All watchpoints cleared");
+                        break;
+                    case "clear":
+                        ClearBreakpoints();
+                        ClearWatchpoints();
+                        WriteCommandOutput("All breakpoints and watchpoints cleared");
                         break;
                     case "ss":
                     case "su":
@@ -705,6 +736,39 @@ namespace BBC
             WriteCommandOutput($"PC={r.PC & 0xFFFF:X4} A={r.A:X2} X={r.X:X2} Y={r.Y:X2} SP={r.S:X2} P={r.P:X2}");
             WriteCommandOutput(FormatFlags(r.P));
         }
+
+        private void ExecuteWatchpointCommand(string[] parts, bool write)
+        {
+            if (parts.Length < 2)
+                throw new ArgumentException($"Usage: {(write ? "ww" : "wr")} address [end]");
+
+            ushort start = ParseAddress(parts[1]);
+            ushort end = parts.Length > 2 ? ParseAddress(parts[2]) : start;
+            if (end < start)
+                throw new ArgumentException("Watchpoint range end must not precede its start");
+
+            lock (breakpointLock)
+            {
+                List<WatchRange> watchpoints = write ? writeWatchpoints : readWatchpoints;
+                WatchRange range = new WatchRange(start, end);
+                int existing = watchpoints.IndexOf(range);
+                if (existing >= 0)
+                {
+                    watchpoints.RemoveAt(existing);
+                    WriteCommandOutput($"{(write ? "Write" : "Read")} watchpoint cleared {FormatRange(range)}");
+                }
+                else
+                {
+                    watchpoints.Add(range);
+                    WriteCommandOutput($"{(write ? "Write" : "Read")} watchpoint set {FormatRange(range)}");
+                }
+                UpdateMemoryWatchCallbacks();
+            }
+        }
+
+        private static string FormatRange(WatchRange range) => range.Start == range.End
+            ? $"${range.Start:X4}"
+            : $"${range.Start:X4}-${range.End:X4}";
 
         private static ushort ParseAddress(string value)
         {
@@ -838,6 +902,42 @@ namespace BBC
             temporaryStopDescription = null;
         }
 
+        private void ClearWatchpoints()
+        {
+            lock (breakpointLock)
+            {
+                readWatchpoints.Clear();
+                writeWatchpoints.Clear();
+                pendingWatchedAccess = null;
+                stoppedWatchedAccess = null;
+                UpdateMemoryWatchCallbacks();
+            }
+        }
+
+        private void UpdateMemoryWatchCallbacks()
+        {
+            cpu.OnMemoryRead = readWatchpoints.Count == 0 ? null : WatchMemoryRead;
+            cpu.OnMemoryWrite = writeWatchpoints.Count == 0 ? null : WatchMemoryWrite;
+        }
+
+        private void WatchMemoryRead(ushort address, byte value, ushort instructionAddress) =>
+            RecordWatchedAccess(address, value, instructionAddress, write: false);
+
+        private void WatchMemoryWrite(ushort address, byte value, ushort instructionAddress) =>
+            RecordWatchedAccess(address, value, instructionAddress, write: true);
+
+        private void RecordWatchedAccess(ushort address, byte value, ushort instructionAddress, bool write)
+        {
+            lock (breakpointLock)
+            {
+                if (pendingWatchedAccess.HasValue)
+                    return;
+                List<WatchRange> watchpoints = write ? writeWatchpoints : readWatchpoints;
+                if (watchpoints.Any(range => address >= range.Start && address <= range.End))
+                    pendingWatchedAccess = new WatchedAccess(address, value, instructionAddress, write);
+            }
+        }
+
         private void ClearTemporaryBreakpoints()
         {
             lock (breakpointLock)
@@ -847,7 +947,15 @@ namespace BBC
         private bool HasBreakpoint(ushort address)
         {
             lock (breakpointLock)
+            {
+                if (pendingWatchedAccess.HasValue)
+                {
+                    stoppedWatchedAccess = pendingWatchedAccess;
+                    pendingWatchedAccess = null;
+                    return true;
+                }
                 return breakpoints.Contains(address) || temporaryBreakpoints.Contains(address);
+            }
         }
 
         private bool HasPermanentBreakpoint(ushort address)
@@ -868,6 +976,15 @@ namespace BBC
             {
                 lock (breakpointLock)
                     return breakpoints.Count;
+            }
+        }
+
+        private int WatchpointCount
+        {
+            get
+            {
+                lock (breakpointLock)
+                    return readWatchpoints.Count + writeWatchpoints.Count;
             }
         }
 
@@ -1011,6 +1128,8 @@ namespace BBC
             if (window != IntPtr.Zero) SDL_DestroyWindow(window);
             if (cpu.ShouldBreakBeforeInstruction == HasBreakpoint)
                 cpu.ShouldBreakBeforeInstruction = null;
+            if (cpu.OnMemoryRead == WatchMemoryRead) cpu.OnMemoryRead = null;
+            if (cpu.OnMemoryWrite == WatchMemoryWrite) cpu.OnMemoryWrite = null;
             textPaint.Dispose();
             titlePaint.Dispose();
             smallPaint.Dispose();
@@ -1021,6 +1140,8 @@ namespace BBC
         }
 
         private readonly record struct DecodedInstruction(int Length, string Bytes, string Text);
+        private readonly record struct WatchRange(ushort Start, ushort End);
+        private readonly record struct WatchedAccess(ushort Address, byte Value, ushort InstructionAddress, bool Write);
         private readonly record struct OpCode(string Mnemonic, AddressMode Mode)
         {
             public int Length => Mode switch
