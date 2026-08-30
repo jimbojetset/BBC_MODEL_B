@@ -44,7 +44,10 @@ namespace BBC.CPU
 
         private bool running = true;
         private bool paused;
+        private int singleStepRequested;
+        private long completedSingleSteps;
         public bool Paused => Volatile.Read(ref paused);
+        public long CompletedSingleSteps => Interlocked.Read(ref completedSingleSteps);
         private bool jammed;
         private bool jamReported;
         private ulong jamAddress;
@@ -152,7 +155,20 @@ namespace BBC.CPU
             DoReset();
         }
 
-        public void SetPaused(bool value) => Volatile.Write(ref paused, value);
+        public void SetPaused(bool value)
+        {
+            Volatile.Write(ref paused, value);
+            if (!value)
+                Interlocked.Exchange(ref singleStepRequested, 0);
+        }
+
+        public bool RequestSingleStep()
+        {
+            if (!Volatile.Read(ref paused) || jammed)
+                return false;
+
+            return Interlocked.CompareExchange(ref singleStepRequested, 1, 0) == 0;
+        }
 
         public void SaveState(BinaryWriter writer)
         {
@@ -234,6 +250,14 @@ namespace BBC.CPU
                 {
                     if (Volatile.Read(ref paused))
                     {
+                        if (Interlocked.Exchange(ref singleStepRequested, 0) == 1)
+                        {
+                            StepInstruction();
+                            Interlocked.Increment(ref completedSingleSteps);
+                            nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
+                            continue;
+                        }
+
                         Thread.Sleep(2);
                         nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
                         continue;
@@ -1257,8 +1281,33 @@ namespace BBC.CPU
                 return 0;
             }
 
-            int beforeCycles = cyclesThisOperation;
+            if (Interlocked.Exchange(ref resetPending, 0) == 1)
+                DoReset();
+
+            cyclesThisOperation = 0;
             cyclesNotifiedThisInstruction = 0;
+
+            int stall = Interlocked.Exchange(ref externalStallCycles, 0);
+            if (stall > 0)
+            {
+                cyclesThisOperation += stall;
+                Interlocked.Add(ref totalCycles, stall);
+            }
+
+            bool nmiLineAsserted = NmiLineAsserted?.Invoke() == true;
+            if (nmiLineAsserted && !nmiLineWasAsserted)
+                ProcessNMI();
+            nmiLineWasAsserted = nmiLineAsserted;
+
+            while (NMI_Buffer.TryDequeue(out ulong nmiValue))
+            {
+                if (nmiValue != 0xFFFA)
+                    ProcessNMI(nmiValue);
+                else
+                    ProcessNMI();
+            }
+
+            int beforeInstructionCycles = cyclesThisOperation;
             bool irqGate = !iFlagBeforeInstruction;
             while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
             {
@@ -1271,17 +1320,32 @@ namespace BBC.CPU
             if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
                 ProcessIRQ();
 
-            iFlagBeforeInstruction = registers.Flags.I;
-            Execute(GetNextByteInstruction());
-            if (deferredIFlagPending)
+            bool handledByHost = OnBeforeInstruction?.Invoke() == true;
+            if (!handledByHost)
             {
-                registers.Flags.I = deferredIFlagValue;
-                deferredIFlagPending = false;
+                iFlagBeforeInstruction = registers.Flags.I;
+                Execute(GetNextByteInstruction());
+                if (deferredIFlagPending)
+                {
+                    registers.Flags.I = deferredIFlagValue;
+                    deferredIFlagPending = false;
+                }
             }
-            int elapsed = cyclesThisOperation - beforeCycles;
-            if (elapsed > 0)
+            else
             {
-                int remainingCycles = Math.Max(0, elapsed - cyclesNotifiedThisInstruction);
+                iFlagBeforeInstruction = registers.Flags.I;
+            }
+
+            int instructionCycles = cyclesThisOperation - beforeInstructionCycles;
+            if (handledByHost && instructionCycles <= 0)
+            {
+                instructionCycles = 6;
+                cyclesThisOperation += instructionCycles;
+            }
+
+            if (instructionCycles > 0)
+            {
+                int remainingCycles = Math.Max(0, instructionCycles - cyclesNotifiedThisInstruction);
                 if (remainingCycles > 0)
                 {
                     Interlocked.Add(ref totalCycles, remainingCycles);
@@ -1289,7 +1353,7 @@ namespace BBC.CPU
                 }
             }
 
-            return elapsed;
+            return cyclesThisOperation;
         }
 
         #region Illegal opcode helpers

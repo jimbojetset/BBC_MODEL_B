@@ -1723,6 +1723,20 @@ Examples:
             }
         }
 
+        public bool DebuggerPaused => emulationPaused;
+
+        public void PauseForDebugger() => SetEmulationPaused(true);
+
+        public void ResumeFromDebugger() => SetEmulationPaused(false);
+
+        public bool StepHostInstruction()
+        {
+            if (!emulationPaused)
+                return false;
+
+            return Cpu.RequestSingleStep();
+        }
+
         private void AdvancePausedFrames(int frames)
         {
             int startFrame = systemVia.FrameCounter;
