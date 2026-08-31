@@ -1037,8 +1037,9 @@ namespace BBC
                 "hb r|w|rw device/range Toggle break-on-hardware-access.",
                 "hc                      Clear hardware trace and break rules.",
                 "hl                      List hardware trace and break rules.",
-                "                         Devices: sheila, fred, jim, video, sysvia, uservia,",
-                "                         disc, serial, adc, tube, romsel; address[-end] also works.",
+                "                         Devices: sheila, fred, jim, video, crtc, videoula,",
+                "                         sysvia, uservia, disc, serial, adc, tube, romsel;",
+                "                         address[-end] also works.",
                 "clear                   Clear all breakpoints, watchpoints and hardware rules.",
                 "HARDWARE",
                 "ss / su                 Show System VIA / User VIA state.",
@@ -1422,11 +1423,21 @@ namespace BBC
                     return;
                 }
                 foreach (HardwareRule rule in hardwareTraceRules)
-                    WriteCommandOutput($"TRACE {FormatAccess(rule.Access),-10} {rule.Name} (${rule.Start:X4}-${rule.End:X4})");
+                    WriteCommandOutput($"TRACE {FormatAccess(rule.Access),-10} {rule.Name} ({FormatHardwareAddresses(rule)})");
                 foreach (HardwareRule rule in hardwareBreakRules)
-                    WriteCommandOutput($"BREAK {FormatAccess(rule.Access),-10} {rule.Name} (${rule.Start:X4}-${rule.End:X4})");
+                    WriteCommandOutput($"BREAK {FormatAccess(rule.Access),-10} {rule.Name} ({FormatHardwareAddresses(rule)})");
             }
         }
+
+        private string FormatHardwareAddresses(HardwareRule rule) => rule.Name switch
+        {
+            "video" => "$FE00-$FE01, $FE20-$FE23",
+            "serial" => "$FE08-$FE0B, $FE10-$FE17",
+            "disc" when discController() is WD1770_Disk => "$FE80-$FE87",
+            _ => rule.Start == rule.End
+                ? $"${rule.Start:X4}"
+                : $"${rule.Start:X4}-${rule.End:X4}"
+        };
 
         private (ushort Start, ushort End, string Name) ParseHardwareRange(string value)
         {
@@ -1437,6 +1448,8 @@ namespace BBC
                 "jim" => (0xFD00, 0xFDFF),
                 "sheila" => (0xFE00, 0xFEFF),
                 "video" => (0xFE00, 0xFE23),
+                "crtc" => (0xFE00, 0xFE01),
+                "videoula" => (0xFE20, 0xFE23),
                 "romsel" => (0xFE30, 0xFE30),
                 "sysvia" => (0xFE40, 0xFE4F),
                 "uservia" => (0xFE60, 0xFE6F),
@@ -1722,6 +1735,8 @@ namespace BBC
             return rule.Name switch
             {
                 "video" => HD6845_Video.IsSheilaAddress(address),
+                "crtc" => address is >= 0xFE00 and <= 0xFE01,
+                "videoula" => address is >= 0xFE20 and <= 0xFE23,
                 "sysvia" => System6522Via.IsAddress(address),
                 "uservia" => User6522Via.IsAddress(address),
                 "disc" => discController() switch
@@ -1749,7 +1764,8 @@ namespace BBC
             >= 0xFEE0 and <= 0xFEEF => "TUBE",
             0xFE30 => "ROMSEL",
             >= 0xFE08 and <= 0xFE17 => "SERIAL",
-            >= 0xFE00 and <= 0xFE01 or >= 0xFE20 and <= 0xFE23 => "VIDEO",
+            >= 0xFE00 and <= 0xFE01 => "CRTC",
+            >= 0xFE20 and <= 0xFE23 => "VIDEOULA",
             _ => "SHEILA"
         };
 
