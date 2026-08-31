@@ -1521,7 +1521,18 @@ Examples:
         {
             int count = display.DrainTube6502ToggleRequests();
             for (int i = 0; i < count; i++)
-                SetTube6502Enabled(tube6502 is null);
+            {
+                bool enable = tube6502 is null;
+                SetTube6502Enabled(enable);
+                if (enable == (tube6502 is not null))
+                {
+                    PowerReset(display);
+                    display.ShowNotification(
+                        enable ? "6502 Co-Processor enabled" : "6502 Co-Processor disabled",
+                        "BBC power reset",
+                        4000);
+                }
+            }
         }
 
         private void DrainHostSpeechToggleRequests(Display display)
@@ -1529,13 +1540,25 @@ Examples:
             int count = display.DrainSpeechToggleRequests();
             if ((count & 1) != 0)
             {
+                bool enable = !Sound.Speech.Enabled;
                 try
                 {
-                    SetSpeechEnabled(!Sound.Speech.Enabled);
+                    SetSpeechEnabled(enable, notify: false);
+                    if (Sound.Speech.Enabled == enable)
+                    {
+                        PowerReset(display);
+                        display.ShowNotification(
+                            enable ? "Acorn Speech System enabled" : "Acorn Speech System disabled",
+                            "BBC power reset",
+                            4000);
+                    }
                 }
                 catch (Exception ex) when (IsUserMountException(ex))
                 {
-                    display.ShowNotification("Could not enable Acorn Speech System", ex.Message, 5000);
+                    display.ShowNotification(
+                        enable ? "Could not enable Acorn Speech System" : "Could not disable Acorn Speech System",
+                        ex.Message,
+                        5000);
                 }
             }
         }
@@ -3145,13 +3168,6 @@ Examples:
                 tube6502Configured = enabled;
                 UpdateAmxMouseRomState();
                 UpdateCpuIrqLine();
-
-                Display?.ShowNotification(
-                    enabled ? "6502 Co-Processor enabled" : "6502 Co-Processor disabled",
-                    enabled
-                        ? "Press BREAK for the BBC to recognise the change"
-                        : "Press Ctrl-BREAK for the BBC to recognise the change",
-                    6000);
             }
             finally
             {

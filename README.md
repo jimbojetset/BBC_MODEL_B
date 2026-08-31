@@ -47,7 +47,7 @@ dotnet build BBC_MODEL_B.csproj
 Run the hardware regression checks:
 
 ```bash
-dotnet run --project Tests/BBC_MODEL_B.RegressionTests.csproj
+dotnet test Tests/BBC_MODEL_B.Tests.csproj
 ```
 
 Start at BASIC:
@@ -151,7 +151,7 @@ Keyboard Mapper
              Remap the BBC keyboard and import/export input profiles
 Printer      Screen printing, output viewer, page controls, PNG export, sound
 Debugger     Open the host 6502 debugger
-View         Fullscreen, scanlines, and BBC logo
+View         Fullscreen, scanlines, BBC logo, and the optional FPS display
 ```
 
 Click an on-screen disc drive or cassette player to open its media and transport menu.
@@ -203,7 +203,7 @@ Open `Keyboard Mapper` from the menu bar. Click a BBC key, press the host key yo
 
 The separate SDL debugger provides host 6502 registers, memory and disassembly views, run/pause and step-over/out control, execution breakpoints, read/write watchpoints, hardware inspection, a command console, and built-in or external symbols. A half-resolution live BBC display preview makes it possible to relate machine state directly to the visible output while stepping.
 
-Open it from the `Debugger` menu or with `Ctrl+Home`. The complete command reference, practical examples, symbol-file guidance, screenshots, and functional tests are in the [Debugger Manual](https://github.com/jimbojetset/BBC_MODEL_B/wiki/Debugger).
+Open it from the `Debugger` menu or with `Ctrl+Home`. Opening the debugger leaves the emulator running; pause it in the debugger when you need a stable machine state. The complete command reference, practical examples, symbol-file guidance, screenshots, and functional tests are in the [Debugger Manual](https://github.com/jimbojetset/BBC_MODEL_B/wiki/Debugger).
 
 ## Discs, Tapes, And Drives
 
@@ -224,9 +224,9 @@ The Peripherals menu lets you add or remove hardware while the emulator is runni
 - `Tape Player` toggles the cassette hardware and tape controls.
 - `Hayes Modem` enables the modem and its front-panel LEDs.
 - `Printer` connects an Epson FX-80-compatible dot-matrix printer to the BBC printer port and opens its paper display and controls.
-- `Acorn Speech System` fits the TMS5220 processor and loads `ROMS/PHROM.rom` as the TMS6100 Word PHROM A.
+- `Acorn Speech System` fits the TMS5220 processor and loads `ROMS/PHROM.rom` as the TMS6100 Word PHROM A. Enabling or disabling it from the `Peripherals` menu power-resets the BBC.
 - `Disc Drive 0` and `Disc Drive 1` enable or remove each physical drive.
-- `6502 Co-Processor` enables the Tube hardware. Use `Ctrl-BREAK` after changing it so the BBC sees the new machine.
+- `6502 Co-Processor` enables the Tube hardware. Enabling or disabling it from the `Peripherals` menu power-resets the BBC so the host detects the new configuration.
 
 The Hayes modem accepts familiar AT commands such as `AT`, `ATZ`, `ATH`, `ATO`, `ATE0/1`, `ATV0/1`, `AT&F`, and `ATDThost:port`. A successful dial opens a TCP connection, defaulting to port 23 if no port is given. The BBC serial side should be set to 9600 baud, 8 data bits, no parity.
 
