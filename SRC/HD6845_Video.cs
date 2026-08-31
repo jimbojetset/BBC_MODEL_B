@@ -191,8 +191,8 @@ namespace BBC
 
         public static bool IsSheilaAddress(ushort address)
         {
-            return address is >= 0xFE00 and <= 0xFE01
-                or >= 0xFE20 and <= 0xFE23;
+            return address is >= 0xFE00 and <= 0xFE07
+                or >= 0xFE20 and <= 0xFE2F;
         }
 
         public HD6845_Video(byte[] memory)
@@ -1189,65 +1189,60 @@ namespace BBC
 
         private bool IsBeamTeletextMode => (beamUlaControl & UlaTeletext) != 0;
 
-        /// <summary>Reads the CRTC register or Video ULA latch exposed in the FE00-FE23 SHEILA range.</summary>
+        /// <summary>Reads the CRTC register or Video ULA latch from its mirrored SHEILA block.</summary>
         public byte ReadSheila(ushort address)
         {
-            return address switch
-            {
-                0xFE00 => selectedCrtcRegister,
-                0xFE01 => crtcRegisters[selectedCrtcRegister & 0x1F],
-                0xFE20 or 0xFE22 => UlaControl,
-                0xFE21 or 0xFE23 => lastPaletteWrite,
-                _ => 0x00
-            };
+            if (address is >= 0xFE00 and <= 0xFE07)
+                return (address & 1) == 0 ? selectedCrtcRegister : crtcRegisters[selectedCrtcRegister & 0x1F];
+
+            return (address & 1) == 0
+                ? UlaControl
+                : lastPaletteWrite;
         }
 
         /// <summary>BBC software often changes CRTC start, ULA mode, and palette registers during display.</summary>
         public void WriteSheila(ushort address, byte value)
         {
-            switch (address)
+            if (address is >= 0xFE00 and <= 0xFE07)
             {
-                case 0xFE00:
+                if ((address & 1) == 0)
+                {
                     selectedCrtcRegister = (byte)(value & 0x1F);
-                    break;
+                    return;
+                }
 
-                case 0xFE01:
-                    {
-                        int regIndex = selectedCrtcRegister & 0x1F;
-                        if (regIndex >= 18
-                            || regIndex is CrtcLightPenHighRegister or CrtcLightPenLowRegister)
-                            break;
+                int regIndex = selectedCrtcRegister & 0x1F;
+                if (regIndex >= 18
+                    || regIndex is CrtcLightPenHighRegister or CrtcLightPenLowRegister)
+                    return;
 
-                        value = (byte)(value & CrtcRegisterMasks[regIndex]);
-                        crtcRegisters[regIndex] = value;
-                        UpdateBeamCrtcDerivedState(regIndex, value);
-                        UpdateBeamStableVerticalTiming();
-                        HandleBeamDisplayStartRupture(regIndex);
-                    }
-                    break;
+                value = (byte)(value & CrtcRegisterMasks[regIndex]);
+                crtcRegisters[regIndex] = value;
+                UpdateBeamCrtcDerivedState(regIndex, value);
+                UpdateBeamStableVerticalTiming();
+                HandleBeamDisplayStartRupture(regIndex);
+                return;
+            }
 
-                case 0xFE20:
-                case 0xFE22:
-                    UlaControl = value;
-                    CurrentMode = DecodeModeFromUlaControl(value);
-                    UpdateBeamUlaControl(value);
-                    break;
+            if ((address & 1) == 0)
+            {
+                UlaControl = value;
+                CurrentMode = DecodeModeFromUlaControl(value);
+                UpdateBeamUlaControl(value);
+                return;
+            }
 
-                case 0xFE21:
-                case 0xFE23:
-                    lastPaletteWrite = value;
-                    int paletteIndex = (value >> 4) & 0x0F;
-                    byte physicalColour = DecodePhysicalColour(value);
-                    if (ShouldDeferPaletteWrite())
-                    {
-                        pendingPaletteRegisters[paletteIndex] = physicalColour;
-                        pendingPaletteWrites[paletteIndex] = true;
-                    }
-                    else
-                    {
-                        paletteRegisters[paletteIndex] = physicalColour;
-                    }
-                    break;
+            lastPaletteWrite = value;
+            int paletteIndex = (value >> 4) & 0x0F;
+            byte physicalColour = DecodePhysicalColour(value);
+            if (ShouldDeferPaletteWrite())
+            {
+                pendingPaletteRegisters[paletteIndex] = physicalColour;
+                pendingPaletteWrites[paletteIndex] = true;
+            }
+            else
+            {
+                paletteRegisters[paletteIndex] = physicalColour;
             }
         }
 

@@ -61,7 +61,7 @@ namespace BBC
 
         public static bool IsAddress(ushort address)
         {
-            return address is >= 0xFE60 and <= 0xFE6F;
+            return address is >= 0xFE60 and <= 0xFE7F;
         }
 
         public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;

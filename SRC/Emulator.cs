@@ -4021,7 +4021,7 @@ Examples:
 
             return address switch
             {
-                0xFE30 => (byte)selectedSidewaysRom,
+                >= 0xFE30 and <= 0xFE3F => (byte)selectedSidewaysRom,
                 _ => 0x00
             };
         }
@@ -4076,7 +4076,7 @@ Examples:
 
             switch (address)
             {
-                case 0xFE30:
+                case >= 0xFE30 and <= 0xFE3F:
                     selectedSidewaysRom = value & 0x0F;
                     break;
             }

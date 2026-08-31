@@ -77,7 +77,7 @@ namespace BBC
             }
         }
 
-        public static bool IsHostAddress(ushort address) => address is >= 0xFEE0 and <= 0xFEEF;
+        public static bool IsHostAddress(ushort address) => address is >= 0xFEE0 and <= 0xFEFF;
 
         public static bool IsParasiteAddress(ushort address) => address is >= 0xFEF8 and <= 0xFEFF;
 

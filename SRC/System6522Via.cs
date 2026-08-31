@@ -74,7 +74,7 @@ namespace BBC
 
         public static bool IsAddress(ushort address)
         {
-            return address is >= 0xFE40 and <= 0xFE4F;
+            return address is >= 0xFE40 and <= 0xFE5F;
         }
 
         public void Reset()

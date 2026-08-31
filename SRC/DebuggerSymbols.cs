@@ -159,12 +159,12 @@ namespace BBC
             AddBuiltIn("VIDEO_ULA_PALETTE", 0xFE21);
             AddViaSymbols("SYSVIA", 0xFE40);
             AddViaSymbols("USERVIA", 0xFE60);
-            AddBuiltIn("DISC_FE80", 0xFE80);
-            AddBuiltIn("DISC_FE81", 0xFE81);
-            AddBuiltIn("DISC_FE84", 0xFE84);
-            AddBuiltIn("DISC_FE85", 0xFE85);
-            AddBuiltIn("DISC_FE86", 0xFE86);
-            AddBuiltIn("DISC_FE87", 0xFE87);
+            AddBuiltIn("DISC_STATUS_OR_CONTROL", 0xFE80);
+            AddBuiltIn("DISC_RESULT", 0xFE81);
+            AddBuiltIn("DISC_DATA_OR_COMMAND", 0xFE84);
+            AddBuiltIn("DISC_TRACK", 0xFE85);
+            AddBuiltIn("DISC_SECTOR", 0xFE86);
+            AddBuiltIn("DISC_DATA", 0xFE87);
             AddBuiltIn("INTEL8271_STATUS", 0xFE80);
             AddBuiltIn("INTEL8271_RESULT", 0xFE81);
             AddBuiltIn("INTEL8271_DATA", 0xFE84);

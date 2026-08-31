@@ -18,9 +18,9 @@ namespace BBC
     public sealed class SerialACIA
     {
         private const ushort AciaStart = 0xFE08;
-        private const ushort AciaEnd = 0xFE0B;
+        private const ushort AciaEnd = 0xFE0F;
         private const ushort SerialUlaStart = 0xFE10;
-        private const ushort SerialUlaEnd = 0xFE17;
+        private const ushort SerialUlaEnd = 0xFE1F;
 
         private const byte AciaStatusReceiveDataFull = 0x01;
         private const byte AciaStatusTransmitDataEmpty = 0x02;

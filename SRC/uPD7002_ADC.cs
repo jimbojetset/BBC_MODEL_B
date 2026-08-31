@@ -1,7 +1,8 @@
 // ============================================================================
 // Project:     BBC_MODEL_B
 // File:        uPD7002_ADC.cs
-// Description: NEC uPD7002 analogue input converter at SHEILA &FEC0-&FEC3,
+// Description: NEC uPD7002 analogue input converter in the &FEC0-&FEDF
+//              SHEILA block,
 //              including conversion delay and the EOC line into system 6522 VIA CB1.
 // Author:      James Booth
 // Created:     2025
@@ -19,7 +20,7 @@ namespace BBC
     public sealed class uPD7002_ADC
     {
         private const ushort BaseAddress = 0xFEC0;
-        private const ushort EndAddress = 0xFEC3;
+        private const ushort EndAddress = 0xFEDF;
 
         private const byte StatusBusyMask = 0x80;
         private const byte StatusNotEocMask = 0x40;

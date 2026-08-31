@@ -94,6 +94,9 @@ namespace BBC
         private long observedCompletedSteps;
         private int commandScrollOffset;
         private string? temporaryStopDescription;
+        private bool stepOutActive;
+        private bool stepOutCompleted;
+        private int stepOutDepth;
         private WatchedAccess? pendingWatchedAccess;
         private WatchedAccess? stoppedWatchedAccess;
         private int pendingTraceLineCount;
@@ -137,6 +140,7 @@ namespace BBC
             this.tubeUla = tubeUla;
             this.tubeEnabled = tubeEnabled;
             cpu.ShouldBreakBeforeInstruction = HasBreakpoint;
+            cpu.ShouldBreakAfterInstruction = ShouldBreakAfterInstruction;
 
             bitmap = new SKBitmap(new SKImageInfo(Width, Height, SKColorType.Bgra8888, SKAlphaType.Premul));
             canvas = new SKCanvas(bitmap);
@@ -170,23 +174,35 @@ namespace BBC
 
         public void ShowBreakpoint(ushort address)
         {
+            bool completedStepOut;
             lock (breakpointLock)
             {
+                completedStepOut = stepOutCompleted;
                 WatchedAccess? watchedAccess = stoppedWatchedAccess;
-                if (watchedAccess is WatchedAccess access)
+                if (completedStepOut)
                 {
-                    string kind = access.Hardware ? "hardware break" : "watchpoint";
-                    WriteCommandOutput($"{(access.Write ? "Write" : "Read")} {kind} ${access.Address:X4} = ${access.Value:X2}, instruction ${access.InstructionAddress:X4}");
-                }
-                bool temporary = temporaryBreakpoints.Remove(address);
-                if (watchedAccess.HasValue)
+                    stepOutCompleted = false;
                     breakpointHitAt = null;
-                else if (breakpoints.Contains(address))
-                    breakpointHitAt = address;
-                else if (temporary)
-                    temporaryStopDescription ??= "STEP COMPLETE";
+                    temporaryStopDescription = "STEP OUT COMPLETE";
+                }
                 else
-                    breakpointHitAt = address;
+                {
+                    stepOutActive = false;
+                    if (watchedAccess is WatchedAccess access)
+                    {
+                        string kind = access.Hardware ? "hardware break" : "watchpoint";
+                        WriteCommandOutput($"{(access.Write ? "Write" : "Read")} {kind} ${access.Address:X4} = ${access.Value:X2}, instruction ${access.InstructionAddress:X4}");
+                    }
+                    bool temporary = temporaryBreakpoints.Remove(address);
+                    if (watchedAccess.HasValue)
+                        breakpointHitAt = null;
+                    else if (breakpoints.Contains(address))
+                        breakpointHitAt = address;
+                    else if (temporary)
+                        temporaryStopDescription ??= "STEP COMPLETE";
+                    else
+                        breakpointHitAt = address;
+                }
             }
             Show();
             disassemblyAddress = address;
@@ -483,9 +499,6 @@ namespace BBC
 
         private void CloseAndResume()
         {
-            ClearBreakpoints();
-            ClearWatchpoints();
-            ClearHardwareRules();
             visible = false;
             SDL_HideWindow(window);
             ResumeExecution();
@@ -540,16 +553,54 @@ namespace BBC
             if (!paused())
                 return;
 
-            byte stackPointer = cpu.registers.S;
-            if (stackPointer > 0xFD)
+            ClearTemporaryBreakpoints();
+            CaptureComparisonState();
+            lock (breakpointLock)
             {
-                WriteCommandOutput("Step out requires a return address on the 6502 stack");
-                return;
+                stepOutActive = true;
+                stepOutCompleted = false;
+                stepOutDepth = 0;
             }
-            byte low = readByte((ushort)(0x0100 | (byte)(stackPointer + 1)));
-            byte high = readByte((ushort)(0x0100 | (byte)(stackPointer + 2)));
-            ushort returnAddress = (ushort)(((high << 8) | low) + 1);
-            RunToTemporaryBreakpoint(returnAddress, "STEP OUT COMPLETE");
+            breakpointHitAt = null;
+            temporaryStopDescription = "STEP OUT RUNNING";
+            resume();
+        }
+
+        private bool ShouldBreakAfterInstruction(ushort _, byte? opcode, byte stackBefore)
+        {
+            lock (breakpointLock)
+            {
+                if (!stepOutActive)
+                    return false;
+
+                if (!TrackStepOutInstruction(ref stepOutDepth, opcode, stackBefore, cpu.registers.S))
+                    return false;
+
+                stepOutActive = false;
+                stepOutCompleted = true;
+                return true;
+            }
+        }
+
+        internal static bool TrackStepOutInstruction(ref int depth, byte? opcode, byte stackBefore, byte stackAfter)
+        {
+            if (opcode == 0x20) // JSR absolute
+            {
+                depth++;
+                return false;
+            }
+
+            // Host firmware hooks complete OS calls without executing the MOS RTS.
+            bool returned = opcode == 0x60
+                || opcode is null && stackAfter == unchecked((byte)(stackBefore + 2));
+            if (!returned)
+                return false;
+
+            if (depth == 0)
+                return true;
+
+            depth--;
+            return false;
         }
 
         private void RunToTemporaryBreakpoint(ushort address, string description)
@@ -1431,8 +1482,8 @@ namespace BBC
 
         private string FormatHardwareAddresses(HardwareRule rule) => rule.Name switch
         {
-            "video" => "$FE00-$FE01, $FE20-$FE23",
-            "serial" => "$FE08-$FE0B, $FE10-$FE17",
+            "video" => "$FE00-$FE07, $FE20-$FE2F",
+            "serial" => "$FE08-$FE1F",
             "disc" when discController() is WD1770_Disk => "$FE80-$FE87",
             _ => rule.Start == rule.End
                 ? $"${rule.Start:X4}"
@@ -1447,16 +1498,16 @@ namespace BBC
                 "fred" => (0xFC00, 0xFCFF),
                 "jim" => (0xFD00, 0xFDFF),
                 "sheila" => (0xFE00, 0xFEFF),
-                "video" => (0xFE00, 0xFE23),
-                "crtc" => (0xFE00, 0xFE01),
-                "videoula" => (0xFE20, 0xFE23),
-                "romsel" => (0xFE30, 0xFE30),
-                "sysvia" => (0xFE40, 0xFE4F),
-                "uservia" => (0xFE60, 0xFE6F),
+                "video" => (0xFE00, 0xFE2F),
+                "crtc" => (0xFE00, 0xFE07),
+                "videoula" => (0xFE20, 0xFE2F),
+                "romsel" => (0xFE30, 0xFE3F),
+                "sysvia" => (0xFE40, 0xFE5F),
+                "uservia" => (0xFE60, 0xFE7F),
                 "disc" => (0xFE80, 0xFE9F),
-                "serial" => (0xFE08, 0xFE17),
-                "adc" => (0xFEC0, 0xFEC3),
-                "tube" => (0xFEE0, 0xFEEF),
+                "serial" => (0xFE08, 0xFE1F),
+                "adc" => (0xFEC0, 0xFEDF),
+                "tube" => (0xFEE0, 0xFEFF),
                 _ => null
             };
             if (known.HasValue)
@@ -1735,8 +1786,8 @@ namespace BBC
             return rule.Name switch
             {
                 "video" => HD6845_Video.IsSheilaAddress(address),
-                "crtc" => address is >= 0xFE00 and <= 0xFE01,
-                "videoula" => address is >= 0xFE20 and <= 0xFE23,
+                "crtc" => address is >= 0xFE00 and <= 0xFE07,
+                "videoula" => address is >= 0xFE20 and <= 0xFE2F,
                 "sysvia" => System6522Via.IsAddress(address),
                 "uservia" => User6522Via.IsAddress(address),
                 "disc" => discController() switch
@@ -1748,7 +1799,7 @@ namespace BBC
                 "serial" => SerialACIA.IsAddress(address),
                 "adc" => uPD7002_ADC.IsAddress(address),
                 "tube" => TubeUla.IsHostAddress(address),
-                "romsel" => address == 0xFE30,
+                "romsel" => address is >= 0xFE30 and <= 0xFE3F,
                 _ => address >= rule.Start && address <= rule.End
             };
         }
@@ -1757,15 +1808,15 @@ namespace BBC
         {
             >= 0xFC00 and <= 0xFCFF => "FRED",
             >= 0xFD00 and <= 0xFDFF => "JIM",
-            >= 0xFE40 and <= 0xFE4F => "SYSVIA",
-            >= 0xFE60 and <= 0xFE6F => "USERVIA",
+            >= 0xFE40 and <= 0xFE5F => "SYSVIA",
+            >= 0xFE60 and <= 0xFE7F => "USERVIA",
             >= 0xFE80 and <= 0xFE9F => "DISC",
-            >= 0xFEC0 and <= 0xFEC3 => "ADC",
-            >= 0xFEE0 and <= 0xFEEF => "TUBE",
-            0xFE30 => "ROMSEL",
-            >= 0xFE08 and <= 0xFE17 => "SERIAL",
-            >= 0xFE00 and <= 0xFE01 => "CRTC",
-            >= 0xFE20 and <= 0xFE23 => "VIDEOULA",
+            >= 0xFEC0 and <= 0xFEDF => "ADC",
+            >= 0xFEE0 and <= 0xFEFF => "TUBE",
+            >= 0xFE30 and <= 0xFE3F => "ROMSEL",
+            >= 0xFE08 and <= 0xFE1F => "SERIAL",
+            >= 0xFE00 and <= 0xFE07 => "CRTC",
+            >= 0xFE20 and <= 0xFE2F => "VIDEOULA",
             _ => "SHEILA"
         };
 
@@ -1787,7 +1838,12 @@ namespace BBC
         private void ClearTemporaryBreakpoints()
         {
             lock (breakpointLock)
+            {
                 temporaryBreakpoints.Clear();
+                stepOutActive = false;
+                stepOutCompleted = false;
+                stepOutDepth = 0;
+            }
         }
 
         private bool HasBreakpoint(ushort address)
@@ -1987,6 +2043,8 @@ namespace BBC
             if (window != IntPtr.Zero) SDL_DestroyWindow(window);
             if (cpu.ShouldBreakBeforeInstruction == HasBreakpoint)
                 cpu.ShouldBreakBeforeInstruction = null;
+            if (cpu.ShouldBreakAfterInstruction == ShouldBreakAfterInstruction)
+                cpu.ShouldBreakAfterInstruction = null;
             if (cpu.OnMemoryRead == WatchMemoryRead) cpu.OnMemoryRead = null;
             if (cpu.OnMemoryWrite == WatchMemoryWrite) cpu.OnMemoryWrite = null;
             textPaint.Dispose();

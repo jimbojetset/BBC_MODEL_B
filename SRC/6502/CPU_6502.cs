@@ -92,6 +92,7 @@ namespace BBC.CPU
         public Action<int>? OnCyclesExecuted;
         public Func<bool>? OnBeforeInstruction;
         public Func<ushort, bool>? ShouldBreakBeforeInstruction;
+        public Func<ushort, byte?, byte, bool>? ShouldBreakAfterInstruction;
         public Action<ushort>? OnBreakpointHit;
         public Action<ushort, byte, ushort>? OnMemoryRead;
         public Action<ushort, byte, ushort>? OnMemoryWrite;
@@ -341,12 +342,16 @@ namespace BBC.CPU
 
                         int beforeCycles = cyclesThisOperation;
                         cyclesNotifiedThisInstruction = 0;
+                        ushort executedAddress = (ushort)registers.PC;
+                        byte stackBefore = registers.S;
                         bool handledByHost = OnBeforeInstruction?.Invoke() == true;
+                        byte? executedOpcode = null;
 
                         if (!handledByHost)
                         {
                             iFlagBeforeInstruction = registers.Flags.I;
-                            Execute(GetNextByteInstruction());
+                            executedOpcode = GetNextByteInstruction();
+                            Execute(executedOpcode.Value);
                             if (deferredIFlagPending)
                             {
                                 registers.Flags.I = deferredIFlagValue;
@@ -373,6 +378,14 @@ namespace BBC.CPU
                                 Interlocked.Add(ref totalCycles, remainingCycles);
                                 OnCyclesExecuted?.Invoke(remainingCycles);
                             }
+                        }
+                        if (ShouldBreakAfterInstruction?.Invoke(executedAddress, executedOpcode, stackBefore) == true)
+                        {
+                            ushort stoppedAt = (ushort)registers.PC;
+                            Interlocked.Exchange(ref breakpointStoppedAt, stoppedAt);
+                            Volatile.Write(ref paused, true);
+                            OnBreakpointHit?.Invoke(stoppedAt);
+                            break;
                         }
                         if (jammed)
                             break;
