@@ -282,9 +282,6 @@ namespace BBC
                         StepOnce();
                         break;
                     case SDLK_F9:
-                        ToggleBreakpoint(disassemblyAddress);
-                        break;
-                    case SDLK_F11:
                         if ((SDL_GetModState() & KMOD_SHIFT) != 0)
                             StepOut();
                         else
@@ -693,9 +690,9 @@ namespace BBC
             DrawButton(new SKRect(10, 7, 82, 35), "Run F5", !paused());
             DrawButton(new SKRect(88, 7, 170, 35), "Break F6", paused());
             DrawButton(new SKRect(176, 7, 250, 35), "Step F10", false);
-            DrawButton(new SKRect(256, 7, 350, 35), "Over F11", false);
-            DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F11", false);
-            DrawText($"F9 breakpoint    {BreakpointCount} break / {WatchpointCount} watch    Host 6502", 756, 27, Accent, small: true);
+            DrawButton(new SKRect(256, 7, 350, 35), "Over F9", false);
+            DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F9", false);
+            DrawText($"{BreakpointCount} break / {WatchpointCount} watch    Host 6502", 846, 27, Accent, small: true);
         }
 
         private void DrawToolbarTooltip()
@@ -2016,7 +2013,7 @@ namespace BBC
                 return;
 
             window = SDL_CreateWindow("BBC Model B Debugger", 100, 100, Width, Height,
-                SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+                SDL_WINDOW_HIDDEN | SDL_WINDOW_ALLOW_HIGHDPI);
             if (window == IntPtr.Zero)
                 throw new InvalidOperationException("SDL_CreateWindow failed for debugger.");
 
@@ -2136,7 +2133,6 @@ namespace BBC
         private const int SDLK_F6 = 1073741887;
         private const int SDLK_F10 = 1073741891;
         private const int SDLK_F9 = 1073741890;
-        private const int SDLK_F11 = 1073741892;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDLK_DOWN = 1073741905;
         private const int SDLK_UP = 1073741906;
@@ -2145,7 +2141,6 @@ namespace BBC
         private const int KMOD_GUI = 0x0C00;
         private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const uint SDL_WINDOW_HIDDEN = 0x00000008;
-        private const uint SDL_WINDOW_RESIZABLE = 0x00000020;
         private const uint SDL_WINDOW_ALLOW_HIGHDPI = 0x00002000;
         private const uint SDL_RENDERER_SOFTWARE = 0x00000001;
         private const uint SDL_RENDERER_ACCELERATED = 0x00000002;
