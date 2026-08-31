@@ -105,6 +105,7 @@ namespace BBC
         private int beamCompletedMaxX;
         private int beamCompletedMaxY;
         private bool displayFrameRectValid;
+        private bool pausedFrameWasRendered;
         private int displayFrameX;
         private int displayFrameY;
         private int displayFrameWidth;
@@ -182,7 +183,7 @@ namespace BBC
             $"R10 ${crtcRegisters[10]:X2}  R11 ${crtcRegisters[11]:X2}",
             $"R12 ${crtcRegisters[12]:X2}  R13 ${crtcRegisters[13]:X2}",
             $"R14 ${crtcRegisters[14]:X2}  R15 ${crtcRegisters[15]:X2}",
-            $"Beam H {beamHorizontalCounter} V {beamVerticalCounter}",
+            $"CRTC H {beamHorizontalCounter} V {beamVerticalCounter}",
             $"Raster {beamScanlineCounter}  MA ${beamAddress & 0x3FFF:X4}"
         ];
 
@@ -1270,7 +1271,14 @@ namespace BBC
 
         public void Render(Display display)
         {
-            if (!TryCopyBeamFrameToDisplay(display))
+            if (pausedFrameWasRendered)
+            {
+                Array.Fill(display.FrameBuffer, Background);
+                display.MarkFrameDirty();
+                pausedFrameWasRendered = false;
+            }
+
+            if (!TryCopyBeamFrameToDisplay(display, showInProgressFrame: false))
             {
                 Array.Fill(display.FrameBuffer, Background);
                 display.MarkFrameDirty();
@@ -1278,16 +1286,28 @@ namespace BBC
             }
         }
 
-        private bool TryCopyBeamFrameToDisplay(Display display)
+        public void RenderPaused(Display display)
+        {
+            pausedFrameWasRendered = true;
+            if (!TryCopyBeamFrameToDisplay(display, showInProgressFrame: true))
+                Render(display);
+        }
+
+        private bool TryCopyBeamFrameToDisplay(Display display, bool showInProgressFrame)
         {
             lock (beamFrameLock)
             {
-                if (!beamHasCompletedFrame)
+                if (!showInProgressFrame && !beamHasCompletedFrame)
                     return false;
 
                 uint[] destination = display.FrameBuffer;
+                uint[] source = showInProgressFrame ? beamRenderFrame : beamCompletedFrame;
+                int sourceMinX = beamHasCompletedFrame ? beamCompletedMinX : beamActiveMinX;
+                int sourceMinY = beamHasCompletedFrame ? beamCompletedMinY : beamActiveMinY;
+                int sourceMaxX = beamHasCompletedFrame ? beamCompletedMaxX : beamActiveMaxX;
+                int sourceMaxY = beamHasCompletedFrame ? beamCompletedMaxY : beamActiveMaxY;
 
-                if (beamCompletedMaxX <= beamCompletedMinX || beamCompletedMaxY <= beamCompletedMinY)
+                if (sourceMaxX <= sourceMinX || sourceMaxY <= sourceMinY)
                 {
                     if (displayFrameRectValid)
                     {
@@ -1299,9 +1319,9 @@ namespace BBC
                     return true;
                 }
 
-                int sourceMinY = beamCompletedMinY & ~1;
-                int sourceMaxY = Math.Min(BeamFramebufferHeight, (beamCompletedMaxY + 1) & ~1);
-                int sourceWidth = beamCompletedMaxX - beamCompletedMinX;
+                sourceMinY &= ~1;
+                sourceMaxY = Math.Min(BeamFramebufferHeight, (sourceMaxY + 1) & ~1);
+                int sourceWidth = sourceMaxX - sourceMinX;
                 int sourceHeight = sourceMaxY - sourceMinY;
                 int copyWidth = Math.Min(display.Width, sourceWidth);
                 int copyHeight = Math.Min(display.Height, sourceHeight);
@@ -1321,7 +1341,20 @@ namespace BBC
 
                 int dirtyWidth = dirtyRight - dirtyX;
                 int dirtyHeight = dirtyBottom - dirtyY;
-                FillDisplayRect(destination, display.Width, dirtyX, dirtyY, dirtyWidth, dirtyHeight, Background);
+                if (showInProgressFrame)
+                {
+                    // The paused beam can be in horizontal or vertical blanking, outside
+                    // the active picture copied below. Clear the previous marker as well.
+                    Array.Fill(destination, Background);
+                    dirtyX = 0;
+                    dirtyY = 0;
+                    dirtyWidth = display.Width;
+                    dirtyHeight = display.Height;
+                }
+                else
+                {
+                    FillDisplayRect(destination, display.Width, dirtyX, dirtyY, dirtyWidth, dirtyHeight, Background);
+                }
 
                 for (int y = 0; y < copyHeight; y++)
                 {
@@ -1329,8 +1362,13 @@ namespace BBC
                     int sourceRow = sourceY * BeamFramebufferWidth;
                     int destinationRow = ((y + destinationY) * display.Width) + destinationX;
 
-                    Array.Copy(beamCompletedFrame, sourceRow + beamCompletedMinX, destination, destinationRow, copyWidth);
+                    Array.Copy(source, sourceRow + sourceMinX, destination, destinationRow, copyWidth);
                 }
+
+                if (showInProgressFrame)
+                    DrawBeamMarker(destination, display.Width, display.Height,
+                        destinationX + beamBitmapX - sourceMinX,
+                        destinationY + beamBitmapY - sourceMinY);
 
                 display.MarkFrameDirty(dirtyX, dirtyY, dirtyWidth, dirtyHeight);
                 displayFrameX = destinationX;
@@ -1340,6 +1378,42 @@ namespace BBC
                 displayFrameRectValid = true;
                 return true;
             }
+        }
+
+        private static void DrawBeamMarker(uint[] destination, int width, int height, int centreX, int centreY)
+        {
+            const int radius = 3;
+            for (int y = -radius; y <= radius; y++)
+            {
+                int pixelY = centreY + y;
+                if ((uint)pixelY >= height)
+                    continue;
+
+                for (int x = -radius; x <= radius; x++)
+                {
+                    double distance = Math.Sqrt((x * x) + (y * y));
+                    if (distance > radius)
+                        continue;
+
+                    int pixelX = centreX + x;
+                    if ((uint)pixelX < width)
+                    {
+                        double strength = 1.0 - (distance / (radius + 1));
+                        int alpha = (int)Math.Round(255 * strength * strength);
+                        int offset = (pixelY * width) + pixelX;
+                        destination[offset] = BlendWhite(destination[offset], alpha);
+                    }
+                }
+            }
+        }
+
+        private static uint BlendWhite(uint colour, int alpha)
+        {
+            int inverseAlpha = 255 - alpha;
+            int red = (((int)(colour >> 16) & 0xFF) * inverseAlpha + (255 * alpha)) / 255;
+            int green = (((int)(colour >> 8) & 0xFF) * inverseAlpha + (255 * alpha)) / 255;
+            int blue = (((int)colour & 0xFF) * inverseAlpha + (255 * alpha)) / 255;
+            return 0xFF000000u | ((uint)red << 16) | ((uint)green << 8) | (uint)blue;
         }
 
         private static void FillDisplayRect(uint[] destination, int stride, int x, int y, int width, int height, uint colour)

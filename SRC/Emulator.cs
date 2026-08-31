@@ -1193,7 +1193,10 @@ Examples:
                 return;
             }
 
-            Video.Render(display);
+            if (emulationPaused)
+                Video.RenderPaused(display);
+            else
+                Video.Render(display);
         }
 
         private void AdvanceDeviceCycles(int cycles)
