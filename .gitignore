@@ -16,3 +16,4 @@ Properties/
 Assets/*.sav
 RecentSaveStates.txt
 Assets/*.json
+Tests/
