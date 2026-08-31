@@ -162,7 +162,6 @@ namespace BBC
         {
             EnsureWindow();
             visible = true;
-            pause();
             disassemblyAddress = (ushort)cpu.registers.PC;
             activeAddressField = AddressField.None;
             addressEntry = string.Empty;

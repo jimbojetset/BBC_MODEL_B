@@ -109,6 +109,8 @@ namespace BBC
         private const int HayesPanelBrandGap = 10;
         private const int HayesPanelLedGap = 21;
         private const int HayesPanelLedCount = 8;
+        private const int FpsDecimalPlaces = 1;
+        private const int FpsTextScale = 2;
         private const int HayesMenuIndex = -2;
         private const int Drive0MenuIndex = -3;
         private const int Drive1MenuIndex = -4;
@@ -195,6 +197,10 @@ namespace BBC
         private int activeJoystickInstanceId = -1;
         private bool scanlinesEnabled;
         private bool showBbcLogo = false;
+        private bool showFps;
+        private long fpsSampleStartedTicks = Stopwatch.GetTimestamp();
+        private int fpsSampleFrames;
+        private double displayedFps;
         private bool disposed;
         private bool hostCapsLockEnabled;
         private bool bbcShiftLockEnabled;
@@ -867,6 +873,8 @@ namespace BBC
         public void Present()
         {
             ObjectDisposedException.ThrowIf(disposed, this);
+
+            UpdateFps();
 
             UpdateFrameTextureIfDirty();
 
@@ -3035,6 +3043,12 @@ namespace BBC
                 case MenuCommand.ToggleBbcLogo:
                     showBbcLogo = !showBbcLogo;
                     break;
+                case MenuCommand.ToggleFps:
+                    showFps = !showFps;
+                    fpsSampleStartedTicks = Stopwatch.GetTimestamp();
+                    fpsSampleFrames = 0;
+                    displayedFps = 0;
+                    break;
                 case MenuCommand.ToggleFullScreen:
                     SetFullScreen(!fullScreenEnabled);
                     break;
@@ -3215,6 +3229,7 @@ namespace BBC
             {
                 MenuCommand.ToggleScanlines => scanlinesEnabled,
                 MenuCommand.ToggleBbcLogo => showBbcLogo,
+                MenuCommand.ToggleFps => showFps,
                 MenuCommand.ToggleFullScreen => fullScreenEnabled,
                 MenuCommand.TogglePause => EmulationPaused,
                 MenuCommand.ToggleSoundOutput => SoundOutputEnabled,
@@ -3430,6 +3445,7 @@ namespace BBC
             _ = SDL_RenderFillRect(renderer, ref bottomOverlay);
 
             DrawStatusLeds(bottomOverlayY + BottomOverlayContentOffsetY);
+            DrawFps();
             DrawHayesModemPanel();
             DrawCassetteImage();
             if (Drive0Enabled)
@@ -3485,6 +3501,39 @@ namespace BBC
             DrawTinyLabel(topLabel, centerX, labelY, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
             DrawTinyLabel(bottomLabel, centerX, labelY + StatusLabelGlyphHeight + StatusLabelLineGap, OverlayTextGrey, OverlayTextGrey, OverlayTextGrey);
             DrawRoundLed(centerX, centerY, StatusLedDiameter / 2, active ? (byte)220 : (byte)38, 0, 0);
+        }
+
+        private void UpdateFps()
+        {
+            if (!showFps)
+                return;
+
+            fpsSampleFrames++;
+            long now = Stopwatch.GetTimestamp();
+            long elapsed = now - fpsSampleStartedTicks;
+            if (elapsed < Stopwatch.Frequency)
+                return;
+
+            displayedFps = fpsSampleFrames * (double)Stopwatch.Frequency / elapsed;
+            fpsSampleStartedTicks = now;
+            fpsSampleFrames = 0;
+        }
+
+        private void DrawFps()
+        {
+            if (!showFps)
+                return;
+
+            string text = $"FPS {displayedFps.ToString($"F{FpsDecimalPlaces}", CultureInfo.InvariantCulture)}";
+            CachedTextTexture cached = GetCachedRendererText(text, 150, 150, 150);
+            int textWidth = cached.Width * FpsTextScale;
+            int textHeight = cached.Height * FpsTextScale;
+            int statusRight = StatusLedLeftMargin + (StatusLedGap * 2) + StatusLedDiameter;
+            SdlRect modemPanel = GetHayesPanelRect();
+            int x = statusRight + Math.Max(0, modemPanel.X - statusRight - textWidth) / 2;
+            int y = modemPanel.Y + (modemPanel.H - textHeight) / 2;
+            SdlRect destination = new SdlRect(x, y, textWidth, textHeight);
+            _ = SDL_RenderCopy(renderer, cached.Texture, IntPtr.Zero, ref destination);
         }
 
         private void DrawHayesModemPanel()
@@ -5302,6 +5351,7 @@ namespace BBC
             ResetHayesModem,
             ToggleScanlines,
             ToggleBbcLogo,
+            ToggleFps,
             ToggleFullScreen,
             ShowAbout,
             OpenRomManager,
@@ -5370,6 +5420,7 @@ namespace BBC
                     new MenuItem("Fullscreen", "Ctrl+Shift+F", MenuCommand.ToggleFullScreen),
                     new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines),
                     new MenuItem("BBC logo", "", MenuCommand.ToggleBbcLogo),
+                    new MenuItem("FPS display", "", MenuCommand.ToggleFps),
                     MenuSeparator(),
                     new MenuItem("About", "", MenuCommand.ShowAbout)
                 ]));
