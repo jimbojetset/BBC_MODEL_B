@@ -1303,12 +1303,17 @@ Examples:
                 using (BinaryReader mediaReader = new BinaryReader(mediaState, Encoding.UTF8, leaveOpen: true))
                     discController.LoadMediaState(mediaReader);
 
-                DfsRomPath = Path.Combine(GetRomRoot(), selectedInterface == DiscInterface.Wd1770
-                    ? Wd1770DfsRomFileName
-                    : DfsRomFileName);
+                string romRoot = GetRomRoot();
+                bool tubeEnabled = tube6502 is not null;
+                DfsRomPath = selectedInterface == DiscInterface.Wd1770
+                    ? Path.Combine(romRoot, Wd1770DfsRomFileName)
+                    : configuredTubeHostRomPath ?? Path.Combine(romRoot,
+                        tubeEnabled ? TubeHostRomFileName : DfsRomFileName);
                 ValidateRom(
                     DfsRomPath,
-                    selectedInterface == DiscInterface.Wd1770 ? Wd1770DfsRomMarker : DfsRomMarker,
+                    selectedInterface == DiscInterface.Wd1770
+                        ? Wd1770DfsRomMarker
+                        : tubeEnabled ? DnfsRomMarker : DfsRomMarker,
                     selectedInterface == DiscInterface.Wd1770 ? RomSize : RomSize / 2,
                     RomSize);
                 SetSidewaysRomBank(DfsRomBank, DfsRomPath);
