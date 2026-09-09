@@ -27,6 +27,9 @@ namespace BBC
         private const int CommandInputTop = 702;
         private const int StatusTop = 736;
         private const int CommandOutputVisibleLines = 6;
+        private const int StackVisibleRows = 9;
+        private const int HistoryVisibleRows = 16;
+        private const int HistoryCapacity = 8192;
         private const int DisassemblyLeft = 358;
         private const int DisassemblyRight = 908;
         private const int HardwareLeft = 916;
@@ -81,6 +84,10 @@ namespace BBC
         private bool visible;
         private bool disposed;
         private ushort memoryAddress;
+        private string memoryFindQuery = string.Empty;
+        private byte[] memoryFindBytes = [];
+        private ushort? memoryMatch;
+        private int memoryFindButton;
         private ushort disassemblyAddress;
         private AddressField activeAddressField;
         private string addressEntry = string.Empty;
@@ -93,6 +100,7 @@ namespace BBC
         private int pendingCommandSteps;
         private long observedCompletedSteps;
         private int commandScrollOffset;
+        private bool commandClearHeld;
         private string? temporaryStopDescription;
         private bool stepOutActive;
         private bool stepOutCompleted;
@@ -104,7 +112,24 @@ namespace BBC
         private RegisterSnapshot? comparisonRegisters;
         private readonly Dictionary<ushort, byte> comparisonMemory = new Dictionary<ushort, byte>();
         private HardwareTab selectedHardwareTab;
+        private int stackFirstByte;
+        private byte? stackPointer;
         private ClipboardPanel clipboardPanel = ClipboardPanel.Memory;
+        private readonly object historyLock = new object();
+        private readonly HistoryEntry[] instructionHistory = new HistoryEntry[HistoryCapacity];
+        private volatile bool historyRecording;
+        private bool historyVisible;
+        private long historyNextSequence;
+        private long historyClearedAt;
+        private long? historyEnd;
+        private HistoryEntry? pendingHistory;
+        private HistoryEntry? selectedHistory;
+        private HistoryEntry[] displayedHistory = [];
+        private long historyClickTime;
+        private HistoryButton mouseHistoryButton;
+        private StepButton mouseStepButton;
+        private StepButton f9StepButton;
+        private bool stepKeyHeld;
         private float mouseX = -1;
         private float mouseY = -1;
 
@@ -141,6 +166,8 @@ namespace BBC
             this.tubeEnabled = tubeEnabled;
             cpu.ShouldBreakBeforeInstruction = HasBreakpoint;
             cpu.ShouldBreakAfterInstruction = ShouldBreakAfterInstruction;
+            cpu.OnDebugOperationStarting = BeginHistoryOperation;
+            cpu.OnDebugOperationCompleted = CompleteHistoryOperation;
 
             bitmap = new SKBitmap(new SKImageInfo(Width, Height, SKColorType.Bgra8888, SKAlphaType.Premul));
             canvas = new SKCanvas(bitmap);
@@ -212,9 +239,32 @@ namespace BBC
             if (windowId == 0 || eventWindowId != windowId)
                 return false;
 
-            if (type == SDL_WINDOWEVENT && windowEvent == SDL_WINDOWEVENT_CLOSE)
+            if (type == SDL_WINDOWEVENT && windowEvent is SDL_WINDOWEVENT_FOCUS_LOST or SDL_WINDOWEVENT_CLOSE)
             {
-                CloseAndResume();
+                commandClearHeld = false;
+                memoryFindButton = 0;
+                mouseHistoryButton = HistoryButton.None;
+                mouseStepButton = StepButton.None;
+                f9StepButton = StepButton.None;
+                stepKeyHeld = false;
+                if (windowEvent == SDL_WINDOWEVENT_CLOSE)
+                    CloseAndResume();
+                return true;
+            }
+
+            if (type == SDL_MOUSEBUTTONUP && mouseButton == SDL_BUTTON_LEFT)
+            {
+                commandClearHeld = false;
+                memoryFindButton = 0;
+                mouseHistoryButton = HistoryButton.None;
+                mouseStepButton = StepButton.None;
+                return true;
+            }
+
+            if (type == SDL_KEYUP)
+            {
+                if (keySym == SDLK_F10) stepKeyHeld = false;
+                if (keySym == SDLK_F9) f9StepButton = StepButton.None;
                 return true;
             }
 
@@ -233,7 +283,8 @@ namespace BBC
                 {
                     foreach (char character in text)
                     {
-                        if (!char.IsWhiteSpace(character) && !char.IsControl(character) && addressEntry.Length < 64)
+                        if (!char.IsControl(character) && (activeAddressField == AddressField.Memory || !char.IsWhiteSpace(character))
+                            && addressEntry.Length < (activeAddressField == AddressField.Memory ? 120 : 64))
                             addressEntry += character;
                     }
                     return true;
@@ -258,9 +309,9 @@ namespace BBC
                         CopyPanelToClipboard();
                         return true;
                     }
-                    if (keySym == SDLK_V && commandFocus && activeAddressField == AddressField.None)
+                    if (keySym == SDLK_V && (activeAddressField == AddressField.Memory || commandFocus && activeAddressField == AddressField.None))
                     {
-                        PasteCommandFromClipboard();
+                        PasteInputFromClipboard();
                         return true;
                     }
                 }
@@ -279,15 +330,24 @@ namespace BBC
                         PauseExecution();
                         break;
                     case SDLK_F10:
+                        stepKeyHeld = true;
                         StepOnce();
                         break;
                     case SDLK_F9:
-                        if ((SDL_GetModState() & KMOD_SHIFT) != 0)
+                        if (f9StepButton == StepButton.None)
+                            f9StepButton = (modifiers & KMOD_SHIFT) != 0 ? StepButton.Out : StepButton.Over;
+                        if (f9StepButton == StepButton.Out)
                             StepOut();
                         else
                             StepOver();
                         break;
                     case SDLK_ESCAPE:
+                        commandClearHeld = false;
+                        memoryFindButton = 0;
+                        mouseHistoryButton = HistoryButton.None;
+                        mouseStepButton = StepButton.None;
+                        f9StepButton = StepButton.None;
+                        stepKeyHeld = false;
                         ClearBreakpoints();
                         ClearWatchpoints();
                         ClearHardwareRules();
@@ -303,6 +363,8 @@ namespace BBC
                 SDL_RenderWindowToLogical(renderer, mouseX, mouseY, out float logicalX, out float logicalY);
                 this.mouseX = logicalX;
                 this.mouseY = logicalY;
+                if (HandleHistoryClick(logicalX, logicalY))
+                    return true;
                 if (logicalY >= 7 && logicalY < 35)
                 {
                     if (logicalX is >= 10 and < 82)
@@ -310,13 +372,32 @@ namespace BBC
                     else if (logicalX is >= 88 and < 170)
                         PauseExecution();
                     else if (logicalX is >= 176 and < 250)
+                    {
+                        mouseStepButton = StepButton.Step;
                         StepOnce();
+                    }
                     else if (logicalX is >= 256 and < 350)
+                    {
+                        mouseStepButton = StepButton.Over;
                         StepOver();
+                    }
                     else if (logicalX is >= 356 and < 442)
+                    {
+                        mouseStepButton = StepButton.Out;
                         StepOut();
+                    }
                 }
-                else if (logicalY is >= 76 and < 110 && logicalX is >= 18 and < 338)
+                else if (logicalY is >= 78 and < 106 && logicalX is >= 282 and < 338)
+                {
+                    clipboardPanel = ClipboardPanel.Memory;
+                    commandFocus = false;
+                    if (logicalX < 308 || logicalX >= 312)
+                    {
+                        memoryFindButton = logicalX < 308 ? -1 : 1;
+                        FindMemory(memoryFindButton);
+                    }
+                }
+                else if (logicalY is >= 76 and < 110 && logicalX is >= 18 and < 276)
                 {
                     clipboardPanel = ClipboardPanel.Memory;
                     BeginAddressEntry(AddressField.Memory);
@@ -334,7 +415,7 @@ namespace BBC
                     activeAddressField = AddressField.None;
                     commandFocus = false;
                 }
-                else if (logicalY is >= 78 and < 105 && logicalX is >= 926 and < 1204)
+                else if (logicalY is >= 78 and < 105 && logicalX is >= 926 and < 1264)
                 {
                     clipboardPanel = ClipboardPanel.Hardware;
                     SelectHardwareTab(logicalX);
@@ -371,6 +452,14 @@ namespace BBC
                 {
                     clipboardPanel = ClipboardPanel.CommandOutput;
                     commandFocus = false;
+                    if (logicalX >= DisassemblyRight - 76 && logicalX < DisassemblyRight - 8
+                        && logicalY >= CommandTop + 3 && logicalY < CommandTop + 28)
+                    {
+                        commandClearHeld = true;
+                        commandOutput.Clear();
+                        commandScrollOffset = 0;
+                        activeAddressField = AddressField.None;
+                    }
                 }
                 else
                 {
@@ -388,7 +477,16 @@ namespace BBC
                     if (logicalX < 350)
                         memoryAddress = (ushort)(memoryAddress - mouseWheelY * 8);
                     else if (logicalX is >= DisassemblyLeft and < DisassemblyRight)
-                        MoveDisassembly(mouseWheelY > 0 ? -1 : 1, Math.Abs(mouseWheelY));
+                    {
+                        if (historyVisible) ScrollHistory(mouseWheelY);
+                        else MoveDisassembly(mouseWheelY > 0 ? -1 : 1, Math.Abs(mouseWheelY));
+                    }
+                    else if (logicalX is >= HardwareLeft and < ContentRight && logicalY < HardwareBottom
+                        && selectedHardwareTab == HardwareTab.Stack)
+                    {
+                        UpdateStackPosition();
+                        stackFirstByte = Math.Clamp(stackFirstByte - mouseWheelY, 0, 256 - StackVisibleRows);
+                    }
                 }
                 else if (logicalX < DisassemblyRight && logicalY is >= CommandTop and < CommandInputTop)
                 {
@@ -406,7 +504,7 @@ namespace BBC
             string text = clipboardPanel switch
             {
                 ClipboardPanel.Memory => GetVisibleMemoryText(),
-                ClipboardPanel.Disassembly => GetVisibleDisassemblyText(),
+                ClipboardPanel.Disassembly => historyVisible ? GetVisibleHistoryText() : GetVisibleDisassemblyText(),
                 ClipboardPanel.Hardware => GetVisibleHardwareText(),
                 ClipboardPanel.CommandOutput => string.Join(Environment.NewLine, commandOutput),
                 _ => string.Empty
@@ -454,6 +552,8 @@ namespace BBC
 
         private string GetVisibleHardwareText()
         {
+            if (selectedHardwareTab == HardwareTab.Stack)
+                return string.Join(Environment.NewLine, GetStackText());
             if (selectedHardwareTab != HardwareTab.Cpu)
                 return string.Join(Environment.NewLine, GetHardwareState(selectedHardwareTab).Take(11));
 
@@ -472,7 +572,7 @@ namespace BBC
             ]);
         }
 
-        private void PasteCommandFromClipboard()
+        private void PasteInputFromClipboard()
         {
             IntPtr textPointer = SDL_GetClipboardText();
             if (textPointer == IntPtr.Zero)
@@ -484,8 +584,16 @@ namespace BBC
                 if (string.IsNullOrEmpty(text))
                     return;
                 string singleLine = string.Join(' ', text.Split(['\r', '\n', '\t'], StringSplitOptions.RemoveEmptyEntries));
-                int available = Math.Max(0, 120 - commandLine.Length);
-                commandLine += singleLine[..Math.Min(singleLine.Length, available)];
+                if (activeAddressField == AddressField.Memory)
+                {
+                    int available = Math.Max(0, 120 - addressEntry.Length);
+                    addressEntry += singleLine[..Math.Min(singleLine.Length, available)];
+                }
+                else
+                {
+                    int available = Math.Max(0, 120 - commandLine.Length);
+                    commandLine += singleLine[..Math.Min(singleLine.Length, available)];
+                }
             }
             finally
             {
@@ -525,7 +633,6 @@ namespace BBC
             {
                 breakpointHitAt = null;
                 temporaryStopDescription = null;
-                disassemblyAddress = (ushort)cpu.registers.PC;
             }
         }
 
@@ -615,7 +722,7 @@ namespace BBC
                 return;
 
             DrainHardwareTrace();
-            ContinueCommandSteps();
+            UpdateCompletedSteps();
             DrawWindow();
             SDL_UpdateTexture(texture, IntPtr.Zero, bitmap.GetPixels(), bitmap.RowBytes);
             SDL_RenderClear(renderer);
@@ -629,19 +736,29 @@ namespace BBC
             DrawToolbar();
 
             DrawPanel(new SKRect(8, 48, 350, CommandTop - 8), "MEMORY");
-            DrawAddressField(new SKRect(18, 76, 338, 108), "Address", memoryAddress, AddressField.Memory);
+            DrawAddressField(new SKRect(18, 76, 276, 108), "Find", memoryAddress, AddressField.Memory);
+            DrawButton(new SKRect(282, 78, 308, 106), "<", memoryFindButton == -1);
+            DrawButton(new SKRect(312, 78, 338, 106), ">", memoryFindButton == 1);
             DrawMemory(20, 132);
 
-            DrawPanel(new SKRect(DisassemblyLeft, 48, DisassemblyRight, CommandTop - 8), "DISASSEMBLY");
-            DrawAddressField(new SKRect(368, 76, 808, 108), "Address", disassemblyAddress, AddressField.Disassembly);
-            DrawButton(new SKRect(820, 78, 892, 106), "PC", false);
-            DrawDisassembly(374, 132);
+            DrawPanel(new SKRect(DisassemblyLeft, 48, DisassemblyRight, CommandTop - 8), "");
+            DrawButton(new SKRect(368, 50, 510, 73), "DISASSEMBLY", !historyVisible);
+            DrawButton(new SKRect(514, 50, 614, 73), "HISTORY", historyVisible);
+            if (historyVisible)
+                DrawHistory();
+            else
+            {
+                DrawAddressField(new SKRect(368, 76, 808, 108), "Address", disassemblyAddress, AddressField.Disassembly);
+                DrawButton(new SKRect(820, 78, 892, 106), "PC", false);
+                DrawDisassembly(374, 132);
+            }
 
             DrawPanel(new SKRect(HardwareLeft, 48, ContentRight, HardwareBottom), "CPU / HARDWARE");
             DrawHardwareTabs();
             DrawSelectedHardware(932, 126);
 
             DrawPanel(new SKRect(8, CommandTop, DisassemblyRight, CommandInputTop - 6), "COMMAND OUTPUT");
+            DrawButton(new SKRect(DisassemblyRight - 76, CommandTop + 3, DisassemblyRight - 8, CommandTop + 28), "Clear", commandClearHeld);
             DrawCommandOutput();
 
             Fill(new SKRect(HardwareLeft, DisplayTop, ContentRight, CommandInputTop - 6), Panel);
@@ -689,9 +806,9 @@ namespace BBC
             Fill(new SKRect(0, 0, Width, ToolbarHeight), PanelDark);
             DrawButton(new SKRect(10, 7, 82, 35), "Run F5", !paused());
             DrawButton(new SKRect(88, 7, 170, 35), "Break F6", paused());
-            DrawButton(new SKRect(176, 7, 250, 35), "Step F10", false);
-            DrawButton(new SKRect(256, 7, 350, 35), "Over F9", false);
-            DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F9", false);
+            DrawButton(new SKRect(176, 7, 250, 35), "Step F10", stepKeyHeld || mouseStepButton == StepButton.Step);
+            DrawButton(new SKRect(256, 7, 350, 35), "Over F9", f9StepButton == StepButton.Over || mouseStepButton == StepButton.Over);
+            DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F9", f9StepButton == StepButton.Out || mouseStepButton == StepButton.Out);
             DrawText($"{BreakpointCount} break / {WatchpointCount} watch    Host 6502", 846, 27, Accent, small: true);
         }
 
@@ -726,8 +843,8 @@ namespace BBC
 
         private void DrawHardwareTabs()
         {
-            string[] tabs = ["CPU", "SYS", "USER", "VIDEO", "DISC", "TUBE"];
-            float[] widths = [42, 42, 46, 48, 44, 44];
+            string[] tabs = ["CPU", "SYS", "USER", "VIDEO", "DISC", "TUBE", "STACK"];
+            float[] widths = [42, 42, 46, 48, 44, 44, 58];
             float x = 926;
             for (int i = 0; i < tabs.Length; i++)
             {
@@ -741,7 +858,7 @@ namespace BBC
 
         private void SelectHardwareTab(float x)
         {
-            float[] widths = [42, 42, 46, 48, 44, 44];
+            float[] widths = [42, 42, 46, 48, 44, 44, 58];
             float left = 926;
             for (int i = 0; i < widths.Length; i++)
             {
@@ -762,9 +879,242 @@ namespace BBC
                 return;
             }
 
+            if (selectedHardwareTab == HardwareTab.Stack)
+            {
+                DrawStack(x, y);
+                return;
+            }
+
             string[] lines = GetHardwareState(selectedHardwareTab);
             for (int i = 0; i < lines.Length && i < 18; i++)
                 DrawText(lines[i], x, y + i * 25, i == 0 ? Accent : Text, small: true);
+        }
+
+        private void BeginHistoryOperation(string? kind)
+        {
+            if (!historyRecording)
+                return;
+            lock (historyLock)
+            {
+                if (!historyRecording)
+                    return;
+                Registers r = cpu.registers;
+                ushort pc = (ushort)r.PC;
+                byte opcode = kind is null ? readByte(pc) : (byte)0;
+                int length = kind is null ? OpCodes[opcode].Length : 0;
+                pendingHistory = new HistoryEntry(0, new RegisterSnapshot(pc, r.A, r.X, r.Y, r.S, r.P),
+                    opcode, length > 1 ? readByte((ushort)(pc + 1)) : (byte)0,
+                    length > 2 ? readByte((ushort)(pc + 2)) : (byte)0, kind, 0);
+            }
+        }
+
+        private void CompleteHistoryOperation(int cycles, bool handledByHost)
+        {
+            if (!historyRecording)
+                return;
+            lock (historyLock)
+            {
+                if (!historyRecording || pendingHistory is not HistoryEntry entry)
+                    return;
+                entry = entry with { Sequence = historyNextSequence, Cycles = cycles,
+                    Kind = handledByHost ? "Host MOS call" : entry.Kind };
+                instructionHistory[historyNextSequence % HistoryCapacity] = entry;
+                historyNextSequence++;
+                pendingHistory = null;
+            }
+        }
+
+        private HistoryEntry[] GetVisibleHistory()
+        {
+            lock (historyLock)
+            {
+                long oldest = Math.Max(historyClearedAt, historyNextSequence - HistoryCapacity);
+                long end = Math.Clamp(historyEnd ?? historyNextSequence,
+                    Math.Min(oldest + HistoryVisibleRows, historyNextSequence), historyNextSequence);
+                long start = Math.Max(oldest, end - HistoryVisibleRows);
+                HistoryEntry[] entries = new HistoryEntry[(int)(end - start)];
+                for (int row = 0; row < entries.Length; row++)
+                    entries[row] = instructionHistory[(start + row) % HistoryCapacity];
+                return entries;
+            }
+        }
+
+        private string HistoryInstruction(HistoryEntry entry)
+        {
+            if (entry.Kind is not null)
+                return entry.Kind;
+            OpCode op = OpCodes[entry.Opcode];
+            string operand = FormatOperand(op.Mode, entry.Registers.PC, entry.Operand1, entry.Operand2);
+            return string.IsNullOrEmpty(operand) ? op.Mnemonic : $"{op.Mnemonic} {operand}";
+        }
+
+        private string GetVisibleHistoryText()
+        {
+            StringBuilder result = new StringBuilder("Executed history; registers BEFORE each operation\nPC    Instruction                     A  X  Y  SP P  Cycles\n");
+            foreach (HistoryEntry entry in displayedHistory)
+            {
+                RegisterSnapshot r = entry.Registers;
+                result.AppendLine($"{r.PC:X4}  {HistoryInstruction(entry),-30} {r.A:X2} {r.X:X2} {r.Y:X2} {r.SP:X2} {r.P:X2} {entry.Cycles}");
+            }
+            return result.ToString().TrimEnd();
+        }
+
+        private void ScrollHistory(int wheel)
+        {
+            lock (historyLock)
+            {
+                long oldest = Math.Max(historyClearedAt, historyNextSequence - HistoryCapacity);
+                historyEnd = Math.Clamp((historyEnd ?? historyNextSequence) - wheel,
+                    Math.Min(oldest + HistoryVisibleRows, historyNextSequence), historyNextSequence);
+            }
+        }
+
+        private bool HandleHistoryClick(float x, float y)
+        {
+            if (x < DisassemblyLeft || x >= DisassemblyRight)
+                return false;
+            if (y is >= 50 and < 74)
+            {
+                if (x < 514) historyVisible = false;
+                else if (x < 614) historyVisible = true;
+                clipboardPanel = ClipboardPanel.Disassembly;
+                activeAddressField = AddressField.None;
+                commandFocus = false;
+                return true;
+            }
+            if (!historyVisible || y < 76 || y >= CommandTop - 8)
+                return false;
+
+            clipboardPanel = ClipboardPanel.Disassembly;
+            activeAddressField = AddressField.None;
+            commandFocus = false;
+            if (y < 108)
+            {
+                if (x is >= 368 and < 486)
+                {
+                    lock (historyLock)
+                    {
+                        historyRecording = !historyRecording;
+                        pendingHistory = null;
+                    }
+                }
+                else if (x is >= 494 and < 562)
+                {
+                    mouseHistoryButton = HistoryButton.Clear;
+                    lock (historyLock)
+                    {
+                        historyClearedAt = historyNextSequence;
+                        pendingHistory = null;
+                    }
+                    historyEnd = null;
+                    selectedHistory = null;
+                    displayedHistory = [];
+                }
+                else if (x is >= 570 and < 646)
+                {
+                    mouseHistoryButton = HistoryButton.Latest;
+                    historyEnd = null;
+                }
+            }
+            else if (y is >= 141 and < 461)
+            {
+                int row = (int)((y - 141) / 20);
+                if (row < displayedHistory.Length)
+                {
+                    HistoryEntry entry = displayedHistory[row];
+                    long now = Environment.TickCount64;
+                    if (selectedHistory?.Sequence == entry.Sequence && now - historyClickTime < 400)
+                    {
+                        disassemblyAddress = entry.Registers.PC;
+                        historyVisible = false;
+                    }
+                    selectedHistory = entry;
+                    historyClickTime = now;
+                }
+            }
+            return true;
+        }
+
+        private void DrawHistory()
+        {
+            DrawButton(new SKRect(368, 78, 486, 106), historyRecording ? "Record ON" : "Record OFF", historyRecording);
+            DrawButton(new SKRect(494, 78, 562, 106), "Clear", mouseHistoryButton == HistoryButton.Clear);
+            DrawButton(new SKRect(570, 78, 646, 106), "Latest", mouseHistoryButton == HistoryButton.Latest);
+            DrawText(historyEnd.HasValue ? "Browsing history" : "Following latest", 658, 97, DimText, small: true);
+            DrawText("PC    Instruction", 374, 130, DimText, small: true);
+            DrawText("A  X  Y  SP", 770, 130, DimText, small: true);
+            displayedHistory = GetVisibleHistory();
+            if (displayedHistory.Length == 0)
+                DrawText("Enable Record, then run or step.", 374, 156, DimText, small: true);
+            for (int row = 0; row < displayedHistory.Length; row++)
+            {
+                HistoryEntry entry = displayedHistory[row];
+                RegisterSnapshot r = entry.Registers;
+                float y = 156 + row * 20;
+                bool selected = selectedHistory?.Sequence == entry.Sequence;
+                if (selected)
+                    Fill(new SKRect(366, y - 15, 900, y + 5), CurrentInstruction);
+                DrawText($"{r.PC:X4}", 374, y, Accent, small: true);
+                canvas.Save();
+                canvas.ClipRect(new SKRect(420, y - 16, 758, y + 5));
+                DrawText(HistoryInstruction(entry), 424, y, entry.Kind is null ? Text : Accent, small: true);
+                canvas.Restore();
+                DrawText($"{r.A:X2} {r.X:X2} {r.Y:X2} {r.SP:X2}", 770, y, Text, small: true);
+            }
+            Line(368, 470, 898, 470, Border);
+            HistoryEntry? detail = selectedHistory ?? (displayedHistory.Length > 0 ? displayedHistory[^1] : null);
+            if (detail is HistoryEntry selectedEntry)
+            {
+                DrawText($"Before ${selectedEntry.Registers.PC:X4}  P=${selectedEntry.Registers.P:X2}  {FormatFlags(selectedEntry.Registers.P)}", 374, 489, Text, small: true);
+                DrawText($"{selectedEntry.Cycles} cycles   Double-click row: disassemble", 374, 512, DimText, small: true);
+            }
+        }
+
+        private void UpdateStackPosition()
+        {
+            byte sp = cpu.registers.S;
+            if (stackPointer == sp)
+                return;
+
+            stackPointer = sp;
+            // Pulls increment the eight-bit SP before reading page $01, including $FF -> $00.
+            stackFirstByte = Math.Min((sp + 1) & 0xFF, 256 - StackVisibleRows);
+        }
+
+        private string[] GetStackText()
+        {
+            UpdateStackPosition();
+            byte sp = cpu.registers.S;
+            int nextPull = (sp + 1) & 0xFF;
+            string[] lines = new string[StackVisibleRows + 3];
+            lines[0] = $"PC ${(ushort)cpu.registers.PC:X4}   SP ${sp:X2}   {(paused() ? "paused" : "running")}";
+            lines[1] = $"Next pull: ${0x100 + nextPull:X4}";
+            for (int row = 0; row < StackVisibleRows; row++)
+            {
+                int offset = stackFirstByte + row;
+                ushort address = (ushort)(0x100 + offset);
+                string note = offset == nextPull ? "  < next pull" : offset == sp ? "  < SP / next push" : "";
+                lines[row + 2] = $"${address:X4}   ${readByte(address):X2}{note}";
+            }
+            lines[^1] = "Wheel: scroll page $0100-$01FF";
+            return lines;
+        }
+
+        private void DrawStack(float x, float y)
+        {
+            string[] lines = GetStackText();
+            DrawText(lines[0], x, y, Accent, small: true);
+            DrawText(lines[1], x, y + 25, Text, small: true);
+            int nextPull = (cpu.registers.S + 1) & 0xFF;
+            for (int row = 0; row < StackVisibleRows; row++)
+            {
+                float baseline = y + 53 + row * 20;
+                bool next = stackFirstByte + row == nextPull;
+                if (next)
+                    Fill(new SKRect(x - 4, baseline - 15, ContentRight - 8, baseline + 5), CurrentInstruction);
+                DrawText(lines[row + 2], x, baseline, next ? Accent : Text, small: true);
+            }
+            DrawText(lines[^1], x, y + 239, DimText, small: true);
         }
 
         private void DrawRegisters(float x, float y)
@@ -784,12 +1134,14 @@ namespace BBC
             DrawText($"${r.S:X2}", x + 152, y + 58, previous.HasValue && previous.Value.SP != r.S ? Changed : Text);
             DrawText("P", x, y + 86, Text);
             DrawText($"${p:X2}", x + 36, y + 86, previous.HasValue && previous.Value.P != p ? Changed : Text);
-            DrawText("N V - B D I Z C", x, y + 126, DimText);
+            const string flagNames = "NV-BDIZC";
             string bits = Convert.ToString(p, 2).PadLeft(8, '0');
             for (int bit = 0; bit < 8; bit++)
             {
                 bool flagChanged = previous.HasValue && ((previous.Value.P ^ p) & (0x80 >> bit)) != 0;
-                DrawText(bits[bit].ToString(), x + bit * 20, y + 153, flagChanged ? Changed : Text);
+                float columnX = x + bit * 20;
+                DrawText(flagNames[bit].ToString(), columnX, y + 126, DimText);
+                DrawText(bits[bit].ToString(), columnX, y + 153, flagChanged ? Changed : Text);
             }
             DrawText("Interrupts", x + 190, y + 126, DimText);
             DrawText($"IRQ  {(cpu.IrqLineAsserted ? "asserted" : "clear")}", x + 190, y + 153, Text);
@@ -837,6 +1189,8 @@ namespace BBC
                     byte value = readByte(byteAddress);
                     bool valueChanged = paused() && comparisonMemory.TryGetValue(byteAddress, out byte previousValue)
                         && previousValue != value;
+                    if (memoryMatch is ushort match && byteAddress >= match && byteAddress < match + memoryFindBytes.Length)
+                        Fill(new SKRect(x + 52 + column * 24, baseline - 14, x + 74 + column * 24, baseline + 4), CurrentInstruction);
                     DrawText($"{value:X2}", x + 54 + column * 24, baseline, valueChanged ? Changed : Text, small: true);
                     ascii[column] = value is >= 32 and <= 126 ? (char)value : '.';
                 }
@@ -866,8 +1220,99 @@ namespace BBC
         {
             Fill(rect, PanelDark);
             Stroke(rect, activeAddressField == field ? Accent : Border);
-            string value = activeAddressField == field ? addressEntry : $"{address:X4}";
-            DrawText($"{label}:  ${value}", rect.Left + 10, rect.Top + 22, activeAddressField == field ? Accent : Text, small: true);
+            string value = activeAddressField == field ? addressEntry
+                : field == AddressField.Memory && memoryFindQuery.Length > 0 ? memoryFindQuery : $"{address:X4}";
+            string prefix = field == AddressField.Memory ? $"{label}: " : $"{label}:  $";
+            float valueX = rect.Left + 10 + smallPaint.MeasureText(prefix);
+            canvas.Save();
+            canvas.ClipRect(new SKRect(rect.Left + 1, rect.Top + 1, rect.Right - 1, rect.Bottom - 1));
+            DrawText(prefix, rect.Left + 10, rect.Top + 22, activeAddressField == field ? Accent : Text, small: true);
+            canvas.ClipRect(new SKRect(valueX, rect.Top + 1, rect.Right - 6, rect.Bottom - 1));
+            float overflow = activeAddressField == field ? Math.Max(0, smallPaint.MeasureText(value) - (rect.Right - 6 - valueX)) : 0;
+            DrawText(value, valueX - overflow, rect.Top + 22, activeAddressField == field ? Accent : Text, small: true);
+            canvas.Restore();
+        }
+
+        private void FindMemory(int direction)
+        {
+            try
+            {
+                bool newSearch = activeAddressField == AddressField.Memory;
+                if (newSearch)
+                {
+                    string query = addressEntry.Trim();
+                    byte[] pattern;
+                    if (query.StartsWith('"'))
+                    {
+                        if (query.Length < 3 || !query.EndsWith('"'))
+                            throw new ArgumentException("Use quoted text, for example \"HELLO\".");
+                        string text = query[1..^1];
+                        if (text.Any(character => character > 127))
+                            throw new ArgumentException("Memory text searches support ASCII characters only.");
+                        pattern = Encoding.ASCII.GetBytes(text);
+                    }
+                    else if (query.StartsWith('?') || query.Contains(' '))
+                    {
+                        string bytes = query.StartsWith('?') ? query[1..] : query;
+                        pattern = bytes.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(ParseByte).ToArray();
+                        if (pattern.Length == 0)
+                            throw new ArgumentException("Enter hexadecimal bytes, for example A9 00 or ? FF.");
+                    }
+                    else
+                    {
+                        ushort address = ParseAddress(query);
+                        memoryAddress = (ushort)(address & 0xFFF8);
+                        memoryFindQuery = string.Empty;
+                        memoryFindBytes = [];
+                        memoryMatch = null;
+                        activeAddressField = AddressField.None;
+                        addressEntry = string.Empty;
+                        return;
+                    }
+                    memoryFindQuery = query;
+                    memoryFindBytes = pattern;
+                    memoryMatch = null;
+                    activeAddressField = AddressField.None;
+                    addressEntry = string.Empty;
+                }
+                if (memoryFindBytes.Length == 0)
+                {
+                    WriteCommandOutput("Find: address/symbol, A9 00, ? FF, or \"HELLO\"; Enter searches, < / > repeat.");
+                    return;
+                }
+
+                int start = !newSearch && memoryMatch.HasValue ? memoryMatch.Value + direction : memoryAddress;
+                for (int offset = 0; offset < 65536; offset++)
+                {
+                    int candidate = (start + direction * offset) & 0xFFFF;
+                    if (candidate + memoryFindBytes.Length > 65536)
+                        continue;
+                    bool matches = true;
+                    for (int index = 0; index < memoryFindBytes.Length; index++)
+                    {
+                        ushort address = (ushort)(candidate + index);
+                        // FRED, JIM and SHEILA peeks contain backing bytes, not searchable device state.
+                        if (!IsSafeDebuggerMemory(address) || readByte(address) != memoryFindBytes[index])
+                        {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (!matches)
+                        continue;
+
+                    memoryMatch = (ushort)candidate;
+                    memoryAddress = (ushort)(candidate & 0xFFF8);
+                    WriteCommandOutput($"Found {memoryFindQuery} at ${candidate:X4}");
+                    return;
+                }
+                memoryMatch = null;
+                WriteCommandOutput($"Not found: {memoryFindQuery}");
+            }
+            catch (ArgumentException ex)
+            {
+                WriteCommandOutput(ex.Message);
+            }
         }
 
         private void BeginAddressEntry(AddressField field)
@@ -1069,6 +1514,8 @@ namespace BBC
                 "out                     Run until the current subroutine returns.",
                 "r (regs)                Display the host 6502 registers and processor flags.",
                 "MEMORY AND CODE",
+                "Find field: address/symbol, A9 00, ? FF, or \"HELLO\".",
+                "                         Enter searches; < / > find previous/next matches.",
                 "m [address] [count]      Display bytes; count is decimal and defaults to 32.",
                 "e address byte [...]    Write hexadecimal bytes through the BBC bus while paused.",
                 "d [address] [count]      Disassemble instructions; count is decimal and defaults to 6.",
@@ -1126,14 +1573,19 @@ namespace BBC
             }
         }
 
-        private void ContinueCommandSteps()
+        private void UpdateCompletedSteps()
         {
-            if (pendingCommandSteps <= 0 || cpu.CompletedSingleSteps == observedCompletedSteps)
+            long completedSteps = cpu.CompletedSingleSteps;
+            if (completedSteps == observedCompletedSteps)
                 return;
 
-            observedCompletedSteps = cpu.CompletedSingleSteps;
-            pendingCommandSteps--;
+            // The CPU thread publishes completion after updating PC; accepting a step request is too early.
+            observedCompletedSteps = completedSteps;
             disassemblyAddress = (ushort)cpu.registers.PC;
+            if (pendingCommandSteps <= 0)
+                return;
+
+            pendingCommandSteps--;
             if (pendingCommandSteps == 0)
             {
                 WriteCommandOutput($"Stopped at ${cpu.registers.PC & 0xFFFF:X4}");
@@ -1632,13 +2084,15 @@ namespace BBC
 
             if (keySym is SDLK_RETURN or SDLK_KP_ENTER)
             {
+                if (activeAddressField == AddressField.Memory)
+                {
+                    FindMemory(1);
+                    return true;
+                }
                 try
                 {
                     ushort address = ParseAddress(addressEntry);
-                    if (activeAddressField == AddressField.Memory)
-                        memoryAddress = (ushort)(address & 0xFFF8);
-                    else
-                        disassemblyAddress = address;
+                    disassemblyAddress = address;
                 }
                 catch (ArgumentException ex)
                 {
@@ -2043,6 +2497,8 @@ namespace BBC
                 cpu.ShouldBreakAfterInstruction = null;
             if (cpu.OnMemoryRead == WatchMemoryRead) cpu.OnMemoryRead = null;
             if (cpu.OnMemoryWrite == WatchMemoryWrite) cpu.OnMemoryWrite = null;
+            if (cpu.OnDebugOperationStarting == BeginHistoryOperation) cpu.OnDebugOperationStarting = null;
+            if (cpu.OnDebugOperationCompleted == CompleteHistoryOperation) cpu.OnDebugOperationCompleted = null;
             textPaint.Dispose();
             titlePaint.Dispose();
             smallPaint.Dispose();
@@ -2055,6 +2511,7 @@ namespace BBC
             disposed = true;
         }
 
+        private readonly record struct HistoryEntry(long Sequence, RegisterSnapshot Registers, byte Opcode, byte Operand1, byte Operand2, string? Kind, int Cycles);
         private readonly record struct DecodedInstruction(int Length, string Bytes, string Text);
         private readonly record struct WatchRange(ushort Start, ushort End, StopCondition? Condition);
         private readonly record struct WatchedAccess(ushort Address, byte Value, ushort InstructionAddress, bool Write, bool Hardware);
@@ -2072,8 +2529,10 @@ namespace BBC
         }
 
         private enum AddressMode { Imp, Acc, Imm, Zp, ZpX, ZpY, Abs, AbsX, AbsY, Ind, IndX, IndY, Rel }
+        private enum HistoryButton { None, Clear, Latest }
+        private enum StepButton { None, Step, Over, Out }
         private enum AddressField { None, Memory, Disassembly }
-        private enum HardwareTab { Cpu, SystemVia, UserVia, Video, Disc, Tube }
+        private enum HardwareTab { Cpu, SystemVia, UserVia, Video, Disc, Tube, Stack }
         private enum ClipboardPanel { Memory, Disassembly, Hardware, CommandOutput }
         [Flags]
         private enum AccessKind { Read = 1, Write = 2, ReadWrite = Read | Write }
@@ -2118,11 +2577,14 @@ namespace BBC
         private const string SdlLibrary = "SDL2";
         private const uint SDL_WINDOWEVENT = 0x200;
         private const uint SDL_KEYDOWN = 0x300;
+        private const uint SDL_KEYUP = 0x301;
         private const uint SDL_TEXTINPUT = 0x303;
         private const uint SDL_MOUSEMOTION = 0x400;
         private const uint SDL_MOUSEBUTTONDOWN = 0x401;
+        private const uint SDL_MOUSEBUTTONUP = 0x402;
         private const uint SDL_MOUSEWHEEL = 0x403;
         private const byte SDL_WINDOWEVENT_CLOSE = 0x0E;
+        private const byte SDL_WINDOWEVENT_FOCUS_LOST = 0x0D;
         private const byte SDL_BUTTON_LEFT = 1;
         private const int SDLK_ESCAPE = 27;
         private const int SDLK_BACKSPACE = 8;

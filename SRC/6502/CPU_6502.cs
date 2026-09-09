@@ -93,6 +93,8 @@ namespace BBC.CPU
         public Func<bool>? OnBeforeInstruction;
         public Func<ushort, bool>? ShouldBreakBeforeInstruction;
         public Func<ushort, byte?, byte, bool>? ShouldBreakAfterInstruction;
+        internal Action<string?>? OnDebugOperationStarting;
+        internal Action<int, bool>? OnDebugOperationCompleted;
         public Action<ushort>? OnBreakpointHit;
         public Action<ushort, byte, ushort>? OnMemoryRead;
         public Action<ushort, byte, ushort>? OnMemoryWrite;
@@ -344,6 +346,7 @@ namespace BBC.CPU
                         cyclesNotifiedThisInstruction = 0;
                         ushort executedAddress = (ushort)registers.PC;
                         byte stackBefore = registers.S;
+                        OnDebugOperationStarting?.Invoke(null);
                         bool handledByHost = OnBeforeInstruction?.Invoke() == true;
                         byte? executedOpcode = null;
 
@@ -379,6 +382,7 @@ namespace BBC.CPU
                                 OnCyclesExecuted?.Invoke(remainingCycles);
                             }
                         }
+                        OnDebugOperationCompleted?.Invoke(deltaCycles, handledByHost);
                         if (ShouldBreakAfterInstruction?.Invoke(executedAddress, executedOpcode, stackBefore) == true)
                         {
                             ushort stoppedAt = (ushort)registers.PC;
@@ -1367,6 +1371,8 @@ namespace BBC.CPU
             if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
                 ProcessIRQ();
 
+            int debugStartCycles = cyclesThisOperation;
+            OnDebugOperationStarting?.Invoke(null);
             bool handledByHost = OnBeforeInstruction?.Invoke() == true;
             if (!handledByHost)
             {
@@ -1400,6 +1406,7 @@ namespace BBC.CPU
                 }
             }
 
+            OnDebugOperationCompleted?.Invoke(cyclesThisOperation - debugStartCycles, handledByHost);
             return cyclesThisOperation;
         }
 
@@ -3329,6 +3336,7 @@ namespace BBC.CPU
 
         private void ProcessNMI(ulong value = 0xFFFA)
         {
+            OnDebugOperationStarting?.Invoke("NMI entry");
             PushByteToStack((byte)((registers.PC >> 8) & 0xFF));
             PushByteToStack((byte)(registers.PC & 0xFF));
             // NMI stacks status like IRQ: B clear, reserved bit set.
@@ -3336,10 +3344,12 @@ namespace BBC.CPU
             registers.Flags.I = true;
             registers.PC = (ushort)(ReadByteFromMemory(value) | (ReadByteFromMemory(value + 1) << 8));
             cyclesThisOperation += 7;
+            OnDebugOperationCompleted?.Invoke(7, false);
         }
 
         private void ProcessIRQ(ulong value = 0xFFFE)
         {
+            OnDebugOperationStarting?.Invoke("IRQ entry");
             PushByteToStack((byte)((registers.PC >> 8) & 0xFF));
             PushByteToStack((byte)(registers.PC & 0xFF));
             // IRQ leaves B clear in the stacked status so firmware can tell it from BRK.
@@ -3347,6 +3357,7 @@ namespace BBC.CPU
             registers.Flags.I = true;
             registers.PC = (ushort)(ReadByteFromMemory(value) | (ReadByteFromMemory(value + 1) << 8));
             cyclesThisOperation += 7;
+            OnDebugOperationCompleted?.Invoke(7, false);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
