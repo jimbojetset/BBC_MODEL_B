@@ -85,6 +85,7 @@ namespace BBC.CPU
             NMI_Buffer.Enqueue(value);
         }
 
+        private readonly object executionLock = new object();
         private int cyclesThisOperation = 0;
         private int cyclesNotifiedThisInstruction;
         private long totalCycles;
@@ -231,21 +232,51 @@ namespace BBC.CPU
             while (NMI_Buffer.TryDequeue(out _)) { }
         }
 
-        private void DoReset()
+        internal void SaveDebuggerInterrupts(BinaryWriter writer)
         {
-            OnReset?.Invoke();
-            registers.Clear();
-            registers.S = 0xFF;
-            registers.Flags.I = true;
-            registers.PC = ReadWordFromBus(0xFFFC);
-            jammed = false;
-            jamReported = false;
-            jamAddress = 0;
-            nmiLineWasAsserted = false;
+            writer.Write(Volatile.Read(ref resetPending));
+            ulong[] irqs = IRQ_Buffer.ToArray();
+            ulong[] nmis = NMI_Buffer.ToArray();
+            writer.Write(irqs.Length);
+            foreach (ulong vector in irqs) writer.Write(vector);
+            writer.Write(nmis.Length);
+            foreach (ulong vector in nmis) writer.Write(vector);
+        }
 
+        internal void LoadDebuggerInterrupts(BinaryReader reader)
+        {
+            Interlocked.Exchange(ref resetPending, reader.ReadInt32());
             while (IRQ_Buffer.TryDequeue(out _)) { }
             while (NMI_Buffer.TryDequeue(out _)) { }
-            Interlocked.Exchange(ref totalCycles, 0);
+            int irqs = reader.ReadInt32();
+            for (int i = 0; i < irqs; i++) IRQ_Buffer.Enqueue(reader.ReadUInt64());
+            int nmis = reader.ReadInt32();
+            for (int i = 0; i < nmis; i++) NMI_Buffer.Enqueue(reader.ReadUInt64());
+            currentInstructionAddress = (ushort)registers.PC;
+            Interlocked.Exchange(ref singleStepRequested, 0);
+            // Resuming a restored breakpoint must execute its instruction before testing it again.
+            Interlocked.Exchange(ref breakpointStoppedAt, (ushort)registers.PC);
+            Interlocked.Exchange(ref breakpointSkipOnce, -1);
+        }
+
+        private void DoReset()
+        {
+            lock (executionLock)
+            {
+                OnReset?.Invoke();
+                registers.Clear();
+                registers.S = 0xFF;
+                registers.Flags.I = true;
+                registers.PC = ReadWordFromBus(0xFFFC);
+                jammed = false;
+                jamReported = false;
+                jamAddress = 0;
+                nmiLineWasAsserted = false;
+
+                while (IRQ_Buffer.TryDequeue(out _)) { }
+                while (NMI_Buffer.TryDequeue(out _)) { }
+                Interlocked.Exchange(ref totalCycles, 0);
+            }
         }
 
         // Small slices keep raster IRQ effects from arriving in visible bursts.
@@ -267,12 +298,15 @@ namespace BBC.CPU
                 {
                     if (Volatile.Read(ref paused))
                     {
-                        if (Interlocked.Exchange(ref singleStepRequested, 0) == 1)
+                        lock (executionLock)
                         {
-                            StepInstruction();
-                            Interlocked.Increment(ref completedSingleSteps);
-                            nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
-                            continue;
+                            if (Interlocked.Exchange(ref singleStepRequested, 0) == 1)
+                            {
+                                StepInstruction();
+                                Interlocked.Increment(ref completedSingleSteps);
+                                nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
+                                continue;
+                            }
                         }
 
                         Thread.Sleep(2);
@@ -280,13 +314,7 @@ namespace BBC.CPU
                         continue;
                     }
 
-                    if (Interlocked.Exchange(ref resetPending, 0) == 1)
-                    {
-                        DoReset();
-                        nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
-                    }
-
-                    if (jammed)
+                    if (jammed && Volatile.Read(ref resetPending) == 0)
                     {
                         if (!jamReported)
                         {
@@ -303,96 +331,106 @@ namespace BBC.CPU
                         continue;
                     }
 
-                    cyclesThisOperation = 0;
-                    while (cyclesThisOperation < sliceCycles)
+                    lock (executionLock)
                     {
-                        currentInstructionAddress = (ushort)registers.PC;
-                        int stall = Interlocked.Exchange(ref externalStallCycles, 0);
-                        if (stall > 0)
-                        {
-                            cyclesThisOperation += stall;
-                            Interlocked.Add(ref totalCycles, stall);
+                        if (Paused)
                             continue;
-                        }
-
-                        bool nmiLineAsserted = NmiLineAsserted?.Invoke() == true;
-                        if (nmiLineAsserted && !nmiLineWasAsserted)
-                            ProcessNMI();
-                        nmiLineWasAsserted = nmiLineAsserted;
-
-                        while (NMI_Buffer.TryDequeue(out ulong nmiValue))
+                        if (Interlocked.Exchange(ref resetPending, 0) == 1)
                         {
-                            if (nmiValue != 0xFFFA)
-                                ProcessNMI(nmiValue);
-                            else
+                            DoReset();
+                            nextDeadline = Stopwatch.GetTimestamp() + ticksPerSlice;
+                        }
+                        cyclesThisOperation = 0;
+                        while (cyclesThisOperation < sliceCycles)
+                        {
+                            currentInstructionAddress = (ushort)registers.PC;
+                            int stall = Interlocked.Exchange(ref externalStallCycles, 0);
+                            if (stall > 0)
+                            {
+                                cyclesThisOperation += stall;
+                                Interlocked.Add(ref totalCycles, stall);
+                                continue;
+                            }
+
+                            bool nmiLineAsserted = NmiLineAsserted?.Invoke() == true;
+                            if (nmiLineAsserted && !nmiLineWasAsserted)
                                 ProcessNMI();
-                        }
-                        bool irqGate = !iFlagBeforeInstruction;
-                        while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
-                        {
-                            if (irqValue != 0xFFFE)
-                                ProcessIRQ(irqValue);
-                            else
+                            nmiLineWasAsserted = nmiLineAsserted;
+
+                            while (NMI_Buffer.TryDequeue(out ulong nmiValue))
+                            {
+                                if (nmiValue != 0xFFFA)
+                                    ProcessNMI(nmiValue);
+                                else
+                                    ProcessNMI();
+                            }
+                            bool irqGate = !iFlagBeforeInstruction;
+                            while (irqGate && IRQ_Buffer.TryDequeue(out ulong irqValue))
+                            {
+                                if (irqValue != 0xFFFE)
+                                    ProcessIRQ(irqValue);
+                                else
+                                    ProcessIRQ();
+                                irqGate = !registers.Flags.I;
+                            }
+                            if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
                                 ProcessIRQ();
-                            irqGate = !registers.Flags.I;
-                        }
-                        if (irqGate && Volatile.Read(ref irqLineAsserted) != 0)
-                            ProcessIRQ();
 
-                        if (CheckExecutionBreakpoint())
-                            break;
+                            if (CheckExecutionBreakpoint())
+                                break;
 
-                        int beforeCycles = cyclesThisOperation;
-                        cyclesNotifiedThisInstruction = 0;
-                        ushort executedAddress = (ushort)registers.PC;
-                        byte stackBefore = registers.S;
-                        OnDebugOperationStarting?.Invoke(null);
-                        bool handledByHost = OnBeforeInstruction?.Invoke() == true;
-                        byte? executedOpcode = null;
+                            int beforeCycles = cyclesThisOperation;
+                            cyclesNotifiedThisInstruction = 0;
+                            ushort executedAddress = (ushort)registers.PC;
+                            byte stackBefore = registers.S;
+                            OnDebugOperationStarting?.Invoke(null);
+                            bool handledByHost = OnBeforeInstruction?.Invoke() == true;
+                            byte? executedOpcode = null;
 
-                        if (!handledByHost)
-                        {
-                            iFlagBeforeInstruction = registers.Flags.I;
-                            executedOpcode = GetNextByteInstruction();
-                            Execute(executedOpcode.Value);
-                            if (deferredIFlagPending)
+                            if (!handledByHost)
                             {
-                                registers.Flags.I = deferredIFlagValue;
-                                deferredIFlagPending = false;
+                                iFlagBeforeInstruction = registers.Flags.I;
+                                executedOpcode = GetNextByteInstruction();
+                                Execute(executedOpcode.Value);
+                                if (deferredIFlagPending)
+                                {
+                                    registers.Flags.I = deferredIFlagValue;
+                                    deferredIFlagPending = false;
+                                }
                             }
-                        }
-                        else
-                        {
-                            iFlagBeforeInstruction = registers.Flags.I;
-                        }
-
-                        int deltaCycles = cyclesThisOperation - beforeCycles;
-                        if (handledByHost && deltaCycles <= 0)
-                            deltaCycles = 6;
-
-                        if (deltaCycles > 0)
-                        {
-                            if (handledByHost)
-                                cyclesThisOperation += deltaCycles;
-
-                            int remainingCycles = Math.Max(0, deltaCycles - cyclesNotifiedThisInstruction);
-                            if (remainingCycles > 0)
+                            else
                             {
-                                Interlocked.Add(ref totalCycles, remainingCycles);
-                                OnCyclesExecuted?.Invoke(remainingCycles);
+                                iFlagBeforeInstruction = registers.Flags.I;
                             }
+
+                            int deltaCycles = cyclesThisOperation - beforeCycles;
+                            if (handledByHost && deltaCycles <= 0)
+                                deltaCycles = 6;
+
+                            if (deltaCycles > 0)
+                            {
+                                if (handledByHost)
+                                    cyclesThisOperation += deltaCycles;
+
+                                int remainingCycles = Math.Max(0, deltaCycles - cyclesNotifiedThisInstruction);
+                                if (remainingCycles > 0)
+                                {
+                                    Interlocked.Add(ref totalCycles, remainingCycles);
+                                    OnCyclesExecuted?.Invoke(remainingCycles);
+                                }
+                            }
+                            OnDebugOperationCompleted?.Invoke(deltaCycles, handledByHost);
+                            if (ShouldBreakAfterInstruction?.Invoke(executedAddress, executedOpcode, stackBefore) == true)
+                            {
+                                ushort stoppedAt = (ushort)registers.PC;
+                                Interlocked.Exchange(ref breakpointStoppedAt, stoppedAt);
+                                Volatile.Write(ref paused, true);
+                                OnBreakpointHit?.Invoke(stoppedAt);
+                                break;
+                            }
+                            if (jammed)
+                                break;
                         }
-                        OnDebugOperationCompleted?.Invoke(deltaCycles, handledByHost);
-                        if (ShouldBreakAfterInstruction?.Invoke(executedAddress, executedOpcode, stackBefore) == true)
-                        {
-                            ushort stoppedAt = (ushort)registers.PC;
-                            Interlocked.Exchange(ref breakpointStoppedAt, stoppedAt);
-                            Volatile.Write(ref paused, true);
-                            OnBreakpointHit?.Invoke(stoppedAt);
-                            break;
-                        }
-                        if (jammed)
-                            break;
                     }
 
                     WaitUntil(nextDeadline);
@@ -1321,6 +1359,22 @@ namespace BBC.CPU
         }
 
         public int StepInstruction()
+        {
+            lock (executionLock)
+                return StepInstructionCore();
+        }
+
+        internal void WithPausedState(Action action)
+        {
+            lock (executionLock)
+            {
+                if (!Paused || Volatile.Read(ref singleStepRequested) != 0)
+                    throw new InvalidOperationException("Wait for the CPU to finish stepping before using Back.");
+                action();
+            }
+        }
+
+        private int StepInstructionCore()
         {
             if (jammed)
             {

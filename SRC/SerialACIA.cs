@@ -234,6 +234,24 @@ namespace BBC
             UpdateInterruptLine();
         }
 
+        internal void SaveDebuggerTiming(BinaryWriter writer)
+        {
+            lock (sync)
+            {
+                writer.Write(Math.Max(0, transmitReadyAtTicks - Stopwatch.GetTimestamp()));
+                writer.Write(tapeReadRequested);
+            }
+        }
+
+        internal void LoadDebuggerTiming(BinaryReader reader)
+        {
+            lock (sync)
+            {
+                transmitReadyAtTicks = Stopwatch.GetTimestamp() + reader.ReadInt64();
+                tapeReadRequested = reader.ReadBoolean();
+            }
+        }
+
         public void SaveState(BinaryWriter writer)
         {
             lock (sync)

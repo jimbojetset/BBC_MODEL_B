@@ -350,8 +350,12 @@ namespace BBC
         }
 
         /// <summary>8271 writes alter the mounted DFS image only when the host file is not write-protected.</summary>
+        internal bool DeferDebuggerWrites { get; set; }
+
         public bool Flush()
         {
+            if (DeferDebuggerWrites)
+                return false;
             bool anyDirty = imageDirty || imageDirtyByDrive.Any(dirty => dirty);
             if (!anyDirty)
                 return false;

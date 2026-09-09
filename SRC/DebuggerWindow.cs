@@ -130,6 +130,18 @@ namespace BBC
         private StepButton mouseStepButton;
         private StepButton f9StepButton;
         private bool stepKeyHeld;
+        private bool backKeyHeld;
+        private const long UndoMemoryLimit = 96L * 1024 * 1024;
+        private readonly List<UndoPoint> undoSteps = new List<UndoPoint>();
+        private UndoPoint? undoStart;
+        private long undoBytes;
+        private bool undoEnabled;
+        private bool undoStepPending;
+        private bool undoRunPending;
+        private bool undoHistoryTruncated;
+        internal Func<byte[]>? CaptureUndoState;
+        internal Action<byte[]>? RestoreUndoState;
+        internal Action? EndUndoRecording;
         private float mouseX = -1;
         private float mouseY = -1;
 
@@ -230,6 +242,16 @@ namespace BBC
                         breakpointHitAt = address;
                 }
             }
+            if (undoRunPending)
+            {
+                undoRunPending = false;
+                undoStepPending = false;
+            }
+            else
+            {
+                DiscardUndoHistory();
+                CaptureUndoStart();
+            }
             Show();
             disassemblyAddress = address;
         }
@@ -247,6 +269,7 @@ namespace BBC
                 mouseStepButton = StepButton.None;
                 f9StepButton = StepButton.None;
                 stepKeyHeld = false;
+                backKeyHeld = false;
                 if (windowEvent == SDL_WINDOWEVENT_CLOSE)
                     CloseAndResume();
                 return true;
@@ -265,6 +288,7 @@ namespace BBC
             {
                 if (keySym == SDLK_F10) stepKeyHeld = false;
                 if (keySym == SDLK_F9) f9StepButton = StepButton.None;
+                if (keySym == SDLK_F8) backKeyHeld = false;
                 return true;
             }
 
@@ -329,6 +353,10 @@ namespace BBC
                     case SDLK_F6:
                         PauseExecution();
                         break;
+                    case SDLK_F8:
+                        backKeyHeld = true;
+                        StepBack();
+                        break;
                     case SDLK_F10:
                         stepKeyHeld = true;
                         StepOnce();
@@ -348,6 +376,8 @@ namespace BBC
                         mouseStepButton = StepButton.None;
                         f9StepButton = StepButton.None;
                         stepKeyHeld = false;
+                        backKeyHeld = false;
+                        DiscardUndoHistory();
                         ClearBreakpoints();
                         ClearWatchpoints();
                         ClearHardwareRules();
@@ -385,6 +415,18 @@ namespace BBC
                     {
                         mouseStepButton = StepButton.Out;
                         StepOut();
+                    }
+                    else if (logicalX is >= 450 and < 554)
+                        ToggleUndoRecording();
+                    else if (logicalX is >= 562 and < 650)
+                    {
+                        mouseStepButton = StepButton.Back;
+                        StepBack();
+                    }
+                    else if (logicalX is >= 658 and < 730)
+                    {
+                        mouseStepButton = StepButton.Start;
+                        StepBack(toStart: true);
                     }
                 }
                 else if (logicalY is >= 78 and < 106 && logicalX is >= 282 and < 338)
@@ -608,8 +650,169 @@ namespace BBC
             ResumeExecution();
         }
 
+        internal void DiscardUndoHistory()
+        {
+            bool hadState = undoStart is not null;
+            undoSteps.Clear();
+            undoStart = null;
+            undoBytes = 0;
+            undoHistoryTruncated = false;
+            undoStepPending = false;
+            undoRunPending = false;
+            if (hadState) EndUndoRecording?.Invoke();
+        }
+
+        private void ToggleUndoRecording()
+        {
+            DiscardUndoHistory();
+            undoEnabled = !undoEnabled;
+            if (undoEnabled && paused())
+                CaptureUndoStart();
+            WriteCommandOutput(undoEnabled ? "Back mode on: records STEP, OVER and OUT; Run ends the current history." : "Back mode off");
+        }
+
+        private void CaptureUndoStart()
+        {
+            if (!undoEnabled || CaptureUndoState is null)
+                return;
+            try
+            {
+                byte[] state = CaptureUndoState();
+                if (state.LongLength > UndoMemoryLimit)
+                {
+                    EndUndoRecording?.Invoke();
+                    throw new InvalidOperationException("This machine state exceeds the 96 MB Back history limit.");
+                }
+                undoStart = new UndoPoint(state, historyNextSequence);
+                undoBytes = state.LongLength;
+            }
+            catch (InvalidOperationException ex)
+            {
+                undoEnabled = false;
+                WriteCommandOutput(ex.Message);
+            }
+        }
+
+        private bool PrepareUndoStep()
+        {
+            if (!undoEnabled)
+                return true;
+            if (undoStepPending || undoRunPending)
+            {
+                WriteCommandOutput("Wait for the current debugger step to finish.");
+                return false;
+            }
+            if (CaptureUndoState is null)
+            {
+                WriteCommandOutput("Back recording is not available for this CPU.");
+                return false;
+            }
+            try
+            {
+                byte[] state = CaptureUndoState();
+                if (state.LongLength * 2 > UndoMemoryLimit)
+                {
+                    if (undoStart is null) EndUndoRecording?.Invoke();
+                    throw new InvalidOperationException("This machine state is too large to record a step within the 96 MB limit.");
+                }
+                if (undoStart is null)
+                {
+                    undoStart = new UndoPoint(state, historyNextSequence);
+                    undoBytes = state.LongLength;
+                }
+                if (state.LongLength + undoStart.Value.State.LongLength > UndoMemoryLimit)
+                    throw new InvalidOperationException("This machine state is too large to record another step within the 96 MB limit.");
+                while (undoSteps.Count > 0 && (undoSteps.Count >= 128 || undoBytes + state.LongLength > UndoMemoryLimit))
+                {
+                    if (!undoHistoryTruncated)
+                        WriteCommandOutput("Back history limit reached: oldest actions dropped; Start still restores the starting state.");
+                    undoHistoryTruncated = true;
+                    undoBytes -= undoSteps[0].State.LongLength;
+                    undoSteps.RemoveAt(0);
+                }
+                undoSteps.Add(new UndoPoint(state, historyNextSequence));
+                undoBytes += state.LongLength;
+                undoStepPending = true;
+                return true;
+            }
+            catch (InvalidOperationException ex)
+            {
+                WriteCommandOutput(ex.Message);
+                return false;
+            }
+        }
+
+        private void CancelUndoStep()
+        {
+            if (!undoStepPending || undoSteps.Count == 0)
+                return;
+            undoBytes -= undoSteps[^1].State.LongLength;
+            undoSteps.RemoveAt(undoSteps.Count - 1);
+            undoStepPending = false;
+        }
+
+        private void StepBack(bool toStart = false)
+        {
+            if (!paused() || undoStepPending || undoRunPending || RestoreUndoState is null)
+                return;
+            UndoPoint? point = toStart ? undoStart : undoSteps.Count > 0 ? undoSteps[^1] : null;
+            if (point is not UndoPoint saved)
+                return;
+            try
+            {
+                RestoreUndoState(saved.State);
+            }
+            catch (InvalidOperationException ex)
+            {
+                WriteCommandOutput(ex.Message);
+                return;
+            }
+            if (toStart)
+            {
+                undoSteps.Clear();
+                undoBytes = saved.State.LongLength;
+            }
+            else
+            {
+                undoSteps.RemoveAt(undoSteps.Count - 1);
+                undoBytes -= saved.State.LongLength;
+            }
+            pendingCommandSteps = 0;
+            observedCompletedSteps = cpu.CompletedSingleSteps;
+            ClearTemporaryBreakpoints();
+            breakpointHitAt = null;
+            temporaryStopDescription = toStart ? "BACK TO START" : "STEP BACK";
+            lock (breakpointLock)
+            {
+                pendingWatchedAccess = null;
+                stoppedWatchedAccess = null;
+            }
+            lock (historyLock)
+            {
+                long oldest = Math.Max(historyClearedAt, historyNextSequence - HistoryCapacity);
+                if (saved.HistoryPosition >= oldest && saved.HistoryPosition <= historyNextSequence)
+                    historyNextSequence = saved.HistoryPosition;
+                else
+                    historyClearedAt = historyNextSequence;
+                pendingHistory = null;
+            }
+            historyEnd = null;
+            selectedHistory = null;
+            displayedHistory = [];
+            while (pendingTraceLines.TryDequeue(out _)) { }
+            pendingTraceLineCount = 0;
+            droppedTraceLineCount = 0;
+            disassemblyAddress = (ushort)cpu.registers.PC;
+            memoryMatch = null;
+            stackPointer = null;
+            CaptureComparisonState();
+            WriteCommandOutput($"Restored ${cpu.registers.PC:X4}; earlier command output describes the previous execution.");
+        }
+
         private void ResumeExecution()
         {
+            DiscardUndoHistory();
+            pendingCommandSteps = 0;
             CaptureComparisonState();
             ClearTemporaryBreakpoints();
             breakpointHitAt = null;
@@ -623,10 +826,17 @@ namespace BBC
             ClearTemporaryBreakpoints();
             temporaryStopDescription = null;
             pause();
+            if (undoRunPending)
+            {
+                undoRunPending = false;
+                undoStepPending = false;
+            }
         }
 
         private void StepOnce()
         {
+            if (!paused() || !PrepareUndoStep())
+                return;
             ClearTemporaryBreakpoints();
             CaptureComparisonState();
             if (step())
@@ -634,6 +844,8 @@ namespace BBC
                 breakpointHitAt = null;
                 temporaryStopDescription = null;
             }
+            else
+                CancelUndoStep();
         }
 
         private void StepOver()
@@ -648,13 +860,17 @@ namespace BBC
                 return;
             }
 
+            if (!PrepareUndoStep())
+                return;
+            undoRunPending = undoStepPending;
             RunToTemporaryBreakpoint((ushort)(pc + 3), "STEP OVER COMPLETE");
         }
 
         private void StepOut()
         {
-            if (!paused())
+            if (!paused() || !PrepareUndoStep())
                 return;
+            undoRunPending = undoStepPending;
 
             ClearTemporaryBreakpoints();
             CaptureComparisonState();
@@ -809,6 +1025,11 @@ namespace BBC
             DrawButton(new SKRect(176, 7, 250, 35), "Step F10", stepKeyHeld || mouseStepButton == StepButton.Step);
             DrawButton(new SKRect(256, 7, 350, 35), "Over F9", f9StepButton == StepButton.Over || mouseStepButton == StepButton.Over);
             DrawButton(new SKRect(356, 7, 442, 35), "Out Sh-F9", f9StepButton == StepButton.Out || mouseStepButton == StepButton.Out);
+            DrawButton(new SKRect(450, 7, 554, 35), undoEnabled ? "Undo ON" : "Undo OFF", undoEnabled);
+            bool canBack = paused() && !undoStepPending && !undoRunPending;
+            DrawButton(new SKRect(562, 7, 650, 35), "Back F8", backKeyHeld || mouseStepButton == StepButton.Back, canBack && undoSteps.Count > 0);
+            DrawButton(new SKRect(658, 7, 730, 35), "Start", mouseStepButton == StepButton.Start, canBack && undoStart.HasValue);
+            DrawText($"{undoSteps.Count} saved", 742, 27, DimText, small: true);
             DrawText($"{BreakpointCount} break / {WatchpointCount} watch    Host 6502", 846, 27, Accent, small: true);
         }
 
@@ -823,7 +1044,10 @@ namespace BBC
                 (88, 170, "Pause at the next 6502 instruction boundary."),
                 (176, 250, "Execute one instruction; enter a subroutine when it is a JSR."),
                 (256, 350, "Run a JSR to completion and stop after it; otherwise execute one instruction."),
-                (356, 442, "Finish the current subroutine and stop after returning to its caller.")
+                (356, 442, "Finish the current subroutine and stop after returning to its caller."),
+                (450, 554, "Record paused steps for Back; Run ends the current history."),
+                (562, 650, "Restore the state before the last STEP, OVER or OUT."),
+                (658, 730, "Restore the starting breakpoint, even if older intermediate steps were dropped.")
             ];
 
             foreach ((float left, float right, string text) in buttons)
@@ -1507,7 +1731,9 @@ namespace BBC
             string[] lines =
             [
                 "EXECUTION",
-                "run (g)                 Resume 6502 execution.",
+                "run (g)                 Resume 6502 execution; discard Back history.",
+                "Undo ON                 Record paused STEP/OVER/OUT actions for Back (F8).",
+                "Start                   Restore the starting breakpoint; retains up to 128 actions / 96 MB.",
                 "pause                   Pause execution at the next instruction boundary.",
                 "n [count] (step)        Execute one instruction, or a decimal number of instructions.",
                 "over (o)                Step over JSR; otherwise execute one instruction.",
@@ -1563,12 +1789,15 @@ namespace BBC
                 return;
             }
 
+            if (!PrepareUndoStep())
+                return;
             pendingCommandSteps = count;
             observedCompletedSteps = cpu.CompletedSingleSteps;
             CaptureComparisonState();
             if (!step())
             {
                 pendingCommandSteps = 0;
+                CancelUndoStep();
                 WriteCommandOutput("Unable to request a CPU step");
             }
         }
@@ -1581,6 +1810,7 @@ namespace BBC
 
             // The CPU thread publishes completion after updating PC; accepting a step request is too early.
             observedCompletedSteps = completedSteps;
+            undoStepPending = false;
             disassemblyAddress = (ushort)cpu.registers.PC;
             if (pendingCommandSteps <= 0)
                 return;
@@ -1592,9 +1822,15 @@ namespace BBC
                 return;
             }
 
+            if (!PrepareUndoStep())
+            {
+                pendingCommandSteps = 0;
+                return;
+            }
             CaptureComparisonState();
             if (!step())
             {
+                CancelUndoStep();
                 pendingCommandSteps = 0;
                 WriteCommandOutput("Stepping stopped");
             }
@@ -1626,6 +1862,7 @@ namespace BBC
 
             ushort start = ParseAddress(parts[1]);
             byte[] values = parts[2..].Select(ParseByte).ToArray();
+            DiscardUndoHistory();
             for (int i = 0; i < values.Length; i++)
                 writeByte((ushort)(start + i), values[i]);
 
@@ -2488,6 +2725,7 @@ namespace BBC
         {
             if (disposed)
                 return;
+            DiscardUndoHistory();
             if (texture != IntPtr.Zero) SDL_DestroyTexture(texture);
             if (renderer != IntPtr.Zero) SDL_DestroyRenderer(renderer);
             if (window != IntPtr.Zero) SDL_DestroyWindow(window);
@@ -2511,6 +2749,7 @@ namespace BBC
             disposed = true;
         }
 
+        private readonly record struct UndoPoint(byte[] State, long HistoryPosition);
         private readonly record struct HistoryEntry(long Sequence, RegisterSnapshot Registers, byte Opcode, byte Operand1, byte Operand2, string? Kind, int Cycles);
         private readonly record struct DecodedInstruction(int Length, string Bytes, string Text);
         private readonly record struct WatchRange(ushort Start, ushort End, StopCondition? Condition);
@@ -2530,7 +2769,7 @@ namespace BBC
 
         private enum AddressMode { Imp, Acc, Imm, Zp, ZpX, ZpY, Abs, AbsX, AbsY, Ind, IndX, IndY, Rel }
         private enum HistoryButton { None, Clear, Latest }
-        private enum StepButton { None, Step, Over, Out }
+        private enum StepButton { None, Step, Over, Out, Back, Start }
         private enum AddressField { None, Memory, Disassembly }
         private enum HardwareTab { Cpu, SystemVia, UserVia, Video, Disc, Tube, Stack }
         private enum ClipboardPanel { Memory, Disassembly, Hardware, CommandOutput }
@@ -2595,6 +2834,7 @@ namespace BBC
         private const int SDLK_F6 = 1073741887;
         private const int SDLK_F10 = 1073741891;
         private const int SDLK_F9 = 1073741890;
+        private const int SDLK_F8 = 1073741889;
         private const int SDLK_KP_ENTER = 1073741912;
         private const int SDLK_DOWN = 1073741905;
         private const int SDLK_UP = 1073741906;

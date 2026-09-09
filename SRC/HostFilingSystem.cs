@@ -56,6 +56,18 @@ namespace BBC
 
         private readonly string[] softKeyStrings = new string[16];
 
+        internal void SaveDebuggerState(BinaryWriter writer)
+        {
+            writer.Write(currentDirectory);
+            foreach (string text in softKeyStrings) writer.Write(text);
+        }
+
+        internal void LoadDebuggerState(BinaryReader reader)
+        {
+            currentDirectory = reader.ReadString();
+            for (int i = 0; i < softKeyStrings.Length; i++) softKeyStrings[i] = reader.ReadString();
+        }
+
         public void Unmount()
         {
             files = [];

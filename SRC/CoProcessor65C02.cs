@@ -81,6 +81,10 @@ namespace BBC
             cpuException = null;
         }
 
+        internal void SaveDebuggerInterrupts(BinaryWriter writer) => cpu.SaveDebuggerInterrupts(writer);
+
+        internal void LoadDebuggerInterrupts(BinaryReader reader) => cpu.LoadDebuggerInterrupts(reader);
+
         public void LoadRom(string path)
         {
             if (!File.Exists(path))

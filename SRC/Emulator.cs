@@ -541,6 +541,7 @@ Examples:
         private Thread? cpuThread;
         private Exception? cpuException;
         private int debuggerBreakpointPending;
+        private int debuggerDiscFlushPending;
         private readonly byte[] inputScratch = new byte[64];
         private readonly HostKeyChange[] keyChangeScratch = new HostKeyChange[64];
         private readonly HostJoystickChange[] joystickChangeScratch = new HostJoystickChange[16];
@@ -775,6 +776,13 @@ Examples:
                 Display.FrameBuffer,
                 Display.Width,
                 Display.Height);
+            debugger.CaptureUndoState = CaptureDebuggerState;
+            debugger.RestoreUndoState = RestoreDebuggerState;
+            debugger.EndUndoRecording = () =>
+            {
+                SetDebuggerDiscWritesDeferred(false);
+                Interlocked.Exchange(ref debuggerDiscFlushPending, 1);
+            };
             Display.AttachDebugger(debugger);
             Cpu.OnBreakpointHit = address => Interlocked.Exchange(ref debuggerBreakpointPending, address + 1);
 
@@ -1089,6 +1097,7 @@ Examples:
         public void Dispose()
         {
             StopCpu();
+            debugger?.DiscardUndoHistory();
             if (discController.HasMountedDisc && discController.ImageDirty)
             {
                 if (discController.Flush())
@@ -1201,6 +1210,8 @@ Examples:
 
         private void AdvanceDeviceCycles(int cycles)
         {
+            if (Interlocked.Exchange(ref debuggerDiscFlushPending, 0) != 0)
+                discController.Flush();
             Sound.Tick(cycles);
             systemVia.Tick(cycles);
             Video.Tick(cycles);
@@ -2416,6 +2427,100 @@ Examples:
             }
         }
 
+        private void SetDebuggerDiscWritesDeferred(bool deferred)
+        {
+            if (discController is Intel8271_Disk intel) intel.DeferDebuggerWrites = deferred;
+            if (discController is WD1770_Disk wd) wd.DeferDebuggerWrites = deferred;
+        }
+
+        private byte[] CaptureDebuggerState()
+        {
+            if (!emulationPaused)
+                throw new InvalidOperationException("Pause the CPU before recording steps for Back.");
+            if (hayesModem is not null || printer.Enabled || tape.HasTape)
+                throw new InvalidOperationException("Back requires the modem and printer disabled and the tape ejected.");
+            byte[] state = [];
+            Cpu.WithPausedState(() =>
+            {
+                using MemoryStream stream = new MemoryStream();
+                using (DeflateStream compressed = new DeflateStream(stream, CompressionLevel.Fastest, leaveOpen: true))
+                {
+                    using BinaryWriter writer = new BinaryWriter(compressed, Encoding.UTF8, leaveOpen: true);
+                    SaveMachineState(writer);
+                    // Device load callbacks can change IRQs and schedule sound writes. Restore these last.
+                    systemVia.SaveState(writer);
+                    serialAcia.SaveState(writer);
+                    serialAcia.SaveDebuggerTiming(writer);
+                    Sound.SaveDebuggerEvents(writer);
+                    Cpu.SaveState(writer);
+                    Cpu.SaveDebuggerInterrupts(writer);
+                    tube6502?.SaveDebuggerInterrupts(writer);
+                    writer.Write(tubeHostIrqAsserted);
+                    hostFilingSystem.SaveDebuggerState(writer);
+                    writer.Write(pendingKeyboardInput.Count);
+                    foreach (byte key in pendingKeyboardInput) writer.Write(key);
+                    writer.Write(Stopwatch.GetTimestamp());
+                    for (int key = 0; key < matrixKeyPressedAtTicks.Length; key++)
+                    {
+                        writer.Write(matrixKeyPressedAtTicks[key]);
+                        writer.Write(matrixKeyReleaseDueTicks[key]);
+                        writer.Write(matrixKeyReleasePending[key]);
+                    }
+                    writer.Write(Volatile.Read(ref breakResetPending));
+                    writer.Write(pendingBreak.Shift);
+                    writer.Write(pendingBreak.Control);
+                }
+                state = stream.ToArray();
+                SetDebuggerDiscWritesDeferred(true);
+            });
+            return state;
+        }
+
+        private void RestoreDebuggerState(byte[] state)
+        {
+            Cpu.WithPausedState(() =>
+            {
+                using MemoryStream restored = new MemoryStream();
+                using (DeflateStream compressed = new DeflateStream(new MemoryStream(state), CompressionMode.Decompress))
+                    compressed.CopyTo(restored);
+                restored.Position = 0;
+                using BinaryReader reader = new BinaryReader(restored, Encoding.UTF8);
+                LoadMachineState(reader, debuggerRestore: true);
+                systemVia.LoadState(reader);
+                serialAcia.LoadState(reader);
+                serialAcia.LoadDebuggerTiming(reader);
+                Sound.LoadDebuggerEvents(reader);
+                Cpu.LoadState(reader);
+                Cpu.LoadDebuggerInterrupts(reader);
+                tube6502?.LoadDebuggerInterrupts(reader);
+                tubeHostIrqAsserted = reader.ReadBoolean();
+                hostFilingSystem.LoadDebuggerState(reader);
+                pendingKeyboardInput.Clear();
+                int keys = reader.ReadInt32();
+                for (int i = 0; i < keys; i++) pendingKeyboardInput.Enqueue(reader.ReadByte());
+                long elapsed = Stopwatch.GetTimestamp() - reader.ReadInt64();
+                for (int key = 0; key < matrixKeyPressedAtTicks.Length; key++)
+                {
+                    long pressed = reader.ReadInt64();
+                    long release = reader.ReadInt64();
+                    matrixKeyPressedAtTicks[key] = pressed == 0 ? 0 : pressed + elapsed;
+                    matrixKeyReleaseDueTicks[key] = release == 0 ? 0 : release + elapsed;
+                    matrixKeyReleasePending[key] = reader.ReadBoolean();
+                }
+                Interlocked.Exchange(ref breakResetPending, reader.ReadInt32());
+                pendingBreak = new BreakKeyPress(reader.ReadBoolean(), reader.ReadBoolean());
+                if (nextBootScriptLineAtTicks != 0) nextBootScriptLineAtTicks += elapsed;
+                if (hostDiscActivityLedUntilTicks != 0) hostDiscActivityLedUntilTicks += elapsed;
+                Interlocked.Exchange(ref debuggerBreakpointPending, 0);
+                Sound.SetHostOutputPaused(true);
+                if (Display is not null)
+                {
+                    Video.RenderPaused(Display);
+                    Display.MarkFrameDirty();
+                }
+            });
+        }
+
         private void SaveStateFile(string path)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
@@ -2424,52 +2529,58 @@ Examples:
                 using FileStream stream = File.Create(path);
                 using BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false);
 
-                writer.Write(SaveStateMagic);
-                writer.Write(SaveStateVersion);
-                Cpu.SaveState(writer);
-                WriteByteArray(writer, Memory.Memory);
-                WriteByteArray(writer, sidewaysRoms);
-                writer.Write(selectedSidewaysRom);
-                SaveRomState(writer);
-                writer.Write(breakContinuationQueued);
-                WriteString(writer, pendingBootExecScript);
-                WriteString(writer, pendingBootScriptLines.Count == 0 ? null : string.Join("\n", pendingBootScriptLines));
-                writer.Write(nextBootScriptLineAtTicks);
-                writer.Write(hostDiscActivityLedUntilTicks);
-                writer.Write(capsLockTapPulseCycles);
-                writer.Write(capsLockTapPressed);
-                writer.Write(hostCapsLockState);
-                writer.Write(bbcCapsLockState);
-                writer.Write(mouseEnabled);
-                writer.Write(mousePositionInitialized);
-                writer.Write(lastMouseX);
-                writer.Write(lastMouseY);
-                SaveJoystickState(writer);
-                systemVia.SaveState(writer);
-                userVia.SaveState(writer);
-                serialAcia.SaveState(writer);
-                writer.Write(tapePlayerEnabled);
-                tape.SaveState(writer);
-                writer.Write(hayesModem is not null);
-                if (hayesModem is not null)
-                    WriteStateBlock(writer, hayesModem.SaveState);
-
-                adc.SaveState(writer);
-                writer.Write((int)discInterface);
-                discController.SaveState(writer);
-                Sound.SaveState(writer);
-                Video.SaveState(writer);
-                writer.Write(tube6502 is not null);
-                if (tube6502 is not null)
-                {
-                    WriteStateBlock(writer, tube6502.SaveState);
-                    WriteStateBlock(writer, tubeUla.SaveState);
-                }
+                SaveMachineState(writer);
             });
+        }
+
+        private void SaveMachineState(BinaryWriter writer)
+        {
+            writer.Write(SaveStateMagic);
+            writer.Write(SaveStateVersion);
+            Cpu.SaveState(writer);
+            WriteByteArray(writer, Memory.Memory);
+            WriteByteArray(writer, sidewaysRoms);
+            writer.Write(selectedSidewaysRom);
+            SaveRomState(writer);
+            writer.Write(breakContinuationQueued);
+            WriteString(writer, pendingBootExecScript);
+            WriteString(writer, pendingBootScriptLines.Count == 0 ? null : string.Join("\n", pendingBootScriptLines));
+            writer.Write(nextBootScriptLineAtTicks);
+            writer.Write(hostDiscActivityLedUntilTicks);
+            writer.Write(capsLockTapPulseCycles);
+            writer.Write(capsLockTapPressed);
+            writer.Write(hostCapsLockState);
+            writer.Write(bbcCapsLockState);
+            writer.Write(mouseEnabled);
+            writer.Write(mousePositionInitialized);
+            writer.Write(lastMouseX);
+            writer.Write(lastMouseY);
+            SaveJoystickState(writer);
+            systemVia.SaveState(writer);
+            userVia.SaveState(writer);
+            serialAcia.SaveState(writer);
+            writer.Write(tapePlayerEnabled);
+            tape.SaveState(writer);
+            writer.Write(hayesModem is not null);
+            if (hayesModem is not null)
+                WriteStateBlock(writer, hayesModem.SaveState);
+
+            adc.SaveState(writer);
+            writer.Write((int)discInterface);
+            discController.SaveState(writer);
+            Sound.SaveState(writer);
+            Video.SaveState(writer);
+            writer.Write(tube6502 is not null);
+            if (tube6502 is not null)
+            {
+                WriteStateBlock(writer, tube6502.SaveState);
+                WriteStateBlock(writer, tubeUla.SaveState);
+            }
         }
 
         private void LoadStateFile(string path)
         {
+            debugger?.DiscardUndoHistory();
             if (discController.HasMountedDisc && discController.ImageDirty)
                 discController.Flush();
 
@@ -2478,102 +2589,110 @@ Examples:
                 using FileStream stream = File.OpenRead(path);
                 using BinaryReader reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
 
-                if (reader.ReadUInt32() != SaveStateMagic)
-                    throw new InvalidDataException("Not a BBC Model B save state.");
+                LoadMachineState(reader);
+            });
+        }
 
-                int version = reader.ReadInt32();
-                if (version != SaveStateVersion)
-                    throw new InvalidDataException($"Unsupported BBC save state version {version}.");
+        private void LoadMachineState(BinaryReader reader, bool debuggerRestore = false)
+        {
+            if (reader.ReadUInt32() != SaveStateMagic)
+                throw new InvalidDataException("Not a BBC Model B save state.");
 
-                Display?.ClearScreenToBlack();
+            int version = reader.ReadInt32();
+            if (version != SaveStateVersion)
+                throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
-                Cpu.LoadState(reader);
-                ReadByteArray(reader, Memory.Memory, "main memory");
-                ReadByteArray(reader, sidewaysRoms, "sideways ROM/RAM");
-                selectedSidewaysRom = reader.ReadInt32();
-                LoadRomState(reader);
-                breakContinuationQueued = reader.ReadBoolean();
-                pendingBootExecScript = ReadString(reader);
-                pendingBootScriptLines.Clear();
-                string? pendingLines = ReadString(reader);
-                if (!string.IsNullOrEmpty(pendingLines))
-                {
-                    foreach (string line in pendingLines.Split('\n'))
-                        pendingBootScriptLines.Enqueue(line);
-                }
+            if (!debuggerRestore) Display?.ClearScreenToBlack();
 
-                nextBootScriptLineAtTicks = reader.ReadInt64();
-                hostDiscActivityLedUntilTicks = reader.ReadInt64();
-                capsLockTapPulseCycles = reader.ReadInt32();
-                capsLockTapPressed = reader.ReadBoolean();
-                hostCapsLockState = reader.ReadBoolean();
-                bbcCapsLockState = reader.ReadBoolean();
-                mouseEnabled = reader.ReadBoolean();
-                mousePositionInitialized = reader.ReadBoolean();
-                lastMouseX = reader.ReadByte();
-                lastMouseY = reader.ReadByte();
-                LoadJoystickState(reader);
-                systemVia.LoadState(reader);
-                userVia.LoadState(reader);
-                serialAcia.LoadState(reader);
-                tapePlayerEnabled = reader.ReadBoolean();
-                tape.LoadState(reader);
-                tapeMounted = tape.HasTape;
-                bool saveHasHayesModem = reader.ReadBoolean();
-                if (saveHasHayesModem)
-                {
-                    SetHayesModemEnabled(true, notify: false);
-                    byte[] hayesState = ReadStateBlock(reader, "Hayes modem state");
-                    using BinaryReader hayesReader = new BinaryReader(new MemoryStream(hayesState), Encoding.UTF8);
-                    hayesModem?.LoadState(hayesReader);
-                }
-                else
-                {
-                    SetHayesModemEnabled(false, notify: false);
-                }
+            Cpu.LoadState(reader);
+            ReadByteArray(reader, Memory.Memory, "main memory");
+            ReadByteArray(reader, sidewaysRoms, "sideways ROM/RAM");
+            selectedSidewaysRom = reader.ReadInt32();
+            LoadRomState(reader);
+            breakContinuationQueued = reader.ReadBoolean();
+            pendingBootExecScript = ReadString(reader);
+            pendingBootScriptLines.Clear();
+            string? pendingLines = ReadString(reader);
+            if (!string.IsNullOrEmpty(pendingLines))
+            {
+                foreach (string line in pendingLines.Split('\n'))
+                    pendingBootScriptLines.Enqueue(line);
+            }
 
-                adc.LoadState(reader);
-                DiscInterface savedDiscInterface = (DiscInterface)reader.ReadInt32();
-                if (!Enum.IsDefined(savedDiscInterface))
-                    throw new InvalidDataException("Save state contains an unknown disc interface.");
-                if (savedDiscInterface != discInterface)
+            nextBootScriptLineAtTicks = reader.ReadInt64();
+            hostDiscActivityLedUntilTicks = reader.ReadInt64();
+            capsLockTapPulseCycles = reader.ReadInt32();
+            capsLockTapPressed = reader.ReadBoolean();
+            hostCapsLockState = reader.ReadBoolean();
+            bbcCapsLockState = reader.ReadBoolean();
+            mouseEnabled = reader.ReadBoolean();
+            mousePositionInitialized = reader.ReadBoolean();
+            lastMouseX = reader.ReadByte();
+            lastMouseY = reader.ReadByte();
+            LoadJoystickState(reader);
+            systemVia.LoadState(reader);
+            userVia.LoadState(reader);
+            serialAcia.LoadState(reader);
+            tapePlayerEnabled = reader.ReadBoolean();
+            tape.LoadState(reader);
+            tapeMounted = tape.HasTape;
+            bool saveHasHayesModem = reader.ReadBoolean();
+            if (saveHasHayesModem)
+            {
+                SetHayesModemEnabled(true, notify: false);
+                byte[] hayesState = ReadStateBlock(reader, "Hayes modem state");
+                using BinaryReader hayesReader = new BinaryReader(new MemoryStream(hayesState), Encoding.UTF8);
+                hayesModem?.LoadState(hayesReader);
+            }
+            else
+            {
+                SetHayesModemEnabled(false, notify: false);
+            }
+
+            adc.LoadState(reader);
+            DiscInterface savedDiscInterface = (DiscInterface)reader.ReadInt32();
+            if (!Enum.IsDefined(savedDiscInterface))
+                throw new InvalidDataException("Save state contains an unknown disc interface.");
+            if (savedDiscInterface != discInterface)
+            {
+                discController = CreateDiscController(savedDiscInterface);
+                discInterface = savedDiscInterface;
+                AttachDiscControllerSound();
+            }
+            discController.LoadState(reader);
+            Sound.LoadState(reader);
+            if (Sound.Speech.Enabled && !Sound.Speech.HasPhraseRom)
+                LoadSpeechPhraseRom(preservePosition: true);
+            else if (!Sound.Speech.Enabled)
+                Sound.Speech.ClearPhraseRom();
+            Video.LoadState(reader);
+            bool saveHasTube = reader.ReadBoolean();
+            if (saveHasTube)
+            {
+                EnsureTube6502ForLoadedState();
+                CoProcessor65C02 loadedTube = tube6502
+                    ?? throw new InvalidDataException("This save state requires the 6502 Tube co-processor.");
+                LoadTubeState(reader, loadedTube);
+            }
+            else
+            {
+                tubeUla.Reset();
+                if (tube6502 is not null)
                 {
-                    discController = CreateDiscController(savedDiscInterface);
-                    discInterface = savedDiscInterface;
-                    AttachDiscControllerSound();
+                    tube6502.Dispose();
+                    tube6502 = null;
                 }
-                discController.LoadState(reader);
-                Sound.LoadState(reader);
-                if (Sound.Speech.Enabled && !Sound.Speech.HasPhraseRom)
-                    LoadSpeechPhraseRom(preservePosition: true);
-                else if (!Sound.Speech.Enabled)
-                    Sound.Speech.ClearPhraseRom();
-                Video.LoadState(reader);
-                bool saveHasTube = reader.ReadBoolean();
-                if (saveHasTube)
-                {
-                    EnsureTube6502ForLoadedState();
-                    CoProcessor65C02 loadedTube = tube6502
-                        ?? throw new InvalidDataException("This save state requires the 6502 Tube co-processor.");
-                    LoadTubeState(reader, loadedTube);
-                }
-                else
-                {
-                    tubeUla.Reset();
-                    if (tube6502 is not null)
-                    {
-                        tube6502.Dispose();
-                        tube6502 = null;
-                    }
-                    tube6502Configured = false;
-                }
+                tube6502Configured = false;
+            }
+            if (!debuggerRestore)
+            {
                 UpdateAmxMouseRomState();
                 Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
                 UpdateCpuIrqLine();
                 UpdateAdcChannels();
                 UpdateJoystickInputs();
                 Display?.SetRelativeMouseMode(mouseEnabled);
-            });
+            }
         }
 
         private void WithCpuStoppedForStateFile(Action action)

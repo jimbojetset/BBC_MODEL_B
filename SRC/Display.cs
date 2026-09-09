@@ -452,6 +452,7 @@ namespace BBC
 
                 if (ev.Type == SDL_DROPFILE)
                 {
+                    debugger?.DiscardUndoHistory();
                     EnqueueDroppedFile(ev.DropFile);
                     continue;
                 }
@@ -467,6 +468,13 @@ namespace BBC
                     ev.MouseWheelY,
                     ev.Type == SDL_TEXTINPUT ? ev.Text : []) == true)
                     continue;
+
+                if (ev.Type is SDL_KEYDOWN or SDL_KEYUP or SDL_TEXTINPUT or SDL_MOUSEBUTTONDOWN or SDL_MOUSEBUTTONUP
+                    or SDL_JOYAXISMOTION or SDL_JOYHATMOTION or SDL_JOYBUTTONDOWN or SDL_JOYBUTTONUP
+                    or SDL_CONTROLLERAXISMOTION or SDL_CONTROLLERBUTTONDOWN or SDL_CONTROLLERBUTTONUP
+                    or SDL_JOYDEVICEADDED or SDL_JOYDEVICEREMOVED or SDL_CONTROLLERDEVICEADDED or SDL_CONTROLLERDEVICEREMOVED
+                    || ev.Type == SDL_MOUSEMOTION && ev.WindowId == windowId && relativeMouseMode)
+                    debugger?.DiscardUndoHistory();
 
                 if (printer?.HandleEvent(ev.Type, ev.WindowId, ev.WindowEvent, ev.MouseButton, ev.MouseX, ev.MouseY, ev.MouseWheelY) == true)
                     continue;

@@ -204,6 +204,34 @@ namespace BBC.CPU
             while (NMI_Buffer.TryDequeue(out _)) { }
         }
 
+        internal void SaveDebuggerInterrupts(BinaryWriter writer)
+        {
+            writer.Write(Volatile.Read(ref resetPending));
+            ulong[] irqs = IRQ_Buffer.ToArray();
+            ulong[] nmis = NMI_Buffer.ToArray();
+            writer.Write(irqs.Length);
+            foreach (ulong vector in irqs) writer.Write(vector);
+            writer.Write(nmis.Length);
+            foreach (ulong vector in nmis) writer.Write(vector);
+            writer.Write(Volatile.Read(ref nmiPending));
+            writer.Write(Interlocked.Read(ref nmiQueuedCount));
+            writer.Write(Interlocked.Read(ref nmiServicedCount));
+        }
+
+        internal void LoadDebuggerInterrupts(BinaryReader reader)
+        {
+            Interlocked.Exchange(ref resetPending, reader.ReadInt32());
+            while (IRQ_Buffer.TryDequeue(out _)) { }
+            while (NMI_Buffer.TryDequeue(out _)) { }
+            int irqs = reader.ReadInt32();
+            for (int i = 0; i < irqs; i++) IRQ_Buffer.Enqueue(reader.ReadUInt64());
+            int nmis = reader.ReadInt32();
+            for (int i = 0; i < nmis; i++) NMI_Buffer.Enqueue(reader.ReadUInt64());
+            Interlocked.Exchange(ref nmiPending, reader.ReadInt32());
+            Interlocked.Exchange(ref nmiQueuedCount, reader.ReadInt64());
+            Interlocked.Exchange(ref nmiServicedCount, reader.ReadInt64());
+        }
+
         private void DoReset()
         {
             OnReset?.Invoke();

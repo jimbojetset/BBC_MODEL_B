@@ -141,6 +141,8 @@ namespace BBC
             media.EjectPhysicalDrive(drive);
             UpdateReadyInterrupt();
         }
+        internal bool DeferDebuggerWrites { get => media.DeferDebuggerWrites; set => media.DeferDebuggerWrites = value; }
+
         public bool Flush() => media.Flush();
         public bool IsPhysicalDriveMounted(int drive) => media.IsPhysicalDriveMounted(drive);
         public bool IsPhysicalDriveActivityLedActive(int drive) => media.IsPhysicalDriveActivityLedActive(drive);

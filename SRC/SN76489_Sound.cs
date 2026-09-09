@@ -186,6 +186,32 @@ namespace BBC
             }
         }
 
+        internal void SaveDebuggerEvents(BinaryWriter writer)
+        {
+            lock (syncRoot)
+            {
+                writer.Write(scheduledEvents.Count);
+                foreach (ScheduledPsgEvent entry in scheduledEvents)
+                {
+                    writer.Write(entry.Cycle);
+                    writer.Write(entry.Value);
+                    writer.Write(entry.SampleSlowBus);
+                }
+            }
+        }
+
+        internal void LoadDebuggerEvents(BinaryReader reader)
+        {
+            lock (syncRoot)
+            {
+                scheduledEvents.Clear();
+                int count = reader.ReadInt32();
+                for (int i = 0; i < count; i++)
+                    scheduledEvents.Enqueue(new ScheduledPsgEvent(reader.ReadInt64(), reader.ReadByte(), reader.ReadBoolean()));
+                Volatile.Write(ref scheduledEventCount, scheduledEvents.Count);
+            }
+        }
+
         public void SaveState(BinaryWriter writer)
         {
             lock (syncRoot)
