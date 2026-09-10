@@ -2321,7 +2321,7 @@ namespace BBC
             DrawRectOutline(panel);
 
             DrawRendererText("Sideways Memory", panel.X + 14, panel.Y + 12, 240, 240, 240);
-            DrawRendererText("Banks 0-11: expansion", panel.X + 14, panel.Y + 28, 165, 165, 165);
+            DrawRendererText("Banks 0-B: expansion", panel.X + 14, panel.Y + 28, 165, 165, 165);
 
             for (int bank = 0; bank < romSlots.Length; bank++)
                 DrawRomSlot(bank, GetRomSlotRect(panel, bank));
@@ -2369,9 +2369,10 @@ namespace BBC
             bool movingSource = bank == movingRomSlot;
             bool motherboardSocket = bank >= 12;
 
-            int numberX = slotRect.X + (slotRect.W / 2) - (GetRendererTextWidth(bank.ToString(CultureInfo.InvariantCulture)) / 2);
+            string bankLabel = bank.ToString("X", CultureInfo.InvariantCulture);
+            int numberX = slotRect.X + (slotRect.W / 2) - (GetRendererTextWidth(bankLabel) / 2);
             DrawRendererText(
-                bank.ToString(CultureInfo.InvariantCulture),
+                bankLabel,
                 numberX,
                 slotRect.Y - RomBankNumberHeight,
                 motherboardSocket ? (byte)125 : (byte)190,
@@ -2483,7 +2484,7 @@ namespace BBC
 
             int y = info.Y + 10;
             string location = slot.Bank >= 12 ? "motherboard socket" : "expansion bank";
-            DrawRendererText(TrimRendererText($"Bank {slot.Bank} ({location}): {slot.Title}", columns), info.X + 9, y, 245, 245, 245);
+            DrawRendererText(TrimRendererText($"Bank {slot.Bank:X} ({location}): {slot.Title}", columns), info.X + 9, y, 245, 245, 245);
             y += 18;
             DrawRendererText(TrimRendererText(slot.RomType, columns), info.X + 9, y, 190, 190, 190);
             y += 14;

@@ -1364,6 +1364,12 @@ namespace BBC.CPU
                 return StepInstructionCore();
         }
 
+        internal ushort ReadProgramCounterAtInstructionBoundary()
+        {
+            lock (executionLock)
+                return (ushort)registers.PC;
+        }
+
         internal void WithPausedState(Action action)
         {
             lock (executionLock)

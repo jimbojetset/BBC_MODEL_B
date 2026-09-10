@@ -84,6 +84,12 @@ namespace BBC
         private bool visible;
         private bool disposed;
         private ushort memoryAddress;
+        private bool sidewaysMemoryVisible;
+        private int inspectedSidewaysBank = 0xF;
+        private ushort mainMemoryAddress;
+        private ushort sidewaysMemoryAddress = 0x8000;
+        internal Func<int, ushort, byte>? ReadSidewaysByte;
+        internal Func<int, SidewaysRomSlot>? SidewaysSlot;
         private string memoryFindQuery = string.Empty;
         private byte[] memoryFindBytes = [];
         private ushort? memoryMatch;
@@ -393,6 +399,8 @@ namespace BBC
                 SDL_RenderWindowToLogical(renderer, mouseX, mouseY, out float logicalX, out float logicalY);
                 this.mouseX = logicalX;
                 this.mouseY = logicalY;
+                if (HandleMemoryTabClick(logicalX, logicalY))
+                    return true;
                 if (HandleHistoryClick(logicalX, logicalY))
                     return true;
                 if (logicalY >= 7 && logicalY < 35)
@@ -517,7 +525,7 @@ namespace BBC
                 if (logicalY is >= 76 and < CommandTop)
                 {
                     if (logicalX < 350)
-                        memoryAddress = (ushort)(memoryAddress - mouseWheelY * 8);
+                        memoryAddress = MemoryPanelAddress(memoryAddress - mouseWheelY * 8);
                     else if (logicalX is >= DisassemblyLeft and < DisassemblyRight)
                     {
                         if (historyVisible) ScrollHistory(mouseWheelY);
@@ -558,20 +566,21 @@ namespace BBC
         private string GetVisibleMemoryText()
         {
             StringBuilder result = new StringBuilder();
-            ushort address = (ushort)(memoryAddress & 0xFFF8);
+            ushort address = MemoryPanelAddress(memoryAddress & 0xFFF8);
+            if (sidewaysMemoryVisible) result.AppendLine(SidewaysBankDescription());
             Span<char> ascii = stackalloc char[8];
-            for (int row = 0; row < 20; row++)
+            for (int row = 0; row < MemoryVisibleRows; row++)
             {
                 result.Append($"{address:X4}");
                 for (int column = 0; column < 8; column++)
                 {
-                    byte value = readByte((ushort)(address + column));
+                    byte value = ReadMemoryPanelByte(MemoryPanelAddress(address + column));
                     result.Append($" {value:X2}");
                     ascii[column] = value is >= 32 and <= 126 ? (char)value : '.';
                 }
                 result.Append("  ").Append(ascii);
-                if (row < 19) result.AppendLine();
-                address += 8;
+                if (row < MemoryVisibleRows - 1) result.AppendLine();
+                address = MemoryPanelAddress(address + 8);
             }
             return result.ToString();
         }
@@ -826,6 +835,7 @@ namespace BBC
             ClearTemporaryBreakpoints();
             temporaryStopDescription = null;
             pause();
+            disassemblyAddress = cpu.ReadProgramCounterAtInstructionBoundary();
             if (undoRunPending)
             {
                 undoRunPending = false;
@@ -951,11 +961,14 @@ namespace BBC
             canvas.Clear(new SKColor(Background));
             DrawToolbar();
 
-            DrawPanel(new SKRect(8, 48, 350, CommandTop - 8), "MEMORY");
+            DrawPanel(new SKRect(8, 48, 350, CommandTop - 8), "");
+            DrawButton(new SKRect(18, 50, 114, 73), "MEMORY", !sidewaysMemoryVisible);
+            DrawButton(new SKRect(118, 50, 232, 73), "SIDEWAYS", sidewaysMemoryVisible, ReadSidewaysByte is not null);
             DrawAddressField(new SKRect(18, 76, 276, 108), "Find", memoryAddress, AddressField.Memory);
             DrawButton(new SKRect(282, 78, 308, 106), "<", memoryFindButton == -1);
             DrawButton(new SKRect(312, 78, 338, 106), ">", memoryFindButton == 1);
-            DrawMemory(20, 132);
+            if (sidewaysMemoryVisible) DrawSidewaysBanks();
+            DrawMemory(20, sidewaysMemoryVisible ? 180 : 132);
 
             DrawPanel(new SKRect(DisassemblyLeft, 48, DisassemblyRight, CommandTop - 8), "");
             DrawButton(new SKRect(368, 50, 510, 73), "DISASSEMBLY", !historyVisible);
@@ -1399,18 +1412,103 @@ namespace BBC
             canvas.Restore();
         }
 
+        private int MemoryVisibleRows => sidewaysMemoryVisible ? 17 : 20;
+
+        private ushort MemoryPanelAddress(int address) => sidewaysMemoryVisible
+            ? (ushort)(0x8000 | (address & 0x3FFF)) : (ushort)address;
+
+        private byte ReadMemoryPanelByte(ushort address) => sidewaysMemoryVisible
+            ? ReadSidewaysByte!(inspectedSidewaysBank, address) : readByte(address);
+
+        private void SelectMemoryTab(bool sideways)
+        {
+            if (sideways == sidewaysMemoryVisible || sideways && ReadSidewaysByte is null)
+                return;
+            if (sideways)
+            {
+                mainMemoryAddress = memoryAddress;
+                memoryAddress = sidewaysMemoryAddress;
+            }
+            else
+            {
+                sidewaysMemoryAddress = memoryAddress;
+                memoryAddress = mainMemoryAddress;
+            }
+            sidewaysMemoryVisible = sideways;
+            ClearMemorySearch();
+        }
+
+        private void ClearMemorySearch()
+        {
+            memoryFindQuery = string.Empty;
+            memoryFindBytes = [];
+            memoryMatch = null;
+            comparisonMemory.Clear();
+            activeAddressField = AddressField.None;
+            addressEntry = string.Empty;
+        }
+
+        private bool HandleMemoryTabClick(float x, float y)
+        {
+            if (x < 18 || x >= 338)
+                return false;
+            if (y is >= 50 and < 74 && x < 232)
+            {
+                SelectMemoryTab(x >= 118);
+            }
+            else if (sidewaysMemoryVisible && y is >= 114 and < 138)
+            {
+                int bank = (int)((x - 18) / 20);
+                if (bank >= 16 || x >= 18 + bank * 20 + 18 || SidewaysSlot?.Invoke(bank)?.Occupied != true)
+                    return true;
+                inspectedSidewaysBank = bank;
+                ClearMemorySearch();
+            }
+            else
+                return false;
+            clipboardPanel = ClipboardPanel.Memory;
+            commandFocus = false;
+            return true;
+        }
+
+        private string SidewaysBankDescription()
+        {
+            SidewaysRomSlot? slot = SidewaysSlot?.Invoke(inspectedSidewaysBank);
+            string kind = slot is null || !slot.Occupied ? "Empty" : slot.Missing ? "Missing" : slot.Writable ? "RAM" : "ROM";
+            string name = slot is null || !slot.Occupied ? "" : string.IsNullOrWhiteSpace(slot.Title) ? slot.DisplayName : slot.Title;
+            return $"Bank {inspectedSidewaysBank:X}: {kind} {name}".TrimEnd();
+        }
+
+        private void DrawSidewaysBanks()
+        {
+            for (int bank = 0; bank < 16; bank++)
+            {
+                float x = 18 + bank * 20;
+                bool occupied = SidewaysSlot?.Invoke(bank)?.Occupied == true;
+                bool selected = occupied && bank == inspectedSidewaysBank;
+                SKRect button = new SKRect(x, 114, x + 18, 138);
+                Fill(button, selected ? CurrentInstruction : PanelDark);
+                Stroke(button, selected ? Accent : Border);
+                DrawText($"{bank:X}", x + 5, 131, selected ? Accent : occupied ? Text : DimText, small: true);
+            }
+            canvas.Save();
+            canvas.ClipRect(new SKRect(18, 140, 338, 162));
+            DrawText(SidewaysBankDescription(), 20, 156, DimText, small: true);
+            canvas.Restore();
+        }
+
         private void DrawMemory(float x, float y)
         {
-            ushort address = (ushort)(memoryAddress & 0xFFF8);
+            ushort address = MemoryPanelAddress(memoryAddress & 0xFFF8);
             Span<char> ascii = stackalloc char[8];
-            for (int row = 0; row < 20; row++)
+            for (int row = 0; row < MemoryVisibleRows; row++)
             {
                 float baseline = y + row * 20;
                 DrawText($"{address:X4}", x, baseline, Accent);
                 for (int column = 0; column < 8; column++)
                 {
-                    ushort byteAddress = (ushort)(address + column);
-                    byte value = readByte(byteAddress);
+                    ushort byteAddress = MemoryPanelAddress(address + column);
+                    byte value = ReadMemoryPanelByte(byteAddress);
                     bool valueChanged = paused() && comparisonMemory.TryGetValue(byteAddress, out byte previousValue)
                         && previousValue != value;
                     if (memoryMatch is ushort match && byteAddress >= match && byteAddress < match + memoryFindBytes.Length)
@@ -1419,7 +1517,7 @@ namespace BBC
                     ascii[column] = value is >= 32 and <= 126 ? (char)value : '.';
                 }
                 DrawText(new string(ascii), x + 260, baseline, DimText, small: true);
-                address += 8;
+                address = MemoryPanelAddress(address + 8);
             }
         }
 
@@ -1429,11 +1527,11 @@ namespace BBC
             comparisonRegisters = new RegisterSnapshot((ushort)r.PC, r.A, r.X, r.Y, r.S, r.P);
             comparisonMemory.Clear();
             ushort start = (ushort)(memoryAddress & 0xFFF8);
-            for (int offset = 0; offset < 160; offset++)
+            for (int offset = 0; offset < MemoryVisibleRows * 8; offset++)
             {
-                ushort mappedAddress = (ushort)(start + offset);
+                ushort mappedAddress = MemoryPanelAddress(start + offset);
                 if (IsSafeDebuggerMemory(mappedAddress))
-                    comparisonMemory[mappedAddress] = readByte(mappedAddress);
+                    comparisonMemory[mappedAddress] = ReadMemoryPanelByte(mappedAddress);
             }
         }
 
@@ -1485,6 +1583,8 @@ namespace BBC
                     else
                     {
                         ushort address = ParseAddress(query);
+                        if (sidewaysMemoryVisible && address is < 0x8000 or > 0xBFFF)
+                            throw new ArgumentException("Sideways bank addresses range from $8000 to $BFFF.");
                         memoryAddress = (ushort)(address & 0xFFF8);
                         memoryFindQuery = string.Empty;
                         memoryFindBytes = [];
@@ -1506,17 +1606,19 @@ namespace BBC
                 }
 
                 int start = !newSearch && memoryMatch.HasValue ? memoryMatch.Value + direction : memoryAddress;
-                for (int offset = 0; offset < 65536; offset++)
+                int end = sidewaysMemoryVisible ? 0xC000 : 0x10000;
+                int length = sidewaysMemoryVisible ? 0x4000 : 0x10000;
+                for (int offset = 0; offset < length; offset++)
                 {
-                    int candidate = (start + direction * offset) & 0xFFFF;
-                    if (candidate + memoryFindBytes.Length > 65536)
+                    int candidate = MemoryPanelAddress(start + direction * offset);
+                    if (candidate + memoryFindBytes.Length > end)
                         continue;
                     bool matches = true;
                     for (int index = 0; index < memoryFindBytes.Length; index++)
                     {
                         ushort address = (ushort)(candidate + index);
                         // FRED, JIM and SHEILA peeks contain backing bytes, not searchable device state.
-                        if (!IsSafeDebuggerMemory(address) || readByte(address) != memoryFindBytes[index])
+                        if (!IsSafeDebuggerMemory(address) || ReadMemoryPanelByte(address) != memoryFindBytes[index])
                         {
                             matches = false;
                             break;
@@ -1527,7 +1629,7 @@ namespace BBC
 
                     memoryMatch = (ushort)candidate;
                     memoryAddress = (ushort)(candidate & 0xFFF8);
-                    WriteCommandOutput($"Found {memoryFindQuery} at ${candidate:X4}");
+                    WriteCommandOutput($"Found {memoryFindQuery} at ${candidate:X4}{(sidewaysMemoryVisible ? $" in bank {inspectedSidewaysBank:X}" : "")}");
                     return;
                 }
                 memoryMatch = null;
@@ -1838,6 +1940,7 @@ namespace BBC
 
         private void ExecuteMemoryCommand(string[] parts)
         {
+            SelectMemoryTab(false);
             ushort address = parts.Length > 1 ? ParseAddress(parts[1]) : memoryAddress;
             int count = parts.Length > 2 ? ParseCount(parts[2], 1, 256) : 32;
             memoryAddress = (ushort)(address & 0xFFF8);
@@ -1862,6 +1965,7 @@ namespace BBC
 
             ushort start = ParseAddress(parts[1]);
             byte[] values = parts[2..].Select(ParseByte).ToArray();
+            SelectMemoryTab(false);
             DiscardUndoHistory();
             for (int i = 0; i < values.Length; i++)
                 writeByte((ushort)(start + i), values[i]);

@@ -776,6 +776,8 @@ Examples:
                 Display.FrameBuffer,
                 Display.Width,
                 Display.Height);
+            debugger.ReadSidewaysByte = (bank, address) => sidewaysRoms[bank * RomSize + address - SidewaysRomStart];
+            debugger.SidewaysSlot = bank => sidewaysRomSlots[bank];
             debugger.CaptureUndoState = CaptureDebuggerState;
             debugger.RestoreUndoState = RestoreDebuggerState;
             debugger.EndUndoRecording = () =>
