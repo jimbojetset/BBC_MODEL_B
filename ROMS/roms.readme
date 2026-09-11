@@ -1,13 +1,16 @@
-Place your ROMS in this folder. 
-Tested with the following ROMs
-  6502tube_120.rom	
-  AMXMSE331.rom		
-  DFS-0.9.rom		
-  DNFS302.rom		
-  OS12.rom		
-  TERMULATORv1.rom
-  ADFS-1.30.rom		
-  BASIC2.rom		
-  DFS-2.26.rom		
-  HiBASIC.rom		
-  PHROM.rom
+Place your ROMs in this folder.
+Tested with the following ROMs:
+  6502tube_120.rom            (6502 Tube second-processor firmware, version 1.20)
+  AMXMSE331.rom               (AMX mouse support, version 3.31)
+  DFS-0.9.rom                 (Acorn Disc Filing System 0.90 for Intel 8271)
+  DNFS302.rom                 (Combined disc/network filing systems with Tube host support)
+  OS12.rom                    (BBC Micro operating system, version 1.20)
+  TERMULATORv1.rom            (Termulator serial terminal software)
+  ADFS-1.30.rom               (Acorn Advanced Disc Filing System, version 1.30)
+  BASIC2.rom                  (BBC BASIC II language interpreter)
+  DFS-2.26.rom                (Acorn Disc Filing System 2.26 for WD1770)
+  HiBASIC.rom                 (High-memory BBC BASIC for the 6502 second processor)
+  PHROM.rom                   (Acorn speech vocabulary data for the TMS5220 speech system)
+  LOGO-1.rom                  (Acornsoft Logo, first ROM)
+  LOGO-2-1201387.rom          (Acornsoft Logo, second ROM; both required)
+  Logotron LOGO 1.01 1984.rom (Logotron Logo 1.01; single ROM)

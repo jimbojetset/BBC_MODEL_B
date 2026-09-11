@@ -203,9 +203,13 @@ Enable **Peripherals → Turtle** to connect a Jessop Ralph turtle and show its 
 BBC_JESSOP_TURTLE=1 dotnet run --project BBC_MODEL_B.csproj
 ```
 
-Place `LOGO-1.rom` and `LOGO-2-1201387.rom` in `ROMS/`. Enabling Turtle automatically fits them in free expansion sockets (preferring A and B), or reuses identical ROMs already fitted. Other ROM and RAM banks are preserved. If either ROM is missing, invalid, or there is insufficient socket space, Turtle remains disabled and a message explains why. Installing new ROMs resets the BBC so MOS recognises Logo; the banks appear in Sideways Memory.
+Enabling Turtle does not load or replace ROMs and does not reset the BBC. It always displays a reminder to load your chosen Logo ROMs through **Sideways Memory**, even if Logo ROMs are already fitted. Turtle can be enabled without any Logo ROMs installed.
 
-With Turtle enabled, mount `Games/AcornsoftLogoExtensions.ssd` and enter `*LOGO`. At the Logo prompt, load the driver and select the floor turtle:
+For **Acornsoft Logo**, manually fit `ROMS/LOGO-1.rom` and `ROMS/LOGO-2-1201387.rom` in available expansion sockets (for example A and B), then reset the BBC so MOS recognises the language. For **Logotron Logo**, fit `ROMS/Logotron LOGO 1.01 1984.rom` instead. Use one Logo package at a time to avoid competing `*LOGO` commands.
+
+With Logotron, mount `Assets/LOGOX.ssd`, enter `*LOGO`, then `USE "uJES` and `FLOOR`. Movement and pen control have been tested at normal and Max speed. Its default `FD 100` moves approximately 175 mm, which differs from Acornsoft’s distance scale.
+
+For Acornsoft Logo, with Turtle enabled, mount `Assets/AcornsoftLogo.ssd` and enter `*LOGO`. At the Logo prompt, load the driver and select the floor turtle:
 
 ```logo
 LOAD "JESSOP
@@ -224,7 +228,7 @@ PENUP
 
 The pattern is approximately 70 cm across and takes several minutes at normal speed. Small closure errors reflect the wheel encoder resolution.
 
-Disabling Turtle closes the drawing window, unloads both Logo ROMs (including moved sockets) and resets the BBC, preserving other fitted ROM and RAM banks. The OS ROM and reset vector remain intact when the Logo ROM configuration changes.
+Disabling Turtle closes the drawing window, unloads fitted Logo ROMs (including moved sockets) and resets the BBC, preserving other fitted ROM and RAM banks. The OS ROM and reset vector remain intact when the Logo ROM configuration changes.
 
 The floor defaults to **3 m × 3 m**, with **2 m × 2 m** and **1 m × 1 m** zoom presets centred on the same origin. A faint **0.25 m grid** provides scale. The turtle starts in the centre, facing up; its 300 mm body, clear dome and visible mechanisms follow the [Museums Victoria Jessop reference](https://collections.museumsvictoria.com.au/items/2620712). Movement and rotation follow continuous differential wheel travel, rather than jumping between encoder pulses. The drawing window has a fixed size, with text rendered at the display’s native pixel density. Pen buttons select **Red**, **Blue**, **Green**, or **Black** (the default); changing pens preserves the colour of existing lines, including in PNG exports.
 

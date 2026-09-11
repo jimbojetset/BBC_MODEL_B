@@ -739,7 +739,7 @@ Examples:
             }
 
             if (Environment.GetEnvironmentVariable("BBC_JESSOP_TURTLE") == "1")
-                TryEnableTurtle(out _);
+                userVia.SetJessopEnabled(true);
 
             QueueStartupSerialText();
             pendingBreak = default;
@@ -763,8 +763,8 @@ Examples:
             {
                 Display = new Display();
             }
-            if (turtleEnableError is not null)
-                Display.ShowNotification("Turtle unavailable", turtleEnableError, 6000);
+            if (userVia.Jessop is not null)
+                ShowTurtleRomReminder();
             Display.AttachPrinter(printer);
             turtleWindow ??= new TurtleWindow(() => userVia.Jessop, () => debugger?.DiscardUndoHistory());
             Display.AttachTurtleWindow(turtleWindow);
@@ -1739,12 +1739,16 @@ Examples:
                         // still unload correctly even if the original files are gone.
                         for (int bank = 0; bank < SidewaysRomBanks; bank++)
                             if (!sidewaysRamBanks[bank] && IsLanguageRom(bank)
-                                && ReadSidewaysRomTitle(bank) is "LOGO 1" or "LOGO 2")
+                                && ReadSidewaysRomTitle(bank) is "LOGO 1" or "LOGO 2" or "LOGO")
                                 ClearSidewaysRomBank(bank);
                         resetRequired = true;
                     }
                     else
-                        resetRequired = TryEnableTurtle(out bool romsLoaded) && romsLoaded;
+                    {
+                        userVia.SetJessopEnabled(true);
+                        ShowTurtleRomReminder();
+                        resetRequired = false;
+                    }
 
                     if (resetRequired)
                     {
@@ -1758,8 +1762,7 @@ Examples:
                         pendingBootScriptLines.Clear();
                         pendingKeyboardInput.Clear();
                         Cpu.ResetNow();
-                        display.ShowNotification("Turtle", disabling
-                            ? "Logo ROMs unloaded; BBC reset" : "Logo ROMs loaded; BBC reset", 4000);
+                        display.ShowNotification("Turtle", "Logo ROMs unloaded; BBC reset", 4000);
                     }
                     display.SetRomSlots(sidewaysRomSlots);
                     UpdateJoystickInputs();
@@ -3886,71 +3889,10 @@ Examples:
             }
         }
 
-        private string? turtleEnableError;
-
-        private bool TryEnableTurtle(out bool romsLoaded)
+        private void ShowTurtleRomReminder()
         {
-            romsLoaded = false;
-            turtleEnableError = null;
-            try
-            {
-                string root = GetRomRoot();
-                string[] names = ["LOGO-1.rom", "LOGO-2-1201387.rom"];
-                byte[][] images = new byte[names.Length][];
-                int[] banks = [-1, -1];
-                string[] paths = new string[names.Length];
-                // Read both images before changing any sockets, so a missing ROM
-                // cannot leave half of the Logo language installed.
-                for (int i = 0; i < names.Length; i++)
-                {
-                    paths[i] = Path.GetFullPath(Path.Combine(root, names[i]));
-                    images[i] = ReadRomFileForBank(paths[i]);
-                    if (images[i].Length != RomSize)
-                        throw new InvalidDataException($"{names[i]} must be a 16 KB ROM.");
-                    for (int bank = 0; bank < SidewaysRomBanks; bank++)
-                        if (!sidewaysRamBanks[bank] && sidewaysRomPaths[bank] is not null
-                            && images[i].AsSpan().SequenceEqual(sidewaysRoms.AsSpan(bank * RomSize, RomSize)))
-                        {
-                            banks[i] = bank;
-                            break;
-                        }
-                }
-
-                // Prefer expansion sockets A and B; preserve every fitted ROM/RAM.
-                int[] candidates = [10, 11, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
-                for (int i = 0; i < banks.Length; i++)
-                {
-                    if (banks[i] >= 0) continue;
-                    foreach (int bank in candidates)
-                        if (sidewaysRomPaths[bank] is null && !sidewaysRamBanks[bank]
-                            && !banks.Contains(bank))
-                        {
-                            banks[i] = bank;
-                            break;
-                        }
-                    if (banks[i] < 0)
-                        throw new InvalidOperationException("Free two expansion ROM sockets for the Logo ROMs.");
-                }
-
-                for (int i = 0; i < banks.Length; i++)
-                {
-                    int bank = banks[i];
-                    if (sidewaysRomPaths[bank] is not null) continue;
-                    images[i].CopyTo(sidewaysRoms, bank * RomSize);
-                    sidewaysRomPaths[bank] = paths[i];
-                    RefreshSidewaysRomSlot(bank);
-                    romsLoaded = true;
-                }
-                userVia.SetJessopEnabled(true);
-                return true;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-            {
-                turtleEnableError = ex.Message;
-                Display?.ShowNotification("Turtle unavailable", ex.Message, 6000);
-                Console.WriteLine($"Turtle unavailable: {ex.Message}");
-                return false;
-            }
+            Display?.ShowNotification("Turtle: load your Logo ROM(s)",
+                "Use Sideways Memory, then load the turtle driver.", 10000);
         }
 
         private void LoadDefaultSidewaysRoms()
