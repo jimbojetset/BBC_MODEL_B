@@ -8,4 +8,4 @@ https://collections.museumsvictoria.com.au/items/2620712
 Reference image credit: Museums Victoria, CC BY 4.0.
 https://creativecommons.org/licenses/by/4.0/
 
-The reconstruction changes the orientation, component arrangement and lighting. The white-background sprite is composited with multiply blending; it does not contain an alpha channel.
+The reconstruction changes the orientation, component arrangement and lighting. The white-background sprite is drawn opaquely within a circular clip so the turtle covers the ink beneath its body; it does not contain an alpha channel.

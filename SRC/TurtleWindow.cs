@@ -319,9 +319,9 @@ namespace BBC
 
         private void DrawTurtle(SKCanvas canvas)
         {
-            // The photographed-style sprite has a white background. Multiply keeps
-            // the floor visible through the clear dome and outside the circular rim.
-            using SKPaint sprite = new() { IsAntialias = true, FilterQuality = SKFilterQuality.High, BlendMode = SKBlendMode.Multiply };
+            // The turtle covers the ink beneath its body. Clip away the sprite's
+            // square background without blending floor marks into the machinery.
+            using SKPaint sprite = new() { IsAntialias = true, FilterQuality = SKFilterQuality.High };
             canvas.Save();
             using SKPath outline = new();
             outline.AddOval(new SKRect(-150, -150, 150, 150));
