@@ -603,7 +603,7 @@ namespace BBC
             // Jessop polls PB5/PB6 wheel encoders and PB7 pen position directly;
             // it does not use the CB1/CB2 interrupts used by the AMX mouse.
             if (Jessop is not null)
-                return ReadPort(portB, dataDirectionB, (byte)(Jessop.Sensors | 0x1F));
+                return ReadPort(portB, dataDirectionB, (byte)(Jessop.ReadSensors() | 0x1F));
 
             byte floatingInput = IsRepeatedPortBPoll() ? floatingPortBInput : (byte)0xFF;
             // Unconnected user-port inputs idle high on the BBC. Defender polls PB7

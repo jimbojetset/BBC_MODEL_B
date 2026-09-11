@@ -75,23 +75,30 @@ namespace BBC
             return true;
         }
 
-        private static SKRect Button(int index) => index >= 9
+        private static SKRect Button(int index) => index == 11
+            ? new SKRect(382, 14, 478, 48)
+            : index >= 9
             ? new SKRect(index == 9 ? 486 : 590, 56, index == 9 ? 582 : 700, 86)
             : index >= 5
             ? new SKRect(70 + (index - 5) * 94, 56, 156 + (index - 5) * 94, 86)
             : index < 3
-            ? new SKRect(162 + index * 82, 14, 240 + index * 82, 48)
+            ? new SKRect(70 + index * 94, 14, 156 + index * 94, 48)
             : new SKRect(index == 3 ? 486 : 590, 14, index == 3 ? 582 : 700, 48);
 
         private static int ButtonAt(float x, float y)
         {
-            for (int i = 0; i < 11; i++) if (Button(i).Contains(x, y)) return i;
+            for (int i = 0; i < 12; i++) if (Button(i).Contains(x, y)) return i;
             return -1;
         }
 
         private void Activate(int index)
         {
-            if (index == 9)
+            if (index == 11)
+            {
+                JessopTurtle? attached = turtle();
+                if (attached is not null) attached.MaxSpeed = !attached.MaxSpeed;
+            }
+            else if (index == 9)
             {
                 try
                 {
@@ -190,7 +197,7 @@ namespace BBC
         internal void Draw(SKCanvas canvas, TurtleDrawing? drawing)
         {
             canvas.Clear(new SKColor(24, 28, 31));
-            Text(canvas, "Turtle", 20, 37, 16, new SKColor(225, 233, 236));
+            Text(canvas, "Size", 20, 37, 16, new SKColor(225, 233, 236));
             string[] labels = ["3 m × 3 m", "2 m × 2 m", "1 m × 1 m", "Clear", "Save PNG"];
             for (int i = 0; i < labels.Length; i++)
             {
@@ -200,6 +207,11 @@ namespace BBC
                 canvas.DrawRoundRect(Button(i), 4, 4, paint);
                 Text(canvas, labels[i], Button(i).MidX, 36, 15, SKColors.White, true);
             }
+            paint.Style = SKPaintStyle.Fill;
+            paint.Color = pressed == 11 ? new SKColor(65, 118, 138)
+                : turtle()?.MaxSpeed == true ? new SKColor(42, 75, 89) : new SKColor(43, 48, 52);
+            canvas.DrawRoundRect(Button(11), 4, 4, paint);
+            Text(canvas, "Max speed", Button(11).MidX, 36, 15, SKColors.White, true);
             Text(canvas, "Pen", 20, 76, 14, new SKColor(214, 224, 227));
             for (int i = 5; i < 9; i++)
             {

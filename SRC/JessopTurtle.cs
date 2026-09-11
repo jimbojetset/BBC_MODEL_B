@@ -24,12 +24,37 @@ namespace BBC
         private byte sensors = 0x60;
         private byte outputs = 0xFF;
         private byte direction;
+        private volatile bool maxSpeed;
+        private byte unreadSensors;
+
+        internal bool MaxSpeed
+        {
+            get => maxSpeed;
+            set
+            {
+                lock (sync)
+                {
+                    if (maxSpeed == value) return;
+                    maxSpeed = value;
+                    unreadSensors = 0;
+                }
+            }
+        }
 
         internal long LeftEdges { get; private set; }
         internal long RightEdges { get; private set; }
         internal bool PenDown => (sensors & 0x80) != 0;
         internal bool HooterActive => (direction & 0x80) != 0 && (outputs & 0x80) == 0;
         internal byte Sensors => sensors;
+
+        internal byte ReadSensors()
+        {
+            lock (sync)
+            {
+                unreadSensors = 0;
+                return sensors;
+            }
+        }
 
         internal void WritePort(byte value, byte dataDirection)
         {
@@ -42,10 +67,15 @@ namespace BBC
         {
             lock (sync)
             {
+                // At maximum speed, hold each encoder transition until the BBC
+                // reads it. Logo polls the port; skipping pulses changes distances.
+                int leftCycles = MotorCycles(cycles, leftPhase, WheelEdgeCycles, 0x40);
+                int rightCycles = MotorCycles(cycles, rightPhase, WheelEdgeCycles, 0x20);
+                int penCycles = MotorCycles(cycles, penPhase, PenEdgeCycles, 0x80);
                 // Integrate differential wheel travel continuously, independently of
                 // encoder edges, so the visible turtle does not jump between pulses.
-                double left = (outputs & 0x10) == 0 ? cycles * 0.00005 * ((outputs & 8) != 0 ? 1 : -1) : 0;
-                double right = (outputs & 4) == 0 ? cycles * 0.00005 * ((outputs & 2) != 0 ? 1 : -1) : 0;
+                double left = (outputs & 0x10) == 0 ? leftCycles * 0.00005 * ((outputs & 8) != 0 ? 1 : -1) : 0;
+                double right = (outputs & 4) == 0 ? rightCycles * 0.00005 * ((outputs & 2) != 0 ? 1 : -1) : 0;
                 double angle = (left - right) / 200.0; // Jessop wheel spacing: 200 mm.
                 double distance = (left + right) / 2;
                 if (PenDown && !strokeStarted)
@@ -64,39 +94,48 @@ namespace BBC
                         marks.Add(new TurtleMark((float)x, (float)y, false, penColour));
                 }
                 if (!PenDown) strokeStarted = false;
-                TickSensors(cycles);
+                TickSensors(leftCycles, rightCycles, penCycles);
             }
         }
 
-        private void TickSensors(int cycles)
+        private int MotorCycles(int cycles, int phase, int period, byte sensor)
+        {
+            if (!maxSpeed) return cycles;
+            return (unreadSensors & sensor) != 0 ? 0 : Math.Min(cycles * 10, period - phase);
+        }
+
+        private void TickSensors(int leftCycles, int rightCycles, int penCycles)
         {
             if ((outputs & 0x10) == 0)
             {
-                leftPhase += cycles;
+                leftPhase += leftCycles;
                 while (leftPhase >= WheelEdgeCycles)
                 {
                     leftPhase -= WheelEdgeCycles;
                     sensors ^= 0x40;
+                    if (maxSpeed) unreadSensors |= 0x40;
                     LeftEdges += (outputs & 0x08) != 0 ? 1 : -1;
                 }
             }
             if ((outputs & 0x04) == 0)
             {
-                rightPhase += cycles;
+                rightPhase += rightCycles;
                 while (rightPhase >= WheelEdgeCycles)
                 {
                     rightPhase -= WheelEdgeCycles;
                     sensors ^= 0x20;
+                    if (maxSpeed) unreadSensors |= 0x20;
                     RightEdges += (outputs & 0x02) != 0 ? 1 : -1;
                 }
             }
             if ((outputs & 0x01) == 0)
             {
-                penPhase += cycles;
+                penPhase += penCycles;
                 while (penPhase >= PenEdgeCycles)
                 {
                     penPhase -= PenEdgeCycles;
                     sensors ^= 0x80;
+                    if (maxSpeed) unreadSensors |= 0x80;
                 }
             }
         }
@@ -158,6 +197,8 @@ namespace BBC
                 writer.Write((byte)mark.Colour);
             }
             writer.Write((byte)penColour);
+            writer.Write(maxSpeed);
+            writer.Write(unreadSensors);
         }
 
         private static TurtlePenColour ReadPenColour(BinaryReader reader)
@@ -168,7 +209,7 @@ namespace BBC
             return (TurtlePenColour)colour;
         }
 
-        internal void LoadState(BinaryReader reader, bool hasDrawing = true, bool hasColours = true)
+        internal void LoadState(BinaryReader reader, bool hasDrawing = true, bool hasColours = true, bool hasSpeed = true)
         {
             leftPhase = reader.ReadInt32();
             rightPhase = reader.ReadInt32();
@@ -196,6 +237,8 @@ namespace BBC
                         hasColours ? ReadPenColour(reader) : TurtlePenColour.Black));
                 if (hasColours) penColour = ReadPenColour(reader);
             }
+            maxSpeed = hasSpeed && reader.ReadBoolean();
+            unreadSensors = hasSpeed ? reader.ReadByte() : (byte)0;
         }
     }
 }
