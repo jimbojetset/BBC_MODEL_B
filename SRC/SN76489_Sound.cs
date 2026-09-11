@@ -102,6 +102,9 @@ namespace BBC
         private bool latchedVolume;
         private int cassetteToneHz;
         private double cassetteTonePhase;
+        private int turtleHooterLevel;
+        private double turtleHooterPreviousInput;
+        private double turtleHooterSample;
         private int printerClickSamplesUntilNext;
         private double printerClickEnvelope;
         private uint printerClickNoise = 0x6D2B79F5;
@@ -171,6 +174,9 @@ namespace BBC
                 latchedVolume = false;
                 cassetteToneHz = 0;
                 cassetteTonePhase = 0;
+                turtleHooterLevel = 0;
+                turtleHooterPreviousInput = 0;
+                turtleHooterSample = 0;
                 printerHeadEvents.Clear();
                 printerClickSamplesUntilNext = 0;
                 printerClickEnvelope = 0;
@@ -283,6 +289,9 @@ namespace BBC
                 lastGeneratedSample = 0;
                 cassetteToneHz = 0;
                 cassetteTonePhase = 0;
+                turtleHooterLevel = 0;
+                turtleHooterPreviousInput = 0;
+                turtleHooterSample = 0;
                 printerHeadEvents.Clear();
                 printerClickSamplesUntilNext = 0;
                 printerClickEnvelope = 0;
@@ -509,6 +518,17 @@ namespace BBC
 
             if (audioDevice != 0)
                 SDL_ClearQueuedAudio(audioDevice);
+        }
+
+        internal void SetTurtleHooterLevel(bool high)
+        {
+            int level = high ? 1 : 0;
+            if (Volatile.Read(ref turtleHooterLevel) == level) return;
+            lock (syncRoot)
+            {
+                Volatile.Write(ref turtleHooterLevel, level);
+                UpdateEmulatedOutputActiveLocked();
+            }
         }
 
         public void SetCassetteTone(int frequencyHz)
@@ -1011,9 +1031,22 @@ namespace BBC
             mixed /= chipSamples;
             mixed += discDriveSound?.GenerateSample() ?? 0;
             mixed += GenerateCassetteToneSample();
+            mixed += GenerateTurtleHooterSample();
             mixed += GeneratePrinterClickSample();
             mixed += GenerateSpeechSample();
             return (short)Math.Clamp(mixed * short.MaxValue, short.MinValue, short.MaxValue);
+        }
+
+        private double GenerateTurtleHooterSample()
+        {
+            // Jessop's hooter is a directly driven loudspeaker: PB7 pulses set
+            // the pitch. Remove DC to approximate its AC-coupled response;
+            // holding the output steady must not generate an invented tone.
+            double input = turtleHooterLevel * 0.12;
+            turtleHooterSample = input - turtleHooterPreviousInput + 0.996 * turtleHooterSample;
+            turtleHooterPreviousInput = input;
+            if (Math.Abs(turtleHooterSample) < 0.000001) turtleHooterSample = 0;
+            return turtleHooterSample;
         }
 
         private double GenerateSpeechSample()
@@ -1106,11 +1139,13 @@ namespace BBC
 
             for (int i = 0; i < samplesToGenerate; i++)
                 EnqueueGeneratedSample(GenerateSample());
+            UpdateEmulatedOutputActiveLocked();
         }
 
         private bool IsEmulatedOutputActive()
         {
             return cassetteToneHz > 0
+                || turtleHooterLevel != 0 || turtleHooterSample != 0 || turtleHooterPreviousInput != 0
                 || volumes[0] < 15
                 || volumes[1] < 15
                 || volumes[2] < 15
@@ -1123,6 +1158,7 @@ namespace BBC
         private void UpdateEmulatedOutputActiveLocked()
         {
             bool active = cassetteToneHz > 0
+                || turtleHooterLevel != 0 || turtleHooterSample != 0 || turtleHooterPreviousInput != 0
                 || volumes[0] < 15
                 || volumes[1] < 15
                 || volumes[2] < 15

@@ -53,6 +53,7 @@ namespace BBC
         private int timer2Counter;
         private int timer2Latch;
         private bool timer1Running;
+        private bool timer1Pb7 = true;
         private bool timer1HasInterrupted;
         private bool timer2Running;
         private bool timer2HasInterrupted;
@@ -75,7 +76,7 @@ namespace BBC
             Jessop = null;
             SetPortBInputBits(0, 0);
             Jessop = enabled ? new JessopTurtle() : null;
-            Jessop?.WritePort(portB, dataDirectionB);
+            UpdateJessopPort();
         }
 
         public bool PrinterEnabled { get; set; }
@@ -157,7 +158,7 @@ namespace BBC
             portB = 0;
             dataDirectionA = 0;
             dataDirectionB = 0;
-            Jessop?.WritePort(portB, dataDirectionB);
+            UpdateJessopPort();
             externalPortBMask = 0;
             externalPortBValue = 0;
             floatingPortBInput = 0xA5;
@@ -174,6 +175,7 @@ namespace BBC
             timer2Counter = 0x1FFFE;
             timer2Latch = 0x1FFFE;
             timer1Running = true;
+            timer1Pb7 = true;
             timer1HasInterrupted = true;
             timer2Running = false;
             timer2HasInterrupted = false;
@@ -212,9 +214,12 @@ namespace BBC
             writer.Write(timer2HasInterrupted);
             writer.Write(justHit);
             writer.Write(peripheralCycleRemainder);
+            writer.Write(timer1Pb7);
         }
 
-        public void LoadState(BinaryReader reader)
+        public void LoadState(BinaryReader reader) => LoadState(reader, true);
+
+        internal void LoadState(BinaryReader reader, bool hasTimer1Pb7)
         {
             int length = reader.ReadInt32();
             if (length != registers.Length)
@@ -252,6 +257,8 @@ namespace BBC
             timer2HasInterrupted = reader.ReadBoolean();
             justHit = reader.ReadInt32();
             peripheralCycleRemainder = reader.ReadInt32();
+            timer1Pb7 = !hasTimer1Pb7 || reader.ReadBoolean();
+            UpdateJessopPort();
         }
 
         /// <summary>The 6522 timer counters are observed by the 2 MHz CPU bus, so keep their half-cycle phase.</summary>
@@ -304,7 +311,7 @@ namespace BBC
             {
                 case 0x0:
                     portB = value;
-                    Jessop?.WritePort(portB, dataDirectionB);
+                    UpdateJessopPort();
                     break;
 
                 case 0x1:
@@ -314,7 +321,7 @@ namespace BBC
 
                 case 0x2:
                     dataDirectionB = value;
-                    Jessop?.WritePort(portB, dataDirectionB);
+                    UpdateJessopPort();
                     break;
 
                 case 0x3:
@@ -329,6 +336,8 @@ namespace BBC
                 case 0x5:
                     timer1Latch = (timer1Latch & 0x1FE) | (value << 9);
                     LoadTimer1Counter();
+                    timer1Pb7 = false;
+                    UpdateJessopPort();
                     timer1Running = true;
                     timer1HasInterrupted = false;
                     registers[0x7] = value;
@@ -358,6 +367,7 @@ namespace BBC
                     break;
 
                 case 0xB:
+                    UpdateJessopPort();
                     if ((justHit & 0x01) != 0 && (value & 0x40) == 0)
                         timer1HasInterrupted = true;
                     break;
@@ -404,6 +414,12 @@ namespace BBC
             if (timer1Counter >= TimerExpiredThreshold)
                 return;
 
+            if (oldCounter > -3 && (IsTimer1FreeRunning() || !timer1HasInterrupted))
+            {
+                timer1Pb7 = IsTimer1FreeRunning() ? !timer1Pb7 : true;
+                UpdateJessopPort();
+            }
+
             if (oldCounter > -3 && !timer1HasInterrupted)
             {
                 SetInterrupt(InterruptFlagTimer1);
@@ -417,7 +433,14 @@ namespace BBC
                 timer1HasInterrupted = true;
 
             while (timer1Counter < -3)
+            {
                 ReloadTimer1Counter();
+                if (timer1Counter <= -3 && IsTimer1FreeRunning())
+                {
+                    timer1Pb7 = !timer1Pb7;
+                    UpdateJessopPort();
+                }
+            }
         }
 
         private void ReloadTimer1Counter()
@@ -557,7 +580,25 @@ namespace BBC
             return int.TryParse(Environment.GetEnvironmentVariable(name), out int value) ? value : fallback;
         }
 
+        private void UpdateJessopPort()
+        {
+            // Timer 1 takes over PB7 even with DDRB7 clear. The original
+            // Jessop HOOT driver leaves DDRB at $1F while enabling ACR7.
+            bool timerOutput = (registers[0xB] & 0x80) != 0;
+            byte output = timerOutput ? (byte)((portB & 0x7F) | (timer1Pb7 ? 0x80 : 0)) : portB;
+            byte direction = timerOutput ? (byte)(dataDirectionB | 0x80) : dataDirectionB;
+            Jessop?.WritePort(output, direction);
+        }
+
         private byte ReadPortB()
+        {
+            byte value = ReadPortBInputs();
+            return (registers[0xB] & 0x80) != 0
+                ? (byte)((value & 0x7F) | (timer1Pb7 ? 0x80 : 0))
+                : value;
+        }
+
+        private byte ReadPortBInputs()
         {
             // Jessop polls PB5/PB6 wheel encoders and PB7 pen position directly;
             // it does not use the CB1/CB2 interrupts used by the AMX mouse.

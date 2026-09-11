@@ -609,7 +609,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 35;
+        private const int SaveStateVersion = 36;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -1227,6 +1227,7 @@ Examples:
         {
             if (Interlocked.Exchange(ref debuggerDiscFlushPending, 0) != 0)
                 discController.Flush();
+            Sound.SetTurtleHooterLevel(userVia.Jessop?.HooterActive == true);
             Sound.Tick(cycles);
             systemVia.Tick(cycles);
             Video.Tick(cycles);
@@ -2665,7 +2666,7 @@ Examples:
                 throw new InvalidDataException("Not a BBC Model B save state.");
 
             int version = reader.ReadInt32();
-            if (version is not (32 or 33 or 34) && version != SaveStateVersion)
+            if (version is not (32 or 33 or 34 or 35) && version != SaveStateVersion)
                 throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
             if (!debuggerRestore) Display?.ClearScreenToBlack();
@@ -2699,7 +2700,7 @@ Examples:
             systemVia.LoadState(reader);
             userVia.SetJessopEnabled(version >= 33 && reader.ReadBoolean());
             userVia.Jessop?.LoadState(reader, version >= 34, version >= 35);
-            userVia.LoadState(reader);
+            userVia.LoadState(reader, version >= 36);
             serialAcia.LoadState(reader);
             tapePlayerEnabled = reader.ReadBoolean();
             tape.LoadState(reader);
