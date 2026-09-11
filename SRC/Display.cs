@@ -171,6 +171,19 @@ namespace BBC
         private readonly Dictionary<CachedTextKey, CachedTextTexture> tinyTextCache = new Dictionary<CachedTextKey, CachedTextTexture>();
         private readonly int pitchBytes;
         private DotMatrixPrinter? printer;
+        private TurtleWindow? turtleWindow;
+        private int pendingTurtleToggleRequests;
+        private int pendingTurtleShowRequests;
+        internal bool TurtleEnabled { get; set; }
+
+        internal void AttachTurtleWindow(TurtleWindow drawingWindow) => turtleWindow = drawingWindow;
+
+        internal (int Toggle, int Show) DrainTurtleRequests()
+        {
+            var requests = (pendingTurtleToggleRequests, pendingTurtleShowRequests);
+            pendingTurtleToggleRequests = pendingTurtleShowRequests = 0;
+            return requests;
+        }
         private DebuggerWindow? debugger;
 
         private IntPtr window;
@@ -456,6 +469,9 @@ namespace BBC
                     EnqueueDroppedFile(ev.DropFile);
                     continue;
                 }
+
+                if (turtleWindow?.HandleEvent(ev.Type, ev.WindowId, ev.WindowEvent, ev.MouseButton, ev.MouseX, ev.MouseY) == true)
+                    continue;
 
                 if (debugger?.HandleEvent(
                     ev.Type,
@@ -906,6 +922,7 @@ namespace BBC
 
             SDL_RenderPresent(renderer);
             printer?.Render();
+            turtleWindow?.Render();
             debugger?.Present();
         }
 
@@ -3037,6 +3054,12 @@ namespace BBC
                 case MenuCommand.ToggleHayesModem:
                     pendingHayesModemToggleRequests++;
                     break;
+                case MenuCommand.ToggleTurtle:
+                    pendingTurtleToggleRequests++;
+                    break;
+                case MenuCommand.ViewTurtleDrawing:
+                    pendingTurtleShowRequests++;
+                    break;
                 case MenuCommand.TogglePrinter:
                     pendingPrinterToggleRequests++;
                     break;
@@ -3255,6 +3278,7 @@ namespace BBC
                 MenuCommand.ToggleSpeech => SpeechEnabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
                 MenuCommand.TogglePrinter => PrinterEnabled,
+                MenuCommand.ToggleTurtle => TurtleEnabled,
                 MenuCommand.TogglePrinterPageInversion => printer?.PageInverted == true,
                 MenuCommand.TogglePrinterSound => printer?.SoundEnabled == true,
                 MenuCommand.ToggleFastPrinterGraphics => printer?.FastGraphicsEnabled == true,
@@ -3307,6 +3331,7 @@ namespace BBC
                     or MenuCommand.LoadRecentState4
                     or MenuCommand.LoadRecentState5 => IsRecentStateAvailable(item.Command),
                 MenuCommand.CancelPrinterActivity => printer?.Busy == true,
+                MenuCommand.ViewTurtleDrawing => TurtleEnabled,
                 _ => true
             };
         }
@@ -5356,6 +5381,8 @@ namespace BBC
             ToggleSpeech,
             ToggleHayesModem,
             TogglePrinter,
+            ToggleTurtle,
+            ViewTurtleDrawing,
             ToggleHayesLoopback,
             ResetHayesModem,
             ToggleScanlines,
@@ -5389,6 +5416,7 @@ namespace BBC
                     new MenuItem("Tape Player", "Ctrl+Shift+T", MenuCommand.ToggleTapePlayer),
                     new MenuItem("Hayes Modem", "Ctrl+Shift+M", MenuCommand.ToggleHayesModem),
                     new MenuItem("Printer", "Ctrl+Shift+P", MenuCommand.TogglePrinter),
+                    new MenuItem("Turtle", "", MenuCommand.ToggleTurtle),
                     new MenuItem("Disc Drive 0", "", MenuCommand.ToggleDiscDrive0),
                     new MenuItem("Disc Drive 1", "Ctrl+Shift+D", MenuCommand.ToggleDiscDrive1),
                     new MenuItem("Acorn Speech System", "", MenuCommand.ToggleSpeech),
@@ -5430,6 +5458,7 @@ namespace BBC
                     new MenuItem("Scanlines", "F11", MenuCommand.ToggleScanlines),
                     new MenuItem("BBC logo", "", MenuCommand.ToggleBbcLogo),
                     new MenuItem("FPS display", "", MenuCommand.ToggleFps),
+                    new MenuItem("Turtle drawing floor", "", MenuCommand.ViewTurtleDrawing),
                     MenuSeparator(),
                     new MenuItem("About", "", MenuCommand.ShowAbout)
                 ]));
@@ -5965,6 +5994,20 @@ namespace BBC
             }
 
             return null;
+        }
+
+        internal static string? SelectNativeTurtleGridImage()
+        {
+            if (OperatingSystem.IsWindows())
+                return RunProcessForSingleLine("powershell", "-NoProfile", "-STA", "-Command",
+                    "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Load turtle grid image'; $dialog.Filter = 'Images (*.png;*.jpg;*.jpeg;*.bmp;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.webp'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+            if (OperatingSystem.IsMacOS())
+                return RunProcessForSingleLine("osascript", "-e",
+                    "POSIX path of (choose file with prompt \"Load turtle grid image\" of type {\"png\", \"jpg\", \"jpeg\", \"bmp\", \"webp\"})");
+            if (OperatingSystem.IsLinux())
+                return RunProcessForSingleLine("zenity", "--file-selection", "--title=Load turtle grid image",
+                    "--file-filter=Images | *.png *.jpg *.jpeg *.bmp *.webp");
+            throw new PlatformNotSupportedException("No image chooser is available on this platform.");
         }
 
         private static string EnsureSaveStateExtension(string path)

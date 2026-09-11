@@ -66,6 +66,18 @@ namespace BBC
 
         public bool IrqAsserted => (interruptFlags & interruptEnable & 0x7F) != 0;
 
+        internal JessopTurtle? Jessop { get; private set; }
+
+        internal void SetJessopEnabled(bool enabled)
+        {
+            if (enabled == (Jessop is not null))
+                return;
+            Jessop = null;
+            SetPortBInputBits(0, 0);
+            Jessop = enabled ? new JessopTurtle() : null;
+            Jessop?.WritePort(portB, dataDirectionB);
+        }
+
         public bool PrinterEnabled { get; set; }
 
         public Action<byte>? PrinterByteWritten { get; set; }
@@ -90,6 +102,8 @@ namespace BBC
         /// <summary>External user-port devices drive PB lines only where their mask owns the pin.</summary>
         public void SetPortBInputBits(byte mask, byte value)
         {
+            if (Jessop is not null)
+                return;
             mouseInputActive = false;
             mouseButtonBits = 0xE0;
             pendingMouseX = 0;
@@ -125,6 +139,8 @@ namespace BBC
         /// <summary>AMX-style mice report movement as user-port pulses, with buttons held active-low.</summary>
         public void SetMouseInput(byte activeLowButtons, int deltaX, int deltaY)
         {
+            if (Jessop is not null)
+                return;
             mouseInputActive = true;
             mouseButtonBits = MapAmxButtonBits(activeLowButtons);
             pendingMouseX += deltaX;
@@ -141,6 +157,7 @@ namespace BBC
             portB = 0;
             dataDirectionA = 0;
             dataDirectionB = 0;
+            Jessop?.WritePort(portB, dataDirectionB);
             externalPortBMask = 0;
             externalPortBValue = 0;
             floatingPortBInput = 0xA5;
@@ -243,6 +260,7 @@ namespace BBC
             if (cycles <= 0)
                 return;
 
+            Jessop?.Tick(cycles);
             peripheralCycleCounter += cycles / 2;
             TickFloatingInputs(cycles / 2);
             justHit = 0;
@@ -286,6 +304,7 @@ namespace BBC
             {
                 case 0x0:
                     portB = value;
+                    Jessop?.WritePort(portB, dataDirectionB);
                     break;
 
                 case 0x1:
@@ -295,6 +314,7 @@ namespace BBC
 
                 case 0x2:
                     dataDirectionB = value;
+                    Jessop?.WritePort(portB, dataDirectionB);
                     break;
 
                 case 0x3:
@@ -539,6 +559,11 @@ namespace BBC
 
         private byte ReadPortB()
         {
+            // Jessop polls PB5/PB6 wheel encoders and PB7 pen position directly;
+            // it does not use the CB1/CB2 interrupts used by the AMX mouse.
+            if (Jessop is not null)
+                return ReadPort(portB, dataDirectionB, (byte)(Jessop.Sensors | 0x1F));
+
             byte floatingInput = IsRepeatedPortBPoll() ? floatingPortBInput : (byte)0xFF;
             // Unconnected user-port inputs idle high on the BBC. Defender polls PB7
             // with BIT $FE60 and visibly stalls if the emulator lets that line drift low.

@@ -568,6 +568,7 @@ Examples:
         private long nextBootScriptLineAtTicks;
         private readonly System6522Via systemVia;
         private readonly User6522Via userVia = new User6522Via();
+        private TurtleWindow? turtleWindow;
         private readonly SerialACIA serialAcia = new SerialACIA();
         private readonly UefTape tape;
         private readonly uPD7002_ADC adc = new uPD7002_ADC();
@@ -608,7 +609,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 32;
+        private const int SaveStateVersion = 35;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -677,6 +678,7 @@ Examples:
             serialAcia.ByteTransmitted += tape.RecordByte;
             serialAcia.MotorChanged += tape.CassetteMotorChanged;
             userVia.PrinterByteWritten += WriteBbcPrinterByte;
+
             adc.EndOfConversionChanged += eocActive =>
             {
                 systemVia.SignalAdcEndOfConversion(eocActive);
@@ -736,6 +738,9 @@ Examples:
                 Display = new Display();
             }
 
+            if (Environment.GetEnvironmentVariable("BBC_JESSOP_TURTLE") == "1")
+                TryEnableTurtle(out _);
+
             QueueStartupSerialText();
             pendingBreak = default;
             Cpu.ResetNow();
@@ -758,7 +763,13 @@ Examples:
             {
                 Display = new Display();
             }
+            if (turtleEnableError is not null)
+                Display.ShowNotification("Turtle unavailable", turtleEnableError, 6000);
             Display.AttachPrinter(printer);
+            turtleWindow ??= new TurtleWindow(() => userVia.Jessop, () => debugger?.DiscardUndoHistory());
+            Display.AttachTurtleWindow(turtleWindow);
+            Display.TurtleEnabled = userVia.Jessop is not null;
+            if (userVia.Jessop is not null) turtleWindow.Show();
             debugger ??= new DebuggerWindow(
                 Cpu,
                 DebuggerReadByte,
@@ -825,6 +836,7 @@ Examples:
                 DrainHostSpeechToggleRequests(Display);
                 DrainHostHayesModemToggleRequests(Display);
                 DrainHostPrinterToggleRequests(Display);
+                DrainHostTurtleRequests(Display);
                 DrainHostHayesLoopbackToggleRequests(Display);
                 DrainHostHayesResetRequests(Display);
                 DrainHostDiscInterfaceSelection(Display);
@@ -1108,6 +1120,7 @@ Examples:
             DisposeHayesModem();
             tube6502?.Dispose();
             printer.Dispose();
+            turtleWindow?.Dispose();
             debugger?.Dispose();
             Sound.Dispose();
             Display?.Dispose();
@@ -1705,6 +1718,55 @@ Examples:
             Cpu.SetPaused(inputMapperPreviousPaused);
             tube6502?.SetPaused(inputMapperPreviousPaused);
             Sound.SetHostOutputPaused(inputMapperPreviousPaused);
+        }
+
+        private void DrainHostTurtleRequests(Display display)
+        {
+            var turtleRequests = display.DrainTurtleRequests();
+            if ((turtleRequests.Toggle & 1) != 0)
+            {
+                debugger?.DiscardUndoHistory();
+                WithCpuStoppedForStateFile(() => Cpu.WithPausedState(() =>
+                {
+                    bool disabling = userVia.Jessop is not null;
+                    bool resetRequired;
+                    if (disabling)
+                    {
+                        userVia.SetJessopEnabled(false);
+                        turtleWindow?.Hide();
+                        // Inspect fitted ROMs so moved sockets and restored states
+                        // still unload correctly even if the original files are gone.
+                        for (int bank = 0; bank < SidewaysRomBanks; bank++)
+                            if (!sidewaysRamBanks[bank] && IsLanguageRom(bank)
+                                && ReadSidewaysRomTitle(bank) is "LOGO 1" or "LOGO 2")
+                                ClearSidewaysRomBank(bank);
+                        resetRequired = true;
+                    }
+                    else
+                        resetRequired = TryEnableTurtle(out bool romsLoaded) && romsLoaded;
+
+                    if (resetRequired)
+                    {
+                        // MOS must rebuild its ROM table after fitting or removing Logo.
+                        // The OS ROM and reset vector share the backing memory array.
+                        Array.Clear(Memory.Memory, 0, OsRomStart);
+                        ClearSidewaysRamContents();
+                        selectedSidewaysRom = BasicRomBank;
+                        pendingBreak = default;
+                        pendingBootExecScript = null;
+                        pendingBootScriptLines.Clear();
+                        pendingKeyboardInput.Clear();
+                        Cpu.ResetNow();
+                        display.ShowNotification("Turtle", disabling
+                            ? "Logo ROMs unloaded; BBC reset" : "Logo ROMs loaded; BBC reset", 4000);
+                    }
+                    display.SetRomSlots(sidewaysRomSlots);
+                    UpdateJoystickInputs();
+                }));
+            }
+            if (userVia.Jessop is not null && (turtleRequests.Toggle != 0 || turtleRequests.Show != 0))
+                turtleWindow?.Show();
+            display.TurtleEnabled = userVia.Jessop is not null;
         }
 
         private bool DrainHostRomActions(Display display)
@@ -2559,6 +2621,8 @@ Examples:
             writer.Write(lastMouseY);
             SaveJoystickState(writer);
             systemVia.SaveState(writer);
+            writer.Write(userVia.Jessop is not null);
+            userVia.Jessop?.SaveState(writer);
             userVia.SaveState(writer);
             serialAcia.SaveState(writer);
             writer.Write(tapePlayerEnabled);
@@ -2601,7 +2665,7 @@ Examples:
                 throw new InvalidDataException("Not a BBC Model B save state.");
 
             int version = reader.ReadInt32();
-            if (version != SaveStateVersion)
+            if (version is not (32 or 33 or 34) && version != SaveStateVersion)
                 throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
             if (!debuggerRestore) Display?.ClearScreenToBlack();
@@ -2633,6 +2697,8 @@ Examples:
             lastMouseY = reader.ReadByte();
             LoadJoystickState(reader);
             systemVia.LoadState(reader);
+            userVia.SetJessopEnabled(version >= 33 && reader.ReadBoolean());
+            userVia.Jessop?.LoadState(reader, version >= 34, version >= 35);
             userVia.LoadState(reader);
             serialAcia.LoadState(reader);
             tapePlayerEnabled = reader.ReadBoolean();
@@ -3082,7 +3148,7 @@ Examples:
 
         private void UpdateHostMouseInput(Display display)
         {
-            if (!mouseEnabled)
+            if (!mouseEnabled || userVia.Jessop is not null)
                 return;
 
             HostMouseState mouse = display.GetMouseState();
@@ -3816,6 +3882,73 @@ Examples:
                 tube6502.LoadRom(Tube6502RomPath);
                 tubeUla.Reset();
                 tube6502.Reset();
+            }
+        }
+
+        private string? turtleEnableError;
+
+        private bool TryEnableTurtle(out bool romsLoaded)
+        {
+            romsLoaded = false;
+            turtleEnableError = null;
+            try
+            {
+                string root = GetRomRoot();
+                string[] names = ["LOGO-1.rom", "LOGO-2-1201387.rom"];
+                byte[][] images = new byte[names.Length][];
+                int[] banks = [-1, -1];
+                string[] paths = new string[names.Length];
+                // Read both images before changing any sockets, so a missing ROM
+                // cannot leave half of the Logo language installed.
+                for (int i = 0; i < names.Length; i++)
+                {
+                    paths[i] = Path.GetFullPath(Path.Combine(root, names[i]));
+                    images[i] = ReadRomFileForBank(paths[i]);
+                    if (images[i].Length != RomSize)
+                        throw new InvalidDataException($"{names[i]} must be a 16 KB ROM.");
+                    for (int bank = 0; bank < SidewaysRomBanks; bank++)
+                        if (!sidewaysRamBanks[bank] && sidewaysRomPaths[bank] is not null
+                            && images[i].AsSpan().SequenceEqual(sidewaysRoms.AsSpan(bank * RomSize, RomSize)))
+                        {
+                            banks[i] = bank;
+                            break;
+                        }
+                }
+
+                // Prefer expansion sockets A and B; preserve every fitted ROM/RAM.
+                int[] candidates = [10, 11, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+                for (int i = 0; i < banks.Length; i++)
+                {
+                    if (banks[i] >= 0) continue;
+                    foreach (int bank in candidates)
+                        if (sidewaysRomPaths[bank] is null && !sidewaysRamBanks[bank]
+                            && !banks.Contains(bank))
+                        {
+                            banks[i] = bank;
+                            break;
+                        }
+                    if (banks[i] < 0)
+                        throw new InvalidOperationException("Free two expansion ROM sockets for the Logo ROMs.");
+                }
+
+                for (int i = 0; i < banks.Length; i++)
+                {
+                    int bank = banks[i];
+                    if (sidewaysRomPaths[bank] is not null) continue;
+                    images[i].CopyTo(sidewaysRoms, bank * RomSize);
+                    sidewaysRomPaths[bank] = paths[i];
+                    RefreshSidewaysRomSlot(bank);
+                    romsLoaded = true;
+                }
+                userVia.SetJessopEnabled(true);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                turtleEnableError = ex.Message;
+                Display?.ShowNotification("Turtle unavailable", ex.Message, 6000);
+                Console.WriteLine($"Turtle unavailable: {ex.Message}");
+                return false;
             }
         }
 

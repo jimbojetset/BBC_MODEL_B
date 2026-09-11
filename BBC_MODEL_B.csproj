@@ -58,6 +58,7 @@
     <EmbeddedResource Include="Assets\Images\fx80v2.png" LogicalName="BBC.fx80v2.png" Condition="Exists('Assets\Images\fx80v2.png')" />
     <None Remove="Assets\Fonts\DotMatrix-Regular.ttf" Condition="Exists('Assets\Fonts\DotMatrix-Regular.ttf')" />
     <EmbeddedResource Include="Assets\Fonts\DotMatrix-Regular.ttf" LogicalName="BBC.DotMatrix-Regular.ttf" Condition="Exists('Assets\Fonts\DotMatrix-Regular.ttf')" />
+    <EmbeddedResource Include="Assets\Images\JessopTurtle.png" LogicalName="BBC.JessopTurtle.png" />
     <None Update="ROMS\*.rom">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

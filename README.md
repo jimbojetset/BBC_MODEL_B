@@ -3,7 +3,7 @@
 A BBC Micro Model B emulator written in C# and .NET.
 
 I wrote this to feel more like a real Beeb rather than just a launcher for disc images.
-It emulates the 6502, OS 1.20, BASIC II, DFS, selectable Intel 8271 and WD1770 disc interfaces, the VIAs, video, sound, keyboard matrix, sideways RAM, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, the Acorn Speech System, and an optional 65C02 Tube second processor.
+It emulates the 6502, OS 1.20, BASIC II, DFS, selectable Intel 8271 and WD1770 disc interfaces, the VIAs, video, sound, keyboard matrix, sideways RAM, tape, serial hardware, joysticks, AMX-style mouse input, a Hayes modem, a Jessop floor turtle, the Acorn Speech System, and an optional 65C02 Tube second processor.
 
 <p>
     <img src="Screenshot0.png" alt="BBC Model B emulator screenshot" width="49%">
@@ -31,6 +31,8 @@ ROMS/HiBASIC.rom        Tube BASIC
 ROMS/DNFS302.rom        BBC-side Tube host ROM
 ROMS/6502tube_120.rom   65C02 Tube parasite ROM
 ROMS/AMXMSE331.rom      AMX mouse ROM
+ROMS/LOGO-1.rom        Acornsoft Logo, first ROM
+ROMS/LOGO-2-1201387.rom Acornsoft Logo, second ROM
 ROMS/PHROM.rom          Acorn Word PHROM A speech data (16 KB)
 ROMS/DFS-2.26.rom       Acorn 1770 DFS 2.26 (16 KB)
 ROMS/ADFS-1.30.rom      Acorn ADFS 1.30, fitted with the WD1770 interface (16 KB)
@@ -42,12 +44,6 @@ Build it:
 
 ```bash
 dotnet build BBC_MODEL_B.csproj
-```
-
-Run the hardware regression checks:
-
-```bash
-dotnet test Tests/BBC_MODEL_B.Tests.csproj
 ```
 
 Start at BASIC:
@@ -198,6 +194,47 @@ Left Ctrl+Left Shift    Toggle BBC SHIFT LOCK
 Host arrow keys map to the BBC cursor keys, `F1` to `F10` map to BBC function keys, and `Insert` or `§` maps to BBC `COPY`.
 
 Open `Keyboard Mapper` from the menu bar. Click a BBC key, press the host key you want, then save the map if you want to keep it. If `Assets/DefaultInputProfile.json` exists, it is loaded at startup.
+
+## Jessop turtle
+
+Enable **Peripherals → Turtle** to connect a Jessop Ralph turtle and show its separate SDL window. **View → Turtle drawing floor** reopens the window and is greyed out unless the turtle is connected. Closing the drawing window hides it while the turtle continues operating. The attachment and window can also be enabled at startup with `BBC_JESSOP_TURTLE=1`:
+
+```sh
+BBC_JESSOP_TURTLE=1 dotnet run --project BBC_MODEL_B.csproj
+```
+
+Place `LOGO-1.rom` and `LOGO-2-1201387.rom` in `ROMS/`. Enabling Turtle automatically fits them in free expansion sockets (preferring A and B), or reuses identical ROMs already fitted. Other ROM and RAM banks are preserved. If either ROM is missing, invalid, or there is insufficient socket space, Turtle remains disabled and a message explains why. Installing new ROMs resets the BBC so MOS recognises Logo; the banks appear in Sideways Memory.
+
+With Turtle enabled, mount `Games/AcornsoftLogoExtensions.ssd` and enter `*LOGO`. At the Logo prompt, load the driver and select the floor turtle:
+
+```logo
+LOAD "JESSOP
+FLOOR
+```
+
+Logo uses a leading double quote for a literal word, so `LOAD "JESSOP` has no closing quote. Paste commands into the main BBC window with **Ctrl+V**. `FLOOR` directs commands to the separate Turtle window; `SCREEN` switches to Logo's on-screen turtle. They do not move together automatically.
+
+For an 18-circle rosette, start near the centre, select a pen colour, and enter:
+
+```logo
+PENDOWN
+REPEAT 18 [REPEAT 36 [FORWARD 30 RIGHT 10] RIGHT 20]
+PENUP
+```
+
+The pattern is approximately 70 cm across and takes several minutes at normal speed. Small closure errors reflect the wheel encoder resolution.
+
+Disabling Turtle closes the drawing window, unloads both Logo ROMs (including moved sockets) and resets the BBC, preserving other fitted ROM and RAM banks. The OS ROM and reset vector remain intact when the Logo ROM configuration changes.
+
+The floor defaults to **3 m × 3 m**, with **2 m × 2 m** and **1 m × 1 m** zoom presets centred on the same origin. A faint **0.25 m grid** provides scale. The turtle starts in the centre, facing up; its 300 mm body, clear dome and visible mechanisms follow the [Museums Victoria Jessop reference](https://collections.museumsvictoria.com.au/items/2620712). Movement and rotation follow continuous differential wheel travel, rather than jumping between encoder pulses. The drawing window has a fixed size, with text rendered at the display’s native pixel density. Pen buttons select **Red**, **Blue**, **Green**, or **Black** (the default); changing pens preserves the colour of existing lines, including in PNG exports. Zoom does not alter physical distances. Motion is not stopped or wrapped at the view boundary; the status line indicates when the turtle centre is outside the view.
+
+**Load grid** replaces the reference grid with a PNG, JPEG, BMP or WebP image. It uses a centred fill crop over the 3 m floor, preserving aspect ratio, and is dimmed by 70% (30% opacity). Zoom stays aligned with the drawing. **Default grid** restores the 0.25 m grid without changing the ink or turtle position. The custom background is kept while the window is hidden, but is not included in PNG exports or machine save states.
+
+**Save PNG** writes the full 3 m floor to a timestamped file in `Drawings/` at 3000 × 3000 pixels, containing only the pen marks on white, without the grid or turtle. Marks outside that floor are clipped in the export. **Clear** removes pen marks while preserving position and heading. Disconnecting the turtle removes its current drawing; save before disconnecting.
+
+The attachment uses PB0 for pen power, PB1/PB2 for right-wheel direction/power, PB3/PB4 for left-wheel direction/power, PB5/PB6 for wheel sensors, and PB7 for pen feedback or hooter output depending on DDRB. It uses no CB1/CB2 handshake. Hooter output is represented electrically but does not produce audio yet. Mouse and switched-joystick user-port input is ignored while the turtle is attached; the analogue joystick and Port A printer remain separate.
+
+Wheel feedback follows the [Jessop technical notes](https://stardot.org.uk/forums/download/file.php?id=61468): one encoder transition per 1.750 mm, at a nominal 100 mm/s while powered. Pen feedback uses an approximate 200 ms per cam half-turn. Timing follows emulated CPU cycles; motor inertia is not modelled. Reset releases the motor outputs while retaining sensor position. Save states and debugger backward stepping preserve the attachment, sensor phases, position, heading and drawing. New saves use format 35 and preserve the selected pen and each stroke’s colour; existing format 32, 33 and 34 saves remain readable. Format 34 drawings load in black. Format 32 restores without a turtle; format 33 restores its signals with a fresh centred drawing.
 
 ## Debugger
 
