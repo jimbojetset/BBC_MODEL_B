@@ -6,9 +6,27 @@ namespace BBC;
 
 internal sealed class NmsCeefax : IDisposable
 {
-    internal const string FeedUrl = "https://feeds.nmsni.co.uk/svn/ceefax/London/";
-    internal static string DefaultCacheDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BBC_MODEL_B", "Teletext", "NmsLondon");
+    internal string FeedUrl { get; }
+    internal static string DefaultCacheDirectory => GetCacheDirectory(TeletextRegion.London);
+    internal static string GetCacheDirectory(TeletextRegion region) => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BBC_MODEL_B", "Teletext", "Nms" + GetRegionDirectory(region));
+
+    internal static string GetRegionDirectory(TeletextRegion region) => region switch
+    {
+        TeletextRegion.YorksAndLincs => "Yorks&Lincs",
+        TeletextRegion.National => "national",
+        _ => region.ToString()
+    };
+
+    internal static string GetRegionLabel(TeletextRegion region) => region switch
+    {
+        TeletextRegion.EastMidlands => "East Midlands",
+        TeletextRegion.NorthernIreland => "Northern Ireland",
+        TeletextRegion.SouthWest => "South West",
+        TeletextRegion.YorksAndLincs => "Yorks & Lincs",
+        _ => region.ToString()
+    };
+    private readonly string serviceName;
     private readonly string cacheDirectory;
     private readonly CancellationTokenSource cancellation = new();
     private readonly HttpClient http;
@@ -16,9 +34,12 @@ internal sealed class NmsCeefax : IDisposable
     private string? notice;
     private string? error;
 
-    internal NmsCeefax(string? cacheDirectory = null, HttpMessageHandler? httpHandler = null)
+    internal NmsCeefax(string? cacheDirectory = null, HttpMessageHandler? httpHandler = null, TeletextRegion region = TeletextRegion.London)
     {
-        this.cacheDirectory = cacheDirectory ?? DefaultCacheDirectory;
+        if (!Enum.IsDefined(region)) throw new ArgumentOutOfRangeException(nameof(region));
+        this.cacheDirectory = cacheDirectory ?? GetCacheDirectory(region);
+        FeedUrl = "https://feeds.nmsni.co.uk/svn/ceefax/" + Uri.EscapeDataString(GetRegionDirectory(region)) + "/";
+        serviceName = "NMS Ceefax " + GetRegionLabel(region);
         http = httpHandler is null ? new HttpClient() : new HttpClient(httpHandler);
         http.Timeout = TimeSpan.FromSeconds(30);
         http.MaxResponseContentBufferSize = 512 * 1024;
@@ -42,7 +63,7 @@ internal sealed class NmsCeefax : IDisposable
             {
                 Interlocked.Exchange(ref pendingPages, cached);
                 havePages = true;
-                Interlocked.Exchange(ref notice, "Using cached NMS Ceefax; checking for updates");
+                Interlocked.Exchange(ref notice, $"Using cached {serviceName}; checking for updates");
             }
             while (!token.IsCancellationRequested)
             {
@@ -84,7 +105,7 @@ internal sealed class NmsCeefax : IDisposable
                     foreach (string old in Directory.EnumerateFiles(cacheDirectory, "*.tti"))
                         if (!files.Contains(Path.GetFileName(old), StringComparer.Ordinal)) File.Delete(old);
                     Interlocked.Exchange(ref error, null);
-                    Interlocked.Exchange(ref notice, "NMS Ceefax updated; preset 1 is ready");
+                    Interlocked.Exchange(ref notice, $"{serviceName} updated; preset 1 is ready");
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidDataException or System.Xml.XmlException or OperationCanceledException)
                 {
@@ -99,7 +120,7 @@ internal sealed class NmsCeefax : IDisposable
                     };
                     string fallback = havePages ? "Using cached pages" : "No cached pages available";
                     Interlocked.Exchange(ref notice, null);
-                    Interlocked.Exchange(ref error, $"NMS Ceefax: {reason}. {fallback}. Retrying in 5 min.");
+                    Interlocked.Exchange(ref error, $"{serviceName}: {reason}. {fallback}. Retrying in 5 min.");
                     Console.WriteLine($"Teletext feed error ({FeedUrl}): {ex.Message}");
                 }
                 await Task.Delay(TimeSpan.FromMinutes(5), token);
@@ -132,4 +153,21 @@ internal sealed class NmsCeefax : IDisposable
         try { cancellation.Cancel(); }
         catch (ObjectDisposedException) { }
     }
+}
+
+// Keep the matching SelectTeletext menu commands in this order.
+internal enum TeletextRegion
+{
+    London,
+    East,
+    EastMidlands,
+    NorthernIreland,
+    Scotland,
+    South,
+    SouthWest,
+    Wales,
+    West,
+    Worldwide,
+    YorksAndLincs,
+    National
 }

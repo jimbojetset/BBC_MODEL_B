@@ -156,7 +156,27 @@ namespace BBC
         private DiscInterface? pendingDiscInterface;
         private int pendingTube6502ToggleRequests;
         private int pendingTeletextToggleRequests;
-        internal bool TeletextEnabled { get; set; }
+        private bool teletextEnabled;
+        private TeletextRegion? pendingTeletextRegion;
+        internal TeletextRegion SelectedTeletextRegion { get; set; } = TeletextRegion.London;
+        internal TeletextRegion? DrainTeletextRegionRequest()
+        {
+            TeletextRegion? region = pendingTeletextRegion;
+            pendingTeletextRegion = null;
+            return region;
+        }
+        internal bool TeletextEnabled
+        {
+            get => teletextEnabled;
+            set
+            {
+                if (teletextEnabled == value) return;
+                teletextEnabled = value;
+                activeMenuIndex = hoveredMenuIndex = hoveredMenuItemIndex = -1;
+                if (!value) pendingTeletextRegion = null;
+                menus = CreateMenus();
+            }
+        }
         private IntPtr teletextAdapterTexture;
         private int teletextAdapterWidth, teletextAdapterHeight;
 
@@ -1045,15 +1065,22 @@ namespace BBC
             if (!Tube6502Enabled)
                 return;
 
-            int labelWidth = GetRendererTextWidth(TubeMenuStatusLabel);
-            int totalWidth = StatusLedDiameter + TubeMenuStatusGap + labelWidth;
+            string label = TubeMenuStatusLabel;
+            int menuRight = MenuPaddingX + menus.Sum(menu => GetTopMenuWidth(menu.Title) + MenuPaddingX);
+            int totalWidth = StatusLedDiameter + TubeMenuStatusGap + GetRendererTextWidth(label);
+            if (logicalWidth - MenuPaddingX - totalWidth < menuRight)
+            {
+                label = "TUBE";
+                totalWidth = StatusLedDiameter + TubeMenuStatusGap + GetRendererTextWidth(label);
+            }
             int x = logicalWidth - MenuPaddingX - totalWidth;
+            if (x < menuRight) return;
             int ledCenterX = x + (StatusLedDiameter / 2);
             int ledCenterY = (TopMenuHeight / 2) - 1;
             int labelX = x + StatusLedDiameter + TubeMenuStatusGap;
 
             DrawRoundLed(ledCenterX, ledCenterY, StatusLedDiameter / 2, 220, 0, 0);
-            DrawRendererText(TubeMenuStatusLabel, labelX, 8, 190, 190, 190);
+            DrawRendererText(label, labelX, 8, 190, 190, 190);
         }
 
         private void DrawTeletextAdapterImage()
@@ -2934,6 +2961,11 @@ namespace BBC
 
         private void ExecuteMenuCommand(MenuCommand command)
         {
+            if (command is >= MenuCommand.SelectTeletextLondon and <= MenuCommand.SelectTeletextNational)
+            {
+                if (TeletextEnabled) pendingTeletextRegion = (TeletextRegion)(command - MenuCommand.SelectTeletextLondon);
+                return;
+            }
             switch (command)
             {
                 case MenuCommand.MountDrive0:
@@ -3284,6 +3316,8 @@ namespace BBC
 
         private bool IsMenuItemChecked(MenuCommand command)
         {
+            if (command is >= MenuCommand.SelectTeletextLondon and <= MenuCommand.SelectTeletextNational)
+                return (int)SelectedTeletextRegion == command - MenuCommand.SelectTeletextLondon;
             return command switch
             {
                 MenuCommand.ToggleScanlines => scanlinesEnabled,
@@ -5428,6 +5462,18 @@ namespace BBC
             SelectWd1770,
             ToggleTube6502,
             ToggleTeletext,
+            SelectTeletextLondon,
+            SelectTeletextEast,
+            SelectTeletextEastMidlands,
+            SelectTeletextNorthernIreland,
+            SelectTeletextScotland,
+            SelectTeletextSouth,
+            SelectTeletextSouthWest,
+            SelectTeletextWales,
+            SelectTeletextWest,
+            SelectTeletextWorldwide,
+            SelectTeletextYorksAndLincs,
+            SelectTeletextNational,
             ToggleSpeech,
             ToggleHayesModem,
             TogglePrinter,
@@ -5502,6 +5548,11 @@ namespace BBC
                     new MenuItem("Cancel printing", "", MenuCommand.CancelPrinterActivity)
                 ]));
             }
+
+            if (TeletextEnabled)
+                definitions.Add(new MenuDefinition("Teletext", Enum.GetValues<TeletextRegion>()
+                    .Select(region => new MenuItem(NmsCeefax.GetRegionLabel(region), "",
+                        (MenuCommand)((int)MenuCommand.SelectTeletextLondon + (int)region))).ToArray()));
 
             definitions.Add(new MenuDefinition("View",
                 [

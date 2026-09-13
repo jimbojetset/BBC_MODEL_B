@@ -578,6 +578,7 @@ Examples:
         private readonly TubeUla tubeUla = new TubeUla();
         private readonly TeletextAdapter teletext = new();
         private NmsCeefax? ceefax;
+        private TeletextRegion teletextRegion = TeletextRegion.London;
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
         private readonly DotMatrixPrinter printer = new DotMatrixPrinter();
@@ -611,7 +612,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 38;
+        private const int SaveStateVersion = 39;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -1737,7 +1738,7 @@ Examples:
                 {
                     WithCpuStoppedForStateFile(() => Cpu.WithPausedState(() => SetTeletextEnabled(!teletext.Enabled)));
                     ceefax?.Dispose();
-                    ceefax = teletext.Enabled ? new NmsCeefax() : null;
+                    ceefax = teletext.Enabled ? new NmsCeefax(region: teletextRegion) : null;
                     display.TeletextEnabled = teletext.Enabled;
                     display.SetRomSlots(sidewaysRomSlots);
                     display.ShowNotification(teletext.Enabled ? "Teletext Adapter connected" : "Teletext Adapter disconnected",
@@ -1747,6 +1748,19 @@ Examples:
                 {
                     display.ShowNotification("Teletext Adapter", ex.Message, 6000);
                 }
+            }
+            if (display?.DrainTeletextRegionRequest() is { } region && teletext.Enabled && region != teletextRegion)
+            {
+                debugger?.DiscardUndoHistory();
+                WithCpuStoppedForStateFile(() => Cpu.WithPausedState(() =>
+                {
+                    teletextRegion = region;
+                    teletext.SetPages([]);
+                }));
+                ceefax?.Dispose();
+                ceefax = new NmsCeefax(region: teletextRegion);
+                display.SelectedTeletextRegion = region;
+                display.ShowNotification("Teletext", "Receiving " + NmsCeefax.GetRegionLabel(region), 5000);
             }
             // Apply downloaded pages at a stopped CPU boundary. A debugger pause
             // freezes the broadcast too, including its contents for Back/forward.
@@ -2735,6 +2749,7 @@ Examples:
                 WriteStateBlock(writer, tubeUla.SaveState);
             }
             teletext.SaveState(writer);
+            writer.Write((int)teletextRegion);
         }
 
         private void LoadStateFile(string path)
@@ -2758,7 +2773,7 @@ Examples:
                 throw new InvalidDataException("Not a BBC Model B save state.");
 
             int version = reader.ReadInt32();
-            if (version is not (32 or 33 or 34 or 35 or 36 or 37) && version != SaveStateVersion)
+            if (version is not (32 or 33 or 34 or 35 or 36 or 37 or 38) && version != SaveStateVersion)
                 throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
             if (!debuggerRestore) Display?.ClearScreenToBlack();
@@ -2852,11 +2867,17 @@ Examples:
                 teletext.Reset();
                 teletext.SetPages([]);
             }
+            teletextRegion = version >= 39 ? (TeletextRegion)reader.ReadInt32() : TeletextRegion.London;
+            if (!Enum.IsDefined(teletextRegion)) throw new InvalidDataException("Invalid Teletext region in save state.");
             if (!debuggerRestore)
             {
                 ceefax?.Dispose();
-                ceefax = teletext.Enabled ? new NmsCeefax() : null;
-                if (Display is not null) Display.TeletextEnabled = teletext.Enabled;
+                ceefax = teletext.Enabled ? new NmsCeefax(region: teletextRegion) : null;
+                if (Display is not null)
+                {
+                    Display.TeletextEnabled = teletext.Enabled;
+                    Display.SelectedTeletextRegion = teletextRegion;
+                }
                 UpdateAmxMouseRomState();
                 Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
                 UpdateCpuIrqLine();
