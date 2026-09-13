@@ -33,6 +33,7 @@ ROMS/6502tube_120.rom   65C02 Tube parasite ROM
 ROMS/AMXMSE331.rom      AMX mouse ROM
 ROMS/LOGO-1.rom        Acornsoft Logo, first ROM
 ROMS/LOGO-2-1201387.rom Acornsoft Logo, second ROM
+ROMS/ATS-3.0-1.rom      Advanced Teletext System 3.0 (16 KB)
 ROMS/PHROM.rom          Acorn Word PHROM A speech data (16 KB)
 ROMS/DFS-2.26.rom       Acorn 1770 DFS 2.26 (16 KB)
 ROMS/ADFS-1.30.rom      Acorn ADFS 1.30, fitted with the WD1770 interface (16 KB)
@@ -139,7 +140,7 @@ The SDL window has a small menu bar for the common jobs:
 ```text
 File         Screenshot, save state, open state, quit
 Machine      BREAK, reset, sound, pause
-Peripherals  Tape player, modem, printer, disc drives, speech, Tube
+Peripherals  Tape player, modem, printer, turtle, disc drives, speech, Tube, Teletext
 Disc interface
              Intel 8271 + Acorn DFS 1.20, or WD1770 + Acorn 1770 DFS
 Sideways Memory  Configure empty, ROM, and writable RAM banks and import/export layouts
@@ -242,7 +243,7 @@ Zoom does not alter physical distances. Motion is not stopped or wrapped at the 
 
 The attachment uses PB0 for pen power, PB1/PB2 for right-wheel direction/power, PB3/PB4 for left-wheel direction/power, PB5/PB6 for wheel sensors, and PB7 for pen feedback or hooter output depending on DDRB and Timer 1’s ACR output setting. It uses no CB1/CB2 handshake. The original Logo `HOOT` command produces audio from Timer 1 PB7 pulses, preserving the driver’s pitch and duration. Speaker response is approximated; sound follows the emulator’s mute and pause controls. Mouse and switched-joystick user-port input is ignored while the turtle is attached; the analogue joystick and Port A printer remain separate.
 
-Wheel feedback follows the [Jessop technical notes](https://stardot.org.uk/forums/download/file.php?id=61468): one encoder transition per 1.750 mm, at a nominal 100 mm/s while powered. Pen feedback uses an approximate 200 ms per cam half-turn. Timing follows emulated CPU cycles; motor inertia is not modelled. Reset releases the motor outputs while retaining sensor position. Save states and debugger backward stepping preserve the attachment, sensor phases, position, heading and drawing. New saves use format 37 and preserve Max speed and pending encoder feedback, alongside the Timer 1 PB7 output phase. Pen and stroke colours remain preserved; existing format 32, 33, 34, 35 and 36 saves remain readable and restore at normal speed. Format 34 drawings load in black. Format 32 restores without a turtle; format 33 restores its signals with a fresh centred drawing.
+Wheel feedback follows the [Jessop technical notes](https://stardot.org.uk/forums/download/file.php?id=61468): one encoder transition per 1.750 mm, at a nominal 100 mm/s while powered. Pen feedback uses an approximate 200 ms per cam half-turn. Timing follows emulated CPU cycles; motor inertia is not modelled. Reset releases the motor outputs while retaining sensor position. Save states and debugger backward stepping preserve the attachment, sensor phases, position, heading and drawing. New saves use format 38 and also preserve the Teletext adapter and broadcast carousel. Format 37 introduced Max speed and pending encoder feedback, alongside the Timer 1 PB7 output phase. Format 37 saves remain readable. Pen and stroke colours remain preserved; existing format 32, 33, 34, 35 and 36 saves remain readable and restore at normal speed. Format 34 drawings load in black. Format 32 restores without a turtle; format 33 restores its signals with a fresh centred drawing.
 
 ## Debugger
 
@@ -289,6 +290,7 @@ The Peripherals menu lets you add or remove hardware while the emulator is runni
 - `Printer` connects an Epson FX-80-compatible dot-matrix printer to the BBC printer port and opens its paper display and controls.
 - `Acorn Speech System` fits the TMS5220 processor and loads `ROMS/PHROM.rom` as the TMS6100 Word PHROM A. Enabling or disabling it from the `Peripherals` menu power-resets the BBC.
 - `Disc Drive 0` and `Disc Drive 1` enable or remove each physical drive.
+- `Teletext Adapter` connects an Acorn ANE01 to the 1MHz bus and displays its icon below the co-processor icon.
 - `6502 Co-Processor` enables the Tube hardware. Enabling or disabling it from the `Peripherals` menu power-resets the BBC so the host detects the new configuration.
 
 The Hayes modem accepts familiar AT commands such as `AT`, `ATZ`, `ATH`, `ATO`, `ATE0/1`, `ATV0/1`, `AT&F`, and `ATDThost:port`. A successful dial opens a TCP connection, defaulting to port 23 if no port is given. The BBC serial side should be set to 9600 baud, 8 data bits, no parity.
@@ -296,6 +298,21 @@ The Hayes modem accepts familiar AT commands such as `AT`, `ATZ`, `ATH`, `ATO`, 
 AMX mouse support is available through Sideways Memory. Add `ROMS/AMXMSE331.rom` to a sideways ROM bank, then use the usual BBC commands such as `*MOUSE ON` and `*POINTER ON`.
 
 The speech system supports both PHROM vocabulary and speech data supplied from BBC RAM through the TMS5220 FIFO. With Word PHROM A installed, `SOUND -1,160,0,0` says “ACORN”. The PHROM is speech data rather than a sideways ROM and must remain named `PHROM.rom` in the `ROMS/` directory.
+
+## Teletext Adapter
+
+1. Download [ATS-3.0-1.rom](https://raw.githubusercontent.com/stardot/beebem-windows/master/UserData/BeebFile/BBC/ATS-3.0-1.rom) into `ROMS/`. No SSD disc image is needed.
+2. Enable **Peripherals → Teletext Adapter**. ATS is automatically fitted in an empty ROM bank (normally **D**) and the BBC resets. An already fitted ATS ROM is reused.
+3. Type `*TELETEXT`. No manual ROM loading or BREAK is required.
+4. Preset **1** receives NMS Ceefax's London service. Enter a three-digit page number such as `101` for news or `401` for weather and allow it to come around in the broadcast cycle. ATS uses the BBC function keys: **f0** for index, **f1–f4** for coloured links, **f6** for reveal, **f7** for hold and **f9** to leave Teletext. See the [ATS user guide](https://chrisacorns.computinghistory.org.uk/docs/BBCSoft/BBCSoft_AdvTeletextUG.pdf).
+
+Disabling the adapter unloads fitted ATS ROMs, including ones moved to another bank, and resets the BBC. Other fitted ROMs are preserved. Enabling requires a valid `ROMS/ATS-3.0-1.rom` file, even when ATS is already fitted. If the file is missing/invalid, or a bank is needed but none is free, the adapter stays disabled and an explanatory message is displayed. The other three tuner presets are untuned. The 1MHz bus is independent of the Tube, so both peripherals can be connected.
+
+The emulator downloads ready-made TTI pages from the [NMS Ceefax London feed](https://feeds.nmsni.co.uk/svn/ceefax/London/), checks for updates every five minutes and retains a local cache. Downloads run asynchronously; after a successful download, cached pages remain usable offline. If the web feed becomes unavailable, a **Teletext feed error** message appears for 15 seconds, identifying connection failures, timeouts, HTTP errors or invalid feed data and stating whether cached pages are available. The adapter retries every five minutes. The cache is `BBC_MODEL_B/Teletext/NmsLondon` under the platform's local application-data directory. [Preview NMS Ceefax online](https://nmsceefax.co.uk/).
+
+A built-in Level 1 packet encoder and repeating carousel supply the adapter without a separate VBIT2 installation. Page selection is handled by the original ROM: it waits for the requested broadcast page rather than fetching it on demand. Up to twelve packet lines per 50Hz field, a header erasure interval, subpage rotation, Hamming-coded addresses, character parity and Fastext links are transmitted. With the current service a complete cycle takes roughly 18 seconds; subpages rotate on subsequent transmissions. The receive RAM, field-sync, DEW, overrun and IRQ flags are exposed at `&FC10–&FC13` with 1MHz bus timing.
+
+The target is clean analogue reception. RF tuning/noise, Level 2.5 enhancements and a telesoftware service are not implemented. NMS is a modern Ceefax recreation, not a recording of historical BBC broadcasts. Save states and debugger Back preserve the adapter, page contents and carousel position; downloaded updates are deferred while paused.
 
 ## Project Layout
 

@@ -576,6 +576,8 @@ Examples:
         private IDiscController discController;
         private DiscInterface discInterface;
         private readonly TubeUla tubeUla = new TubeUla();
+        private readonly TeletextAdapter teletext = new();
+        private NmsCeefax? ceefax;
         private CoProcessor65C02? tube6502;
         private HayesModem? hayesModem;
         private readonly DotMatrixPrinter printer = new DotMatrixPrinter();
@@ -609,7 +611,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 37;
+        private const int SaveStateVersion = 38;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -837,6 +839,7 @@ Examples:
                 DrainHostHayesModemToggleRequests(Display);
                 DrainHostPrinterToggleRequests(Display);
                 DrainHostTurtleRequests(Display);
+                DrainTeletextRequests(Display);
                 DrainHostHayesLoopbackToggleRequests(Display);
                 DrainHostHayesResetRequests(Display);
                 DrainHostDiscInterfaceSelection(Display);
@@ -923,6 +926,7 @@ Examples:
             long measuredStartCycles = Cpu.TotalCycles;
             while (Stopwatch.GetTimestamp() < deadline)
             {
+                DrainTeletextRequests(null);
                 long now = Stopwatch.GetTimestamp();
                 if (now >= keyboardInputEnabledAtTicks)
                 {
@@ -1118,6 +1122,7 @@ Examples:
                     Console.WriteLine($"Saved disc:   {discController.MountedFileName}");
             }
             DisposeHayesModem();
+            ceefax?.Dispose();
             tube6502?.Dispose();
             printer.Dispose();
             turtleWindow?.Dispose();
@@ -1179,6 +1184,7 @@ Examples:
             joystickState = default;
             adc.Reset();
             tubeUla.Reset();
+            teletext.Reset();
             tube6502?.Reset();
             UpdateAdcChannels();
             Cpu.SetIrqLine(false);
@@ -1232,6 +1238,7 @@ Examples:
             systemVia.Tick(cycles);
             Video.Tick(cycles);
             userVia.Tick(cycles);
+            teletext.Tick(cycles);
             if (discController.TickRequired)
                 discController.Tick(cycles);
             if (tapePlayerEnabled && tapeMounted)
@@ -1721,6 +1728,87 @@ Examples:
             Sound.SetHostOutputPaused(inputMapperPreviousPaused);
         }
 
+        private void DrainTeletextRequests(Display? display)
+        {
+            if (display is not null && (display.DrainTeletextToggleRequests() & 1) != 0)
+            {
+                debugger?.DiscardUndoHistory();
+                try
+                {
+                    WithCpuStoppedForStateFile(() => Cpu.WithPausedState(() => SetTeletextEnabled(!teletext.Enabled)));
+                    ceefax?.Dispose();
+                    ceefax = teletext.Enabled ? new NmsCeefax() : null;
+                    display.TeletextEnabled = teletext.Enabled;
+                    display.SetRomSlots(sidewaysRomSlots);
+                    display.ShowNotification(teletext.Enabled ? "Teletext Adapter connected" : "Teletext Adapter disconnected",
+                        teletext.Enabled ? "ATS ROM loaded; BBC reset. Type *TELETEXT" : "ATS ROM unloaded; BBC reset", 10000);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
+                {
+                    display.ShowNotification("Teletext Adapter", ex.Message, 6000);
+                }
+            }
+            // Apply downloaded pages at a stopped CPU boundary. A debugger pause
+            // freezes the broadcast too, including its contents for Back/forward.
+            if (!emulationPaused && ceefax?.TakePages() is { } pages)
+            {
+                debugger?.DiscardUndoHistory();
+                WithCpuStoppedForStateFile(() => Cpu.WithPausedState(() => teletext.SetPages(pages)));
+            }
+            if (ceefax?.TakeNotice() is { } notice)
+            {
+                display?.ShowNotification("Teletext Adapter", notice, 5000);
+                Console.WriteLine(notice);
+            }
+            if (ceefax?.TakeError() is { } error)
+            {
+                display?.ShowNotification("Teletext feed error", error, 15000);
+                Console.WriteLine(error);
+            }
+        }
+
+        private bool IsTeletextRom(int bank) => !sidewaysRamBanks[bank]
+            && IsLanguageRom(bank) && ReadSidewaysRomTitle(bank) == "ATS";
+
+        private void SetTeletextEnabled(bool enabled)
+        {
+            string? path = null;
+            if (enabled)
+            {
+                path = Path.Combine(GetRomRoot(), "ATS-3.0-1.rom");
+                ValidateRom(path, "ATS\0", RomSize, RomSize);
+            }
+            if (enabled && !Enumerable.Range(0, SidewaysRomBanks).Any(IsTeletextRom))
+            {
+                int emptyBank = -1;
+                for (int bank = SidewaysRomBanks - 1; bank >= 0; bank--)
+                    if (!sidewaysRamBanks[bank] && sidewaysRomPaths[bank] is null
+                        && sidewaysRoms.AsSpan(bank * RomSize, RomSize).IndexOfAnyExcept((byte)0xff) < 0)
+                    {
+                        emptyBank = bank;
+                        break;
+                    }
+                if (emptyBank < 0)
+                    throw new InvalidOperationException("No empty ROM bank for ATS. Free a bank in Sideways Memory.");
+                SetSidewaysRomBank(emptyBank, path!);
+            }
+            if (!enabled)
+                for (int bank = 0; bank < SidewaysRomBanks; bank++)
+                    if (IsTeletextRom(bank)) ClearSidewaysRomBank(bank);
+
+            teletext.Enabled = enabled;
+            // MOS must rebuild its ROM table after fitting/removing ATS, even
+            // when it has been moved to another socket in Sideways Memory.
+            Array.Clear(Memory.Memory, 0, OsRomStart);
+            ClearSidewaysRamContents();
+            selectedSidewaysRom = BasicRomBank;
+            pendingBreak = default;
+            pendingBootExecScript = null;
+            pendingBootScriptLines.Clear();
+            pendingKeyboardInput.Clear();
+            Cpu.ResetNow();
+        }
+
         private void DrainHostTurtleRequests(Display display)
         {
             var turtleRequests = display.DrainTurtleRequests();
@@ -1940,7 +2028,7 @@ Examples:
 
         private void UpdateCpuIrqLine()
         {
-            Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted || serialAcia.IrqAsserted || tubeHostIrqAsserted);
+            Cpu.SetIrqLine(systemVia.IrqAsserted || userVia.IrqAsserted || serialAcia.IrqAsserted || tubeHostIrqAsserted || teletext.IrqAsserted);
         }
 
         private bool HandleHostFirmwareHooks()
@@ -2646,6 +2734,7 @@ Examples:
                 WriteStateBlock(writer, tube6502.SaveState);
                 WriteStateBlock(writer, tubeUla.SaveState);
             }
+            teletext.SaveState(writer);
         }
 
         private void LoadStateFile(string path)
@@ -2669,7 +2758,7 @@ Examples:
                 throw new InvalidDataException("Not a BBC Model B save state.");
 
             int version = reader.ReadInt32();
-            if (version is not (32 or 33 or 34 or 35 or 36) && version != SaveStateVersion)
+            if (version is not (32 or 33 or 34 or 35 or 36 or 37) && version != SaveStateVersion)
                 throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
             if (!debuggerRestore) Display?.ClearScreenToBlack();
@@ -2756,8 +2845,18 @@ Examples:
                 }
                 tube6502Configured = false;
             }
+            if (version >= 38) teletext.LoadState(reader);
+            else
+            {
+                teletext.Enabled = false;
+                teletext.Reset();
+                teletext.SetPages([]);
+            }
             if (!debuggerRestore)
             {
+                ceefax?.Dispose();
+                ceefax = teletext.Enabled ? new NmsCeefax() : null;
+                if (Display is not null) Display.TeletextEnabled = teletext.Enabled;
                 UpdateAmxMouseRomState();
                 Video.SetScreenMemoryWindow(systemVia.CurrentScreenMemoryWindow);
                 UpdateCpuIrqLine();
@@ -3249,6 +3348,7 @@ Examples:
             pendingKeyboardInput.Clear();
             display.ClearInputQueuedBeforeBreak();
             tubeUla.Reset();
+            teletext.Reset();
             tube6502?.Reset();
             Cpu.RequestReset();
         }
@@ -3264,6 +3364,7 @@ Examples:
             selectedSidewaysRom = BasicRomBank;
             serialAcia.Reset();
             tubeUla.Reset();
+            teletext.Reset();
             tube6502?.Reset();
             Cpu.RequestReset();
             Cpu.SetPaused(romManagerPreviousPaused);
@@ -4209,6 +4310,13 @@ Examples:
 
         private byte ReadSheila(ushort address)
         {
+            if (TeletextAdapter.IsAddress(address))
+            {
+                byte value = teletext.Read(address);
+                UpdateCpuIrqLine();
+                return value;
+            }
+
             if (HD6845_Video.IsSheilaAddress(address))
                 return Video.ReadSheila(address);
 
@@ -4249,6 +4357,13 @@ Examples:
 
         private void WriteSheila(ushort address, byte value)
         {
+            if (TeletextAdapter.IsAddress(address))
+            {
+                teletext.Write(address, value);
+                UpdateCpuIrqLine();
+                return;
+            }
+
             if (HD6845_Video.IsSheilaAddress(address))
             {
                 Video.WriteSheila(address, value);

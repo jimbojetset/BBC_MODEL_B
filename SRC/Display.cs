@@ -39,7 +39,7 @@ namespace BBC
         private const string GithubUrl = "https://github.com/jimbojetset/BBC_MODEL_B";
         private const int TubeCoProcessorImageWidth = 93;
         private const int TubeCoProcessorImageHeight = 61;
-        private const int TubeCoProcessorImageRightInset = 12;
+        private const int TubeCoProcessorImageRightInset = 6;
         private const int TubeCoProcessorImageTopInset = 4;
         private const string TubeCoProcessorImageResourceName = "BBC.TubeCoProcessor.png";
         private const int BbcLogoLeftInset = 8;
@@ -155,6 +155,11 @@ namespace BBC
         private int pendingDrive1ToggleRequests;
         private DiscInterface? pendingDiscInterface;
         private int pendingTube6502ToggleRequests;
+        private int pendingTeletextToggleRequests;
+        internal bool TeletextEnabled { get; set; }
+        private IntPtr teletextAdapterTexture;
+        private int teletextAdapterWidth, teletextAdapterHeight;
+
         private int pendingSpeechToggleRequests;
         private int pendingHayesModemToggleRequests;
         private int pendingPrinterToggleRequests;
@@ -429,6 +434,7 @@ namespace BBC
 
             scanlineTexture = CreateScanlineTexture(width, height);
             tubeCoProcessorTexture = CreateTubeCoProcessorTexture();
+            teletextAdapterTexture = CreateTeletextAdapterTexture();
             bbcLogoTexture = CreateBbcLogoTexture();
             cassetteTexture = CreateCassetteTexture();
             cassetteLoadedTexture = CreateCassetteLoadedTexture();
@@ -781,6 +787,13 @@ namespace BBC
             return count;
         }
 
+        internal int DrainTeletextToggleRequests()
+        {
+            int count = pendingTeletextToggleRequests;
+            pendingTeletextToggleRequests = 0;
+            return count;
+        }
+
         public int DrainTube6502ToggleRequests()
         {
             int count = pendingTube6502ToggleRequests;
@@ -912,6 +925,7 @@ namespace BBC
             DrawTopBorderStatusMessage();
             DrawBbcLogo();
             DrawTubeCoProcessorImage();
+            DrawTeletextAdapterImage();
             DrawDriveGlyphs();
             DrawMenuBar();
             if (IsBottomOverlayMenu(activeMenuIndex))
@@ -1040,6 +1054,16 @@ namespace BBC
 
             DrawRoundLed(ledCenterX, ledCenterY, StatusLedDiameter / 2, 220, 0, 0);
             DrawRendererText(TubeMenuStatusLabel, labelX, 8, 190, 190, 190);
+        }
+
+        private void DrawTeletextAdapterImage()
+        {
+            if (!TeletextEnabled || teletextAdapterTexture == IntPtr.Zero) return;
+            int width = TubeCoProcessorImageWidth;
+            int height = width * teletextAdapterHeight / teletextAdapterWidth;
+            SdlRect target = new SdlRect(logicalWidth - width - TubeCoProcessorImageRightInset,
+                TopMenuHeight + TubeCoProcessorImageTopInset + TubeCoProcessorImageHeight + 6, width, height);
+            _ = SDL_RenderCopy(renderer, teletextAdapterTexture, IntPtr.Zero, ref target);
         }
 
         private void DrawTubeCoProcessorImage()
@@ -3045,6 +3069,9 @@ namespace BBC
                 case MenuCommand.SelectWd1770:
                     pendingDiscInterface = DiscInterface.Wd1770;
                     break;
+                case MenuCommand.ToggleTeletext:
+                    pendingTeletextToggleRequests++;
+                    break;
                 case MenuCommand.ToggleTube6502:
                     pendingTube6502ToggleRequests++;
                     break;
@@ -3275,6 +3302,7 @@ namespace BBC
                 MenuCommand.SelectIntel8271 => CurrentDiscInterface == DiscInterface.Intel8271,
                 MenuCommand.SelectWd1770 => CurrentDiscInterface == DiscInterface.Wd1770,
                 MenuCommand.ToggleTube6502 => Tube6502Enabled,
+                MenuCommand.ToggleTeletext => TeletextEnabled,
                 MenuCommand.ToggleSpeech => SpeechEnabled,
                 MenuCommand.ToggleHayesModem => HayesModemEnabled,
                 MenuCommand.TogglePrinter => PrinterEnabled,
@@ -4157,6 +4185,22 @@ namespace BBC
             return glyph;
         }
 
+        private IntPtr CreateTeletextAdapterTexture()
+        {
+            using Stream? resource = typeof(Display).Assembly.GetManifestResourceStream("BBC.TeletextAdapter.png");
+            if (resource is null) return IntPtr.Zero;
+            using MemoryStream stream = new MemoryStream();
+            resource.CopyTo(stream);
+            if (!TryReadPng(stream.ToArray(), out uint[] pixels, out teletextAdapterWidth, out teletextAdapterHeight)) return IntPtr.Zero;
+            IntPtr image = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, teletextAdapterWidth, teletextAdapterHeight);
+            if (image == IntPtr.Zero) return IntPtr.Zero;
+            _ = SDL_SetTextureBlendMode(image, SDL_BLENDMODE_BLEND);
+            GCHandle handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+            try { _ = SDL_UpdateTexture(image, IntPtr.Zero, handle.AddrOfPinnedObject(), teletextAdapterWidth * sizeof(uint)); }
+            finally { handle.Free(); }
+            return image;
+        }
+
         private IntPtr CreateTubeCoProcessorTexture()
         {
             if (!TryLoadTubeCoProcessorPng(out uint[] pixels, out int width, out int height))
@@ -4582,6 +4626,11 @@ namespace BBC
                 scanlineTexture = IntPtr.Zero;
             }
 
+            if (teletextAdapterTexture != IntPtr.Zero)
+            {
+                SDL_DestroyTexture(teletextAdapterTexture);
+                teletextAdapterTexture = IntPtr.Zero;
+            }
             if (tubeCoProcessorTexture != IntPtr.Zero)
             {
                 SDL_DestroyTexture(tubeCoProcessorTexture);
@@ -5378,6 +5427,7 @@ namespace BBC
             SelectIntel8271,
             SelectWd1770,
             ToggleTube6502,
+            ToggleTeletext,
             ToggleSpeech,
             ToggleHayesModem,
             TogglePrinter,
@@ -5420,7 +5470,8 @@ namespace BBC
                     new MenuItem("Disc Drive 0", "", MenuCommand.ToggleDiscDrive0),
                     new MenuItem("Disc Drive 1", "Ctrl+Shift+D", MenuCommand.ToggleDiscDrive1),
                     new MenuItem("Acorn Speech System", "", MenuCommand.ToggleSpeech),
-                    new MenuItem("6502 Co-Processor", "Ctrl+Shift+C", MenuCommand.ToggleTube6502)
+                    new MenuItem("6502 Co-Processor", "Ctrl+Shift+C", MenuCommand.ToggleTube6502),
+                    new MenuItem("Teletext Adapter", "", MenuCommand.ToggleTeletext)
                 ]),
                 new MenuDefinition("Disc interface",
                 [
