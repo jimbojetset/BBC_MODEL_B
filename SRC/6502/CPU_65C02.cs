@@ -1,8 +1,8 @@
 // ============================================================================
 // Project:     BBC
 // File:        CPU_65C02.cs
-// Description: 65C02 core for the BBC Micro, including IRQ/NMI stack
-//              semantics, page-cross timing, and common undocumented opcodes.
+// Description: Rockwell 65C02 core for the Tube co-processor, including IRQ/NMI stack
+//              semantics, decimal arithmetic, and Rockwell bit operations.
 // Author:      James Booth
 // Created:     2025
 // License:     GPL-2.0-only - See LICENSE in the project root
@@ -21,8 +21,8 @@ namespace BBC.CPU
 {
 
     /// <summary>
-    /// The BBC Model B uses a 2 MHz 65C02. Exact interrupt stack bits,
-    /// branch timing, and undocumented opcodes matter for games, demos, and MOS.
+    /// The Tube co-processor uses Rockwell 65C02 instruction semantics.
+    /// The host BBC Model B has a separate NMOS 6502 core.
     /// </summary>
     public class CPU_65C02
     {
@@ -1235,80 +1235,79 @@ namespace BBC.CPU
 
                 #endregion RT*
 
-                #region Illegal / undocumented opcodes
+                #region Rockwell bit operations and reserved NOPs
 
-                // BBC games and copy-protected loaders do use NMOS illegal opcodes;
-                // treating them as NOPs breaks real software.
-
-                // LAX: load A and X from memory together.
-                case 0xA3: LAX(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 6; break;
-                case 0xA7: SMB(2); break;
-                case 0xAF: BBS(2); break;
-                case 0xB3: LAX(Zero_Page_Indirect_Y_Indexed()); cyclesThisOperation += 5; break;
-                case 0xB7: SMB(3); break;
-                case 0xBF: BBS(3); break;
-
-                // SAX: store A AND X; flags are untouched.
-                case 0x83: SAX(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 6; break;
-                case 0x87: SMB(0); break;
-                case 0x8F: BBS(0); break;
-                case 0x97: SMB(1); break;
-
-                // DCP: decrement memory, then compare with A.
-                case 0xC3: DCP(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0xC7: SMB(4); break;
-                case 0xCF: BBS(4); break;
-                case 0xD3: DCP(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0xD7: SMB(5); break;
-                case 0xDB: DCP(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0xDF: BBS(5); break;
-
-                // ISC/ISB: increment memory, then subtract with carry.
-                case 0xE3: ISC(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0xE7: SMB(6); break;
-                case 0xEF: BBS(6); break;
-                case 0xF3: ISC(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0xF7: SMB(7); break;
-                case 0xFB: ISC(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0xFF: BBS(7); break;
-
-                // SLO: shift memory left, then OR into A.
-                case 0x03: SLO(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
                 case 0x07: RMB(0); break;
                 case 0x0F: BBR(0); break;
-                case 0x13: SLO(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
+                case 0x87: SMB(0); break;
+                case 0x8F: BBS(0); break;
                 case 0x17: RMB(1); break;
-                case 0x1B: SLO(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0x1F: BBR(1); break;
-
-                // SRE: shift memory right, then EOR into A.
-                case 0x43: SRE(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
-                case 0x47: RMB(4); break;
-                case 0x4F: BBR(4); break;
-                case 0x53: SRE(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
-                case 0x57: RMB(5); break;
-                case 0x5B: SRE(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
-                case 0x5F: BBR(5); break;
-
-                // RLA: rotate memory left, then AND into A.
-                case 0x23: RLA(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
+                case 0x97: SMB(1); break;
+                case 0x9F: BBS(1); break;
                 case 0x27: RMB(2); break;
                 case 0x2F: BBR(2); break;
-                case 0x33: RLA(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
+                case 0xA7: SMB(2); break;
+                case 0xAF: BBS(2); break;
                 case 0x37: RMB(3); break;
-                case 0x3B: RLA(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0x3F: BBR(3); break;
-
-                // RRA: rotate memory right, then add with carry.
-                case 0x63: RRA(X_Indexed_Zero_Page_Indirect()); cyclesThisOperation += 8; break;
+                case 0xB7: SMB(3); break;
+                case 0xBF: BBS(3); break;
+                case 0x47: RMB(4); break;
+                case 0x4F: BBR(4); break;
+                case 0xC7: SMB(4); break;
+                case 0xCF: BBS(4); break;
+                case 0x57: RMB(5); break;
+                case 0x5F: BBR(5); break;
+                case 0xD7: SMB(5); break;
+                case 0xDF: BBS(5); break;
                 case 0x67: RMB(6); break;
                 case 0x6F: BBR(6); break;
-                case 0x73: RRA(Zero_Page_Indirect_Y_Indexed(false)); cyclesThisOperation += 8; break;
+                case 0xE7: SMB(6); break;
+                case 0xEF: BBS(6); break;
                 case 0x77: RMB(7); break;
-                case 0x7B: RRA(Y_Indexed_Absolute(false)); cyclesThisOperation += 7; break;
                 case 0x7F: BBR(7); break;
+                case 0xF7: SMB(7); break;
+                case 0xFF: BBS(7); break;
 
-                // Multi-byte NOPs still consume operand bytes on 65C02.
+                // Reserved Rockwell opcodes do not execute the NMOS illegal instructions.
+                case 0x03:
+                case 0x13:
+                case 0x23:
+                case 0x33:
+                case 0x43:
+                case 0x53:
+                case 0x63:
+                case 0x73:
+                case 0x83:
+                case 0x93:
+                case 0xA3:
+                case 0xB3:
+                case 0xC3:
+                case 0xD3:
+                case 0xE3:
+                case 0xF3:
+                case 0x0B:
+                case 0x1B:
+                case 0x2B:
+                case 0x3B:
+                case 0x4B:
+                case 0x5B:
+                case 0x6B:
+                case 0x7B:
+                case 0x8B:
+                case 0x9B:
+                case 0xAB:
+                case 0xBB:
+                case 0xEB:
+                case 0xFB:
+                    cyclesThisOperation += 1; break;
+                case 0xCB:
+                    cyclesThisOperation += 2; break;
+                case 0x02:
+                case 0x22:
+                case 0x42:
+                case 0x62:
                 case 0x82:
                 case 0xC2:
                 case 0xE2:
@@ -1318,36 +1317,14 @@ namespace BBC.CPU
                 case 0x54:
                 case 0xD4:
                 case 0xF4:
+                case 0xDB:
                     X_Indexed_Zero_Page(); cyclesThisOperation += 4; break;
                 case 0x5C:
                 case 0xDC:
                 case 0xFC:
-                    X_Indexed_Absolute(); cyclesThisOperation += 4; break;
+                    Absolute(); cyclesThisOperation += 4; break;
 
-                // Immediate-only illegal ALU forms.
-                case 0x0B: case 0x2B: ANC_IM(); cyclesThisOperation += 2; break;
-                case 0x4B: ALR_IM(); cyclesThisOperation += 2; break;
-                case 0x6B: ARR_IM(); cyclesThisOperation += 2; break;
-                case 0x8B: XAA_IM(); cyclesThisOperation += 2; break;
-                case 0xAB: LAX_IM(); cyclesThisOperation += 2; break;
-                case 0xBB: LAS_AY(); cyclesThisOperation += 4; break;
-                case 0xCB: AXS_IM(); cyclesThisOperation += 2; break;
-                case 0xEB: SBCI(); break; // NMOS $EB behaves like SBC #imm.
-
-                // Store-high variants used by some packed or protected code.
-                case 0x93: AHX_IY(); cyclesThisOperation += 6; break;
-                case 0x9B: TAS_AY(); cyclesThisOperation += 5; break;
-                case 0x9F: AHX_AY(); cyclesThisOperation += 5; break;
-
-                // Keep NMOS KIL opcodes that remain invalid for the Tube CPU.
-                case 0x02:
-                case 0x22:
-                case 0x42:
-                case 0x62:
-                    jamAddress = (registers.PC - 1) & 0xFFFF;
-                    jammed = true; cyclesThisOperation += 2; break;
-
-                #endregion Illegal / undocumented opcodes
+                #endregion Rockwell bit operations and reserved NOPs
 
                 default:
                     throw new InvalidOperationException($"Unhandled opcode ${opcode:X2} at ${((registers.PC - 1) & 0xFFFF):X4}");
@@ -1419,239 +1396,7 @@ namespace BBC.CPU
             return elapsed;
         }
 
-        #region Illegal opcode helpers
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void LAX(ulong addr)
-        {
-            byte v = ReadByteFromMemory(addr);
-            registers.A = v;
-            registers.X = v;
-            Set_FlagsNZ(v);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SAX(ulong addr)
-        {
-            WriteByteToMemory(addr, (byte)(registers.A & registers.X));
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void DCP(ulong addr)
-        {
-            byte v = (byte)(ReadByteFromMemory(addr) - 1);
-            WriteByteToMemory(addr, v);
-            int diff = registers.A - v;
-            registers.Flags.C = (diff & 0x100) == 0;
-            Set_FlagsNZ((byte)diff);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ISC(ulong addr)
-        {
-            byte v = (byte)(ReadByteFromMemory(addr) + 1);
-            WriteByteToMemory(addr, v);
-            SBC(v);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SLO(ulong addr)
-        {
-            byte v = ReadByteFromMemory(addr);
-            registers.Flags.C = (v & 0x80) != 0;
-            v <<= 1;
-            WriteByteToMemory(addr, v);
-            registers.A |= v;
-            Set_FlagsNZ(registers.A);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SRE(ulong addr)
-        {
-            byte v = ReadByteFromMemory(addr);
-            registers.Flags.C = (v & 0x01) != 0;
-            v >>= 1;
-            WriteByteToMemory(addr, v);
-            registers.A ^= v;
-            Set_FlagsNZ(registers.A);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RLA(ulong addr)
-        {
-            byte v = ReadByteFromMemory(addr);
-            bool oldC = registers.Flags.C;
-            registers.Flags.C = (v & 0x80) != 0;
-            v = (byte)((v << 1) | (oldC ? 1 : 0));
-            WriteByteToMemory(addr, v);
-            registers.A &= v;
-            Set_FlagsNZ(registers.A);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RRA(ulong addr)
-        {
-            byte v = ReadByteFromMemory(addr);
-            bool oldC = registers.Flags.C;
-            registers.Flags.C = (v & 0x01) != 0;
-            v = (byte)((v >> 1) | (oldC ? 0x80 : 0));
-            WriteByteToMemory(addr, v);
-            ADC(v);
-        }
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ANC_IM()
-        {
-            registers.A &= Immediate();
-            Set_FlagsNZ(registers.A);
-            registers.Flags.C = registers.Flags.N;
-        }
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ALR_IM()
-        {
-            byte v = (byte)(registers.A & Immediate());
-            registers.Flags.C = (v & 0x01) != 0;
-            registers.A = (byte)(v >> 1);
-            Set_FlagsNZ(registers.A);
-        }
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ARR_IM()
-        {
-            byte v = (byte)(registers.A & Immediate());
-            byte r = (byte)((v >> 1) | (registers.Flags.C ? 0x80 : 0));
-            registers.A = r;
-            Set_FlagsNZ(r);
-            if (registers.Flags.D)
-            {
-                registers.Flags.V = ((v ^ r) & 0x40) != 0;
-                if (((v & 0x0F) + (v & 0x01)) > 0x05)
-                    registers.A = (byte)((registers.A & 0xF0) | ((registers.A + 0x06) & 0x0F));
-
-                if (((v & 0xF0) + (v & 0x10)) > 0x50)
-                {
-                    registers.Flags.C = true;
-                    registers.A += 0x60;
-                }
-                else
-                {
-                    registers.Flags.C = false;
-                }
-            }
-            else
-            {
-                registers.Flags.C = (r & 0x40) != 0;
-                registers.Flags.V = ((r ^ (r << 1)) & 0x40) != 0;
-            }
-        }
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AXS_IM()
-        {
-            int t = (registers.A & registers.X) - Immediate();
-            registers.X = (byte)t;
-            registers.Flags.C = (t & 0x100) == 0;
-            Set_FlagsNZ(registers.X);
-        }
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void XAA_IM()
-        {
-            registers.A = (byte)((registers.A | 0xEE) & registers.X & Immediate());
-            Set_FlagsNZ(registers.A);
-        }
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void LAX_IM()
-        {
-            byte v = (byte)((registers.A | 0xEE) & Immediate());
-            registers.A = v;
-            registers.X = v;
-            Set_FlagsNZ(v);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void LAS_AY()
-        {
-            ulong addr = Y_Indexed_Absolute();
-            byte v = (byte)(ReadByteFromMemory(addr) & registers.S);
-            registers.A = v;
-            registers.X = v;
-            registers.S = v;
-            Set_FlagsNZ(v);
-        }
-
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AHX_IY()
-        {
-            (ulong addr, byte value) = StoreHighIndirectY((byte)(registers.A & registers.X));
-            WriteByteToMemory(addr, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AHX_AY()
-        {
-            (ulong addr, byte value) = StoreHighIndexedAbsolute((byte)(registers.A & registers.X), registers.Y);
-            WriteByteToMemory(addr, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void TAS_AY()
-        {
-            byte s = (byte)(registers.A & registers.X);
-            registers.S = s;
-            (ulong addr, byte value) = StoreHighIndexedAbsolute(s, registers.Y);
-            WriteByteToMemory(addr, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SHY_AX()
-        {
-            (ulong addr, byte value) = StoreHighIndexedAbsolute(registers.Y, registers.X);
-            WriteByteToMemory(addr, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SHX_AY()
-        {
-            (ulong addr, byte value) = StoreHighIndexedAbsolute(registers.X, registers.Y);
-            WriteByteToMemory(addr, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private (ulong Address, byte Value) StoreHighIndexedAbsolute(byte source, byte index)
-        {
-            ulong baseAddr = Absolute();
-            ulong indexedAddr = baseAddr + index;
-            byte value = (byte)(source & (((baseAddr >> 8) + 1) & 0xFF));
-            byte writeHigh = CrossBoundary(indexedAddr, baseAddr) ? value : (byte)((indexedAddr >> 8) & 0xFF);
-            ulong writeAddr = ((ulong)writeHigh << 8) | (indexedAddr & 0xFF);
-            return (writeAddr, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private (ulong Address, byte Value) StoreHighIndirectY(byte source)
-        {
-            byte zeroPage = GetNextByteInstruction();
-            byte low = ReadByteFromMemory(zeroPage);
-            byte high = ReadByteFromMemory((byte)(zeroPage + 1));
-            ulong baseAddr = (ulong)((high << 8) | low);
-            ulong indexedAddr = baseAddr + registers.Y;
-            byte value = (byte)(source & (((baseAddr >> 8) + 1) & 0xFF));
-            byte writeHigh = CrossBoundary(indexedAddr, baseAddr) ? value : (byte)((indexedAddr >> 8) & 0xFF);
-            ulong writeAddr = ((ulong)writeHigh << 8) | (indexedAddr & 0xFF);
-            return (writeAddr, value);
-        }
-
-        #endregion Illegal opcode helpers
 
         #region Addressing Modes
 
@@ -2541,7 +2286,9 @@ namespace BBC.CPU
                     high += 0x60;
                 registers.Flags.V = ((registers.A ^ value2) & (value ^ value2) & 0x80) != 0;
                 registers.A = (byte)((low & 0xF) + (high & 0xF0));
-                Set_FlagsNZ(value2);
+                // CMOS sets N/Z from the adjusted BCD result and takes an extra cycle.
+                Set_FlagsNZ(registers.A);
+                cyclesThisOperation++;
             }
             else
             {
@@ -2625,18 +2372,19 @@ namespace BBC.CPU
             int carry = registers.Flags.C ? 1 : 0;
             if (registers.Flags.D)
             {
-                int low = 0xF + (registers.A & 0xF) - (value & 0xF) + (registers.Flags.C ? 0x1 : 0);
-                bool halfCarry = (low > 0xF);
-                int high = 0xF0 + (registers.A & 0xF0) - (value & 0xF0) + (halfCarry ? 0x10 : 0);
-                registers.Flags.C = (high > 0xFF);
-                byte binary = (byte)((low & 0xF) + (high & 0xF0));
-                if (!halfCarry)
-                    low -= 0x6;
-                if (!registers.Flags.C)
-                    high -= 0x60;
-                registers.Flags.V = ((registers.A ^ binary) & (~value ^ binary) & 0x80) != 0;
-                registers.A = (byte)((low & 0xF) + (high & 0xF0));
-                Set_FlagsNZ(binary);
+                int binary = registers.A - value - (1 - carry);
+                int result = binary;
+                // The CMOS decimal correction propagates a low-digit borrow through
+                // the whole result, including inputs with non-BCD digits.
+                if ((registers.A & 0x0F) - (value & 0x0F) - (1 - carry) < 0)
+                    result -= 6;
+                if (binary < 0)
+                    result -= 0x60;
+                registers.Flags.C = binary >= 0;
+                registers.Flags.V = ((registers.A ^ binary) & (registers.A ^ value) & 0x80) != 0;
+                registers.A = (byte)result;
+                Set_FlagsNZ(registers.A);
+                cyclesThisOperation++;
             }
             else
             {
@@ -3375,6 +3123,7 @@ namespace BBC.CPU
             PushByteToStack((byte)(registers.PC & 0xFF));
             PushByteToStack((byte)(registers.P | 0x30));
             registers.Flags.I = true;
+            registers.Flags.D = false;
             registers.PC = (ulong)(ReadByteFromMemory(0xFFFE) + ReadByteFromMemory(0xFFFF) * 0x100);
             cyclesThisOperation += 7;
         }
@@ -3539,6 +3288,7 @@ namespace BBC.CPU
             // NMI stacks status like IRQ: B clear, reserved bit set.
             PushByteToStack((byte)((registers.P & 0xEF) | 0x20));
             registers.Flags.I = true;
+            registers.Flags.D = false;
             registers.PC = (ushort)(ReadByteFromMemory(value) | (ReadByteFromMemory(value + 1) << 8));
             cyclesThisOperation += 7;
         }
@@ -3550,6 +3300,7 @@ namespace BBC.CPU
             // IRQ leaves B clear in the stacked status so firmware can tell it from BRK.
             PushByteToStack((byte)((registers.P & 0xEF) | 0x20));
             registers.Flags.I = true;
+            registers.Flags.D = false;
             registers.PC = (ushort)(ReadByteFromMemory(value) | (ReadByteFromMemory(value + 1) << 8));
             cyclesThisOperation += 7;
         }
