@@ -1,0 +1,38 @@
+[
+  {
+    "file": "jsbeeb/via.js",
+    "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/tests/integration/via.js",
+    "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
+    "sha256": "2d0512d53a83aeae469ec34119ba47f382ce8e5299fa963b5cf8dd26aaa328e1"
+  },
+  {
+    "file": "jsbeeb/LICENSE",
+    "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/LICENSE",
+    "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+  },
+  {
+    "file": "seddon/TIMINGS",
+    "source": "https://github.com/tom-seddon/beeb_6502_timing_tests/blob/f3dec4fddd1acce008949551ffbf2c4fea181989/beeb/beeb_6502_timing_tests/0/$.TIMINGS",
+    "revision": "f3dec4fddd1acce008949551ffbf2c4fea181989",
+    "sha256": "5f46abc6d30813702dac7960ae9a0df2c7edc10a83418803e8619abbcc38413f"
+  },
+  {
+    "file": "seddon/README.upstream.md",
+    "source": "https://github.com/tom-seddon/beeb_6502_timing_tests/blob/f3dec4fddd1acce008949551ffbf2c4fea181989/README.md",
+    "revision": "f3dec4fddd1acce008949551ffbf2c4fea181989",
+    "sha256": "c523b2c2190fa146e160c971417711a4b1b1b32fc2b81b95208eb38895994b8a"
+  },
+  {
+    "file": "seddon/notes.upstream.org",
+    "source": "https://github.com/tom-seddon/beeb_6502_timing_tests/blob/f3dec4fddd1acce008949551ffbf2c4fea181989/docs/beeb_6502_timing_tests_notes.org",
+    "revision": "f3dec4fddd1acce008949551ffbf2c4fea181989",
+    "sha256": "611ce5f572cca5b23d2aa7f49bb4cafa4b9b822fabf720cbd72914aa3bc61a40"
+  },
+  {
+    "file": "seddon/LICENSE",
+    "source": "https://github.com/tom-seddon/beeb_6502_timing_tests/blob/f3dec4fddd1acce008949551ffbf2c4fea181989/gpl-3.0.txt",
+    "revision": "f3dec4fddd1acce008949551ffbf2c4fea181989",
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+  }
+]

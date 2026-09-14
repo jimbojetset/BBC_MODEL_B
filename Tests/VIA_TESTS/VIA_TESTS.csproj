@@ -8,4 +8,10 @@
   <ItemGroup>
     <ProjectReference Include="../../BBC_MODEL_B.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Hardware/BbcProgram.cs" Link="BbcProgram.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../External/jsbeeb/via-cases.json" Link="External/via-cases.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

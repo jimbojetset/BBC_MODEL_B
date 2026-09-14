@@ -1,5 +1,10 @@
 # BBC timing tests
 
+> **Provenance audit:** See [PROVENANCE.md](PROVENANCE.md). Original local
+> assertions are now labelled `Unverified/`; they are not independently verified
+> BBC hardware tests. Sourced cases, where present, are reported separately.
+
+
 A separate console project for NMOS CPU timing and BBC CPU/bus/device integration.
 It runs deterministic instruction sequences without ROMs, mounted media, windows,
 network test data, wall-clock waits or emulator threads.
@@ -64,8 +69,9 @@ References:
 - [Visual6502 interrupt recognition analysis](https://www.nesdev.org/wiki/Visual6502wiki/6502_Interrupt_Recognition_Stages_and_Tolerances): transistor-level interrupt timing reference.
 - [NMOS interrupt behaviour](https://www.nesdev.org/wiki/CPU_interrupts): CLI/SEI/PLP versus RTI polling and interrupt recognition.
 
-These are original targeted C# tests; no external test binaries or measured BBC
-traces are bundled. The project does not establish complete cycle-by-cycle bus
+The original group consists of local C# assertions. Thirty external Seddon
+BBC timing cases are now adapted in `SourcedBBC/`; see PROVENANCE.md for the
+retained source, hardware-validation claim and adapter limitations. The project does not establish complete cycle-by-cycle bus
 accuracy. It does not yet test raster/video contention, protected-disc timing,
 Tube synchronisation, all addressing-mode dummy accesses, every interrupt race,
 or analogue clock setup/hold margins. VIA register-level behaviour is covered
@@ -86,5 +92,5 @@ progression during normal/stretched accesses pass. Remaining failures are:
 | `Devices/StallAdvancesVIATimer` | The VIA advances for the instruction but not the preceding CPU stall. |
 
 These failures remain visible and return exit code 1. Emulator code is unchanged
-by this test-project addition. Fixes should preserve the existing opcode state
-suites while making these timing checks pass.
+by this test-project addition. Audit these unverified expectations before changing emulator behaviour.
+They are not automatically proven hardware defects.

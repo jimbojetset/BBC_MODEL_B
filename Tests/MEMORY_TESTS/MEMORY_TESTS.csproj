@@ -8,7 +8,4 @@
   <ItemGroup>
     <ProjectReference Include="../../BBC_MODEL_B.csproj" />
   </ItemGroup>
-  <ItemGroup>
-    <Compile Include="../Hardware/BbcProgram.cs" Link="BbcProgram.cs" />
-  </ItemGroup>
 </Project>

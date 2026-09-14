@@ -1,0 +1,64 @@
+#+STARTUP: overview
+
+* Adding new tests
+
+To add a new test:
+
+1. add it to the spreadsheet and give it an unused hex test number
+
+2. call =PROCSET= to print a header. This ended up a bit questionable
+   in the end but it gives the output a bit of colour. Takes 4
+   arguments:
+
+   - =A$= :: description of the set of cases
+   - =PFA= :: if >0, indicates MHz for the PFA access
+   - =FFA= :: if >0, indicates MHz for the FFA access
+   - =PHASE= :: if >=0, indicates 1 MHz phase (see xlsx)
+
+3. Check `CMOS` (`TRUE` if CMOS CPU) and `MASTER` (`TRUE` if Master
+   hardware - implies `CMOS`) if any tests only run in specific cases
+
+4. call =PROCC= to initialise the assembler
+
+5. assemble the instruction(s) of interest. It'll start on phase 0
+   (use =BIT0= to switch to phase 1 if required), and it must finished
+   on phase 0 (if it would end up on phase 1, use =BIT0= to switch to
+   phase 0). Max =£TESTCODE= bytes
+
+6. call =PROCE= to indicate the test code is ready for use (=£NCOPIES=
+   copies of it will be made)
+
+7. call =PROCT= or =PROCT2= to test the code. Set =X%= and =Y%= first
+   as required for any indexed instructions.
+
+   If `MASTER`, also set `?TST` to non-0 to run the test with the
+   ACCCON TST bit set. `?TST` will be reset after each run, so you'll
+   need to set it specifically for every test that needs it.
+
+   =PROCT=, for use when NMOS and CMOS CPUs will run the sequence in
+   the same number of cycles, takes 2 arguments:
+
+   - =SET= :: hex test number
+   - =£2MHZ= :: number of 2 MHz cycles 1 run of the instructions
+     should take, including any =BIT0=
+
+   =PROCT2=, for use when NMOS and CMOS CPUs would differ, takes 3
+   arguments:
+
+   - =SET= :: hex test number
+   - =£NMOS= :: number of 2 MHz cycles an NMOS CPU should take
+   - =£CMOS= :: number of 2 MHz cycles a CMOS CPU should take
+
+More stuff:
+
+- if the =Cases tested= output puts a =*= after an entry, that means
+  that test number was used for more than one =PROCT= or =PROCT2=.
+  This isn't a problem as such, but it will make failures of that case
+  more annoying to debug
+
+- =PROCT= and =PROCT2= shouldn't call it SET...
+
+- Set =FAILFAST= to =TRUE= to have the program do a =STOP= on the
+  first error encountered
+
+* eof.

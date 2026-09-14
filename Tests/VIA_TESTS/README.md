@@ -1,5 +1,10 @@
 # VIA tests
 
+> **Provenance audit:** See [PROVENANCE.md](PROVENANCE.md). Original local
+> assertions are now labelled `Unverified/`; they are not independently verified
+> BBC hardware tests. Sourced cases, where present, are reported separately.
+
+
 A standalone console test project for the BBC's System and User 6522 VIAs.
 Run from the repository root:
 
@@ -63,16 +68,16 @@ The save/load test is a regression check, not an independent hardware oracle.
 
 This initial suite does not cover the shift-register modes, general input
 latching, every CA/CB pin mode, same-edge interrupt races, electrical behaviour,
-or CPU bus wait-state integration. It uses original C# assertions rather than
-ported jsbeeb tests or captured real-machine traces. Passing it alone would not
+or CPU bus wait-state integration. The original group uses local C# assertions. A separate `SourcedBBC/` group now
+adapts ten jsbeeb programs with upstream real-BBC expected results. Passing it alone would not
 establish complete VIA accuracy.
 
 ## Initial baseline — 14 September 2026
 
-**66 tests: 57 passed, 9 failed.** The following failures remain visible and return
+**66 tests: 57 passed, 9 failed.** The following unverified discrepancies remain visible and return
 exit code 1; this project addition does not change the emulator implementation.
 
-| Failing test | Observed gap |
+| Failing test | Local assertion discrepancy (not proven hardware defect) |
 |---|---|
 | `System/Timer1/FirstTimeout` | T1 has not expired by N+3 VIA clocks; its load offset is 256 CPU cycles. |
 | `System/Timer1/PB7OneShot` | Loading T1 does not drive PB7 low. |

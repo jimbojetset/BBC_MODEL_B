@@ -8,24 +8,18 @@ for (int i = 0; i < args.Length; i++)
     else if (args[i] == "--filter" && i + 1 < args.Length) filter = args[++i];
     else
     {
-        Console.Error.WriteLine("Usage: BBC_TIMING_TESTS [--list] [--filter name]");
+        Console.Error.WriteLine("Usage: MEMORY_TESTS [--list] [--filter name]");
         return 2;
     }
 }
 
-// Host tuning overrides must not alter the hardware expectations of this run.
-foreach (string name in new[] { "BBC_USER_VIA_T1_RELOAD_EXTRA", "BBC_USER_VIA_T1_LOAD_EXTRA",
-    "BBC_USER_VIA_T2_LOAD_EXTRA", "BBC_USER_VIA_TIMER_RELOAD_EXTRA", "BBC_USER_VIA_TIMER_LOAD_EXTRA" })
-    Environment.SetEnvironmentVariable(name, null);
-
 var tests = new List<(string Name, Action Body)>();
-CpuTimingTests.Add(tests);
-BusTimingTests.Add(tests);
-DeviceTimingTests.Add(tests);
+MemoryMapTests.Add(tests);
+BankTests.Add(tests);
+AddressDecodeTests.Add(tests);
 // These original assertions have no independently verified BBC result data.
 for (int i = 0; i < tests.Count; i++)
     tests[i] = ("Unverified/" + tests[i].Name, tests[i].Body);
-SeddonTimingTests.Add(tests);
 Console.WriteLine("Provenance: SourcedBBC = adapted upstream BBC tests; Unverified = local assertions, not hardware evidence. See PROVENANCE.md.");
 var selected = tests.Where(t => filter is null || t.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToArray();
 if (selected.Length == 0)
