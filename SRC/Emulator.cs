@@ -612,7 +612,7 @@ Examples:
         private bool hostCapsLockState;
         private bool bbcCapsLockState = true;
         private const uint SaveStateMagic = 0x31535642; // BVS1
-        private const int SaveStateVersion = 39;
+        private const int SaveStateVersion = 40;
         private bool romManagerPauseActive;
         private bool romManagerPreviousPaused;
         private bool inputMapperPauseActive;
@@ -2773,7 +2773,7 @@ Examples:
                 throw new InvalidDataException("Not a BBC Model B save state.");
 
             int version = reader.ReadInt32();
-            if (version is not (32 or 33 or 34 or 35 or 36 or 37 or 38) && version != SaveStateVersion)
+            if (version is not (32 or 33 or 34 or 35 or 36 or 37 or 38 or 39) && version != SaveStateVersion)
                 throw new InvalidDataException($"Unsupported BBC save state version {version}.");
 
             if (!debuggerRestore) Display?.ClearScreenToBlack();
@@ -2841,7 +2841,7 @@ Examples:
                 LoadSpeechPhraseRom(preservePosition: true);
             else if (!Sound.Speech.Enabled)
                 Sound.Speech.ClearPhraseRom();
-            Video.LoadState(reader);
+            Video.LoadState(reader, version >= 40);
             bool saveHasTube = reader.ReadBoolean();
             if (saveHasTube)
             {

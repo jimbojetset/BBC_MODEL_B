@@ -147,6 +147,14 @@ namespace BBC
         private int beamVpulseWidth;
         private int beamHpulseCounter;
         private int beamVpulseCounter;
+        private bool beamOddVSync;
+        private bool beamEvenVSync;
+        private bool beamHadEvenVSyncThisRow;
+        private readonly uint[] beamTeletextCell = new uint[16];
+        private byte beamCellData;
+        private int beamCellOffset = -1;
+        private bool beamCellDoubled;
+        private bool beamCellCursorInverted;
         private int beamDisplayEnabled = FrameSkipEnable | UserDisplayEnable;
         private int beamHorizontalCounter;
         private int beamVerticalCounter;
@@ -301,9 +309,19 @@ namespace BBC
                 WriteUintArray(writer, beamRenderFrame);
                 WriteUintArray(writer, beamCompletedFrame);
             }
+            writer.Write(beamOddVSync);
+            writer.Write(beamEvenVSync);
+            writer.Write(beamHadEvenVSyncThisRow);
+            WriteUintArray(writer, beamTeletextCell);
+            writer.Write(beamCellData);
+            writer.Write(beamCellOffset);
+            writer.Write(beamCellDoubled);
+            writer.Write(beamCellCursorInverted);
         }
 
-        public void LoadState(BinaryReader reader)
+        public void LoadState(BinaryReader reader) => LoadState(reader, true);
+
+        internal void LoadState(BinaryReader reader, bool hasCellTiming)
         {
             ReadBytes(reader, crtcRegisters, "CRTC register");
             ReadBytes(reader, paletteRegisters, "Video ULA palette");
@@ -399,6 +417,26 @@ namespace BBC
                 displayFrameRectValid = false;
             }
 
+            if (hasCellTiming)
+            {
+                beamOddVSync = reader.ReadBoolean();
+                beamEvenVSync = reader.ReadBoolean();
+                beamHadEvenVSyncThisRow = reader.ReadBoolean();
+                ReadUintArray(reader, beamTeletextCell, "teletext cell");
+                beamCellData = reader.ReadByte();
+                beamCellOffset = reader.ReadInt32();
+                beamCellDoubled = reader.ReadBoolean();
+                beamCellCursorInverted = reader.ReadBoolean();
+            }
+            else
+            {
+                // Older snapshots did not retain the separate CRTC pulses or the
+                // unselected ULA output. Resume those at the next character edge.
+                beamOddVSync = beamEvenVSync = beamInVSync;
+                beamHadEvenVSyncThisRow = beamHadVSyncThisRow;
+                beamCellOffset = -1;
+                Array.Clear(beamTeletextCell);
+            }
             VsyncChanged?.Invoke(beamInVSync);
         }
 
@@ -535,6 +573,11 @@ namespace BBC
             beamVpulseWidth = 0;
             beamHpulseCounter = 0;
             beamVpulseCounter = 0;
+            beamOddVSync = beamEvenVSync = beamHadEvenVSyncThisRow = false;
+            beamCellOffset = -1;
+            beamCellData = 0;
+            beamCellDoubled = beamCellCursorInverted = false;
+            Array.Clear(beamTeletextCell);
             beamDisplayEnabled = FrameSkipEnable | UserDisplayEnable | HDisplayEnable | VDisplayEnable | ScanlineDisplayEnable;
             beamHorizontalCounter = 0;
             beamVerticalCounter = 0;
@@ -681,7 +724,6 @@ namespace BBC
                 beamHpulseCounter = 0;
             }
 
-            TickBeamVSync();
             RenderBeamCharacter();
 
             if (!BeamHorizontalDisplayEnabled && BeamVerticalDisplayEnabled)
@@ -714,48 +756,57 @@ namespace BBC
             bool r7Hit = beamVerticalCounter == GetBeamVerticalSync();
             if (r6Hit || r7Hit)
                 beamDoEvenFrameLogic = (beamFrameCount & 1) != 0;
+
+            TickBeamVSync();
         }
 
         private void TickBeamVSync()
         {
-            bool isInterlace = beamInterlaceMode != CrtcInterlaceMode.NonInterlace;
-            bool halfR0Hit = beamHorizontalCounter == (crtcRegisters[CrtcHorizontalTotalRegister] >> 1);
-            bool isVsyncPoint = !isInterlace || !beamDoEvenFrameLogic || halfR0Hit;
-            bool vSyncEnding = false;
-            bool vSyncStarting = false;
-
-            if (beamInVSync && beamVpulseCounter == beamVpulseWidth && isVsyncPoint)
+            // The CRTC produces line-aligned and half-line-aligned pulses. R8
+            // selects the output; changing it must not restart either pulse.
+            if (beamHorizontalCounter == 0)
             {
-                vSyncEnding = true;
-                beamInVSync = false;
+                if (beamVpulseCounter >= beamVpulseWidth)
+                    beamOddVSync = false;
+                if (beamVerticalCounter == GetBeamVerticalSync() && !beamHadVSyncThisRow)
+                {
+                    if (!beamOddVSync && !beamEvenVSync)
+                        beamVpulseCounter = 0;
+                    beamOddVSync = true;
+                    beamHadVSyncThisRow = true;
+                }
             }
 
-            if (beamVerticalCounter == GetBeamVerticalSync()
-                && !beamInVSync
-                && !beamHadVSyncThisRow
-                && isVsyncPoint)
+            int halfLine = (crtcRegisters[CrtcHorizontalTotalRegister] + 1) / 2;
+            if (beamHorizontalCounter == halfLine)
             {
-                vSyncStarting = true;
-                beamInVSync = true;
+                if (beamVpulseCounter >= beamVpulseWidth)
+                    beamEvenVSync = false;
+                if (beamVerticalCounter == GetBeamVerticalSync() && !beamHadEvenVSyncThisRow)
+                {
+                    beamEvenVSync = true;
+                    beamHadEvenVSyncThisRow = true;
+                }
             }
+            UpdateBeamVSyncOutput();
+        }
 
-            if (vSyncStarting && !vSyncEnding)
-            {
-                beamHadVSyncThisRow = true;
-                beamVpulseCounter = 0;
-                if (crtcRegisters[CrtcHorizontalTotalRegister] != 0 && GetBeamVerticalTotal() != 0)
-                    PaintAndClearBeamFrame();
-            }
-
-            if (vSyncStarting || vSyncEnding)
-            {
-                VsyncChanged?.Invoke(beamInVSync);
-                beamTeletext.SetDEW(beamInVSync);
-            }
+        private void UpdateBeamVSyncOutput()
+        {
+            bool level = beamInterlaceMode != CrtcInterlaceMode.NonInterlace && beamDoEvenFrameLogic
+                ? beamEvenVSync : beamOddVSync;
+            if (level == beamInVSync)
+                return;
+            beamInVSync = level;
+            if (level && crtcRegisters[CrtcHorizontalTotalRegister] != 0 && GetBeamVerticalTotal() != 0)
+                PaintAndClearBeamFrame();
+            VsyncChanged?.Invoke(level);
+            beamTeletext.SetDEW(level);
         }
 
         private void RenderBeamCharacter()
         {
+            beamCellOffset = -1;
             if ((uint)beamBitmapX >= BeamFramebufferWidth || (uint)beamBitmapY >= BeamFramebufferHeight)
                 return;
                 
@@ -792,6 +843,13 @@ namespace BBC
             int offset = (y * BeamFramebufferWidth) + beamBitmapX;
             if (renderDisplayEnabled)
             {
+                beamCellData = data;
+                beamCellOffset = offset;
+                beamCellDoubled = doubledLines;
+                beamCellCursorInverted = false;
+                // The SAA5050 continues processing characters while the ULA
+                // selects bitmap output. Keep its pixels for a mid-cell switch.
+                beamTeletext.Render(beamTeletextCell, 0, beamTeletextCell.Length);
                 if (IsBeamTeletextMode)
                 {
                     RenderBeamTeletextCharacter(offset, y);
@@ -810,6 +868,24 @@ namespace BBC
                 HandleBeamCursor(offset, doubledLines);
         }
 
+        private void RepaintBeamSecondHalf()
+        {
+            // A 1 MHz cell spans two CPU cycles. The first eight pixels have
+            // already left the ULA when a write occurs between those cycles.
+            if (!beamHalfClock || !beamOddClock || beamCellOffset < 0)
+                return;
+            int x = beamCellOffset % BeamFramebufferWidth;
+            for (int pixel = 8; pixel < 16 && x + pixel < BeamFramebufferWidth; pixel++)
+            {
+                uint colour = IsBeamTeletextMode ? beamTeletextCell[pixel]
+                    : ResolveBeamPhysicalColour(paletteRegisters[DecodeBeamPaletteIndex(beamCellData, pixel) & 15]);
+                beamRenderFrame[beamCellOffset + pixel] = beamCellCursorInverted ? colour ^ 0x00FFFFFF : colour;
+                if (beamCellDoubled && beamCellOffset + BeamFramebufferWidth + pixel < beamRenderFrame.Length)
+                    beamRenderFrame[beamCellOffset + BeamFramebufferWidth + pixel] =
+                        beamCellCursorInverted && !beamInterlacedSyncAndVideo ? colour ^ 0x00FFFFFF : colour;
+            }
+        }
+
         private int GetBeamDisplayEnablePosition()
         {
             return beamDisplayEnableSkew + (IsBeamTeletextMode ? 2 : 0);
@@ -817,7 +893,8 @@ namespace BBC
 
         private void RenderBeamTeletextCharacter(int offset, int y)
         {
-            beamTeletext.Render(beamRenderFrame, offset, BeamFramebufferWidth);
+            Array.Copy(beamTeletextCell, 0, beamRenderFrame, offset,
+                Math.Min(beamPixelsPerCharacter, BeamFramebufferWidth - beamBitmapX));
             RecordBeamActiveRun(beamBitmapX, y, beamPixelsPerCharacter, doubledLines: false);
         }
 
@@ -884,6 +961,7 @@ namespace BBC
         {
             if (beamCursorOnThisFrame && (beamUlaControl & GetBeamCursorMask()) != 0)
             {
+                beamCellCursorInverted = true;
                 int visiblePixels = Math.Min(beamPixelsPerCharacter, BeamFramebufferWidth - beamBitmapX);
                 for (int i = 0; i < visiblePixels; i++)
                     beamRenderFrame[offset + i] ^= 0x00FFFFFF;
@@ -947,7 +1025,9 @@ namespace BBC
         private void EndBeamScanline()
         {
             beamFirstScanline = false;
-            beamVpulseCounter = (beamVpulseCounter + 1) & 0x0F;
+            // R3=0 means sixteen lines; do not wrap the elapsed count at fifteen.
+            if (beamOddVSync || beamEvenVSync)
+                beamVpulseCounter = Math.Min(16, beamVpulseCounter + 1);
             bool r9Hit = beamScanlineCounter == GetBeamMaximumRasterAddress();
             if (r9Hit)
                 beamLineStartAddress = beamNextLineStartAddress;
@@ -1042,6 +1122,7 @@ namespace BBC
             }
             ApplyPendingPaletteWrites();
             beamHadVSyncThisRow = false;
+            beamHadEvenVSyncThisRow = false;
             BeamDisplayEnableSet(ScanlineDisplayEnable);
         }
 
@@ -1220,6 +1301,8 @@ namespace BBC
                 value = (byte)(value & CrtcRegisterMasks[regIndex]);
                 crtcRegisters[regIndex] = value;
                 UpdateBeamCrtcDerivedState(regIndex, value);
+                if (regIndex == 8)
+                    UpdateBeamVSyncOutput();
                 UpdateBeamStableVerticalTiming();
                 HandleBeamDisplayStartRupture(regIndex);
                 return;
@@ -1227,9 +1310,13 @@ namespace BBC
 
             if ((address & 1) == 0)
             {
+                bool switchedOutput = ((UlaControl ^ value) & 0x02) != 0;
+                bool wasHalfClock = beamHalfClock;
                 UlaControl = value;
                 CurrentMode = DecodeModeFromUlaControl(value);
                 UpdateBeamUlaControl(value);
+                if (switchedOutput && wasHalfClock)
+                    RepaintBeamSecondHalf();
                 return;
             }
 

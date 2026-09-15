@@ -24,7 +24,7 @@ For every new hardware test:
 validation reported upstream. It does not mean our adaptation has itself been
 rerun on a physical BBC. `Unverified/` means no independent BBC result has been
 established for that case, even if its expectation is plausible or documented.
-Use `--filter SourcedBBC/` to run only the sourced cases in VIA or BBC timing.
+Use `--filter SourcedBBC/` to run only the sourced cases in VIA, BBC timing, sound or video.
 
 ## Current evidence
 
@@ -34,6 +34,8 @@ Use `--filter SourcedBBC/` to run only the sourced cases in VIA or BBC timing.
 | 65C02_CPU_TESTS | External Rockwell SingleStepTests vectors; not a BBC Master 65C12 test suite. |
 | VIA_TESTS | Ten Scarybeasts/jsbeeb programs carrying upstream real-BBC result arrays. Original local cases remain Unverified. |
 | BBC_TIMING_TESTS | Thirty NMOS cases adapted from Tom Seddon's program, reported tested on BBC B and Master. Original local cases remain Unverified. |
+| SOUND_TESTS | John Kortink's BBC white-noise capture: three sequence/restart scenarios. No complete audio-path verification claimed. |
+| VIDEO_TESTS | One hardware-confirmed beebjit CRTC case; two ULA scenarios based on one Master measurement. Three further upstream CRTC cases and three local save/restore checks remain Unverified. |
 | MEMORY_TESTS | **No independently verified BBC test data integrated.** All current cases are Unverified supplementary checks. |
 
 See each project's `PROVENANCE.md` for scope, adaptations and exclusions. Pinned

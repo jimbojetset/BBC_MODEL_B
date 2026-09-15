@@ -34,5 +34,49 @@
     "source": "https://github.com/tom-seddon/beeb_6502_timing_tests/blob/f3dec4fddd1acce008949551ffbf2c4fea181989/gpl-3.0.txt",
     "revision": "f3dec4fddd1acce008949551ffbf2c4fea181989",
     "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+  },
+  {
+    "file": "kortink/white_noise.bin",
+    "source": "https://www.zeridajh.org/articles/me_sn76489_sound_chip_details/downloads/white_noise.bin",
+    "research": "https://www.zeridajh.org/articles/me_sn76489_sound_chip_details/index.html",
+    "retrieved": "2026-09-14",
+    "revision": "No upstream revision; pinned by SHA-256",
+    "sha256": "ae43bc97f5c6d9524c56d7f1e8925242d6ac8a0bd40b33052c8eadd68bcbd6df"
+  },
+  {
+    "file": "beebjit-video/test-video.c",
+    "source": "https://github.com/scarybeasts/beebjit/blob/c977309448a5622c4cecf2a29f8678d0fb3aeee8/test-video.c",
+    "revision": "c977309448a5622c4cecf2a29f8678d0fb3aeee8",
+    "sha256": "9de5da006030a5517e33b3d4b688a559f2e80b0e93cbc3e5dfea12e48f8fc1ef"
+  },
+  {
+    "file": "beebjit-video/video.c",
+    "source": "https://github.com/scarybeasts/beebjit/blob/c977309448a5622c4cecf2a29f8678d0fb3aeee8/video.c",
+    "revision": "c977309448a5622c4cecf2a29f8678d0fb3aeee8",
+    "sha256": "86cca839e24e229ef9c206db33b4a9ff0a36b7091b1ec82542e17830ad7c92e9"
+  },
+  {
+    "file": "beebjit-video/COPYING",
+    "source": "https://github.com/scarybeasts/beebjit/blob/c977309448a5622c4cecf2a29f8678d0fb3aeee8/COPYING",
+    "revision": "c977309448a5622c4cecf2a29f8678d0fb3aeee8",
+    "sha256": "3f6c9b4f7498497f0031ab581975015653c903e18edcb6b8fb86fd0fcb46d6df"
+  },
+  {
+    "file": "jsbeeb-video/t8.bas",
+    "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/tests/hardware/teletext/src/t8.bas",
+    "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
+    "sha256": "e5c5c266db595acf74ce17b5a77b71740a04be9aa009717b123dc915007b147f"
+  },
+  {
+    "file": "jsbeeb-video/README.upstream.md",
+    "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/tests/hardware/teletext/README.md",
+    "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
+    "sha256": "450f9b67a9370066fc8776e7adccceeceaac033aaf2f09575caff31e035fb38e"
+  },
+  {
+    "file": "jsbeeb-video/LICENSE",
+    "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/LICENSE",
+    "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
   }
 ]

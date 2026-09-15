@@ -1,13 +1,19 @@
 # Retained external BBC test evidence
 
 `sources.json` records exact upstream paths, pinned revisions and SHA-256 hashes
-of the unmodified source files. Both upstream projects supply GPL-3.0 licences,
-retained beside their material. No live network fetch is required to run tests.
+of the unmodified source files. The jsbeeb, beebjit and Seddon material includes its GPL-3.0 licences. Kortink
+provides separate attribution-based permission described beside his capture. No live network fetch is required to run tests.
 
 - `jsbeeb/via.js`: Scarybeasts' programs as adapted by jsbeeb, with real-BBC result
   statements. `via-cases.json` is our generated subset, not an upstream file.
 - `seddon/TIMINGS`: Tom Seddon's tokenised BBC BASIC program. Its retained README
   reports physical BBC B and Master 128 testing. The C# adapter uses NMOS results.
+
+- `kortink/white_noise.bin`: John Kortink's decoded noise bitstream captured
+  from his BBC sound chip, used by SOUND_TESTS.
+
+- `beebjit-video/`: CRTC cases, setup and original copyright/licensing notice.
+- `jsbeeb-video/`: T8 ULA switching experiment and qualified Master measurement.
 
 From the repository root:
 
