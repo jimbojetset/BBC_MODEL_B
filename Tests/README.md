@@ -36,6 +36,8 @@ Use `--filter SourcedBBC/` to run only the sourced cases in VIA, BBC timing, sou
 | BBC_TIMING_TESTS | Thirty NMOS cases adapted from Tom Seddon's program, reported tested on BBC B and Master. Original local cases remain Unverified. |
 | SOUND_TESTS | John Kortink's BBC white-noise capture: three sequence/restart scenarios. No complete audio-path verification claimed. |
 | VIDEO_TESTS | One hardware-confirmed beebjit CRTC case; two ULA scenarios based on one Master measurement. Three further upstream CRTC cases and three local save/restore checks remain Unverified. |
+| 8271_TESTS | Five jsbeeb status comparisons without per-case hardware results; two local sector round trips and three local result-lifecycle checks. All Unverified. |
+| 1770_TESTS | Twelve jsbeeb WD1770 interrupt/step comparisons without per-case hardware results; two local sector round trips. All Unverified. |
 | MEMORY_TESTS | **No independently verified BBC test data integrated.** All current cases are Unverified supplementary checks. |
 
 See each project's `PROVENANCE.md` for scope, adaptations and exclusions. Pinned

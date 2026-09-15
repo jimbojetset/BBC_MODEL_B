@@ -67,7 +67,7 @@ namespace BBC
         private readonly List<byte> parameters = new List<byte>();
         private byte command;
         private byte result;
-        private bool resultAvailable = true;
+        private bool resultAvailable;
         private PendingWrite? pendingWrite;
         private int selectedDrive;
         private string? mountedPath;
@@ -403,7 +403,7 @@ namespace BBC
             pendingWrite = null;
             command = 0;
             result = 0;
-            resultAvailable = true;
+            resultAvailable = false;
             selectedDrive = 0;
             Array.Clear(specialRegisters);
             nmiPending = false;
@@ -692,7 +692,8 @@ namespace BBC
             if (NmiLineAsserted)
                 status |= StatusInterrupt;
 
-            if (NmiLineAsserted && resultAvailable)
+            // Polled commands return a result without raising the interrupt line.
+            if (nmiDelayCycles <= 0 && resultAvailable)
                 status |= StatusResultFull;
 
             return status;
@@ -750,6 +751,9 @@ namespace BBC
             nmiPending = false;
             nmiDelayCycles = 0;
             command = value;
+            // The 8271 command dispatcher clears CMD_FULL in internal R23,
+            // which is also accessible as special (mode) register $17.
+            specialRegisters[0x17] &= 0xBF;
             selectedDrive = (command & 0x80) != 0 ? 1 : 0;
             parameters.Clear();
             resultAvailable = false;
@@ -871,13 +875,13 @@ namespace BBC
                     break;
 
                 case 0x35:
-                    SetPolledResult(ResultOk);
+                    // SPECIFY and WRITE SPECIAL REGISTER have no result phase.
+                    busy = false;
                     break;
 
                 case 0x3A:
                     specialRegisters[parameters[0] & 0x3F] = parameters[1];
-
-                    SetPolledResult(ResultOk);
+                    busy = false;
                     break;
 
                 case 0x3D:

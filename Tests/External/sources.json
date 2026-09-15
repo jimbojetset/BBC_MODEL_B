@@ -78,5 +78,35 @@
     "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/LICENSE",
     "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
     "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+  },
+  {
+    "file": "jsbeeb-fdc/test-intel-fdc.js",
+    "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/tests/unit/test-intel-fdc.js",
+    "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
+    "sha256": "c85335422bc5811c54cfdf0248161b053cc482e0cfe696b6d314fb74500914d8"
+  },
+  {
+    "file": "jsbeeb-fdc/test-wd-fdc.js",
+    "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/tests/unit/test-wd-fdc.js",
+    "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
+    "sha256": "1210a1cea0416f83474ce37d08aa8201d3339fcceb81da366104120d092f68ba"
+  },
+  {
+    "file": "jsbeeb-fdc/LICENSE",
+    "source": "https://github.com/mattgodbolt/jsbeeb/blob/d74d9043e83b981a4a3fe1d621f309e8bf083a9c/LICENSE",
+    "revision": "d74d9043e83b981a4a3fe1d621f309e8bf083a9c",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+  },
+  {
+    "file": "beebjit-fdc/README.upstream",
+    "source": "https://github.com/scarybeasts/beebjit/blob/c977309448a5622c4cecf2a29f8678d0fb3aeee8/test/hfe/README",
+    "revision": "c977309448a5622c4cecf2a29f8678d0fb3aeee8",
+    "sha256": "bc0495ad9f222750b3ad96d60be56868a91bd49050064596cdb198d82f1324e9"
+  },
+  {
+    "file": "beebjit-fdc/COPYING",
+    "source": "https://github.com/scarybeasts/beebjit/blob/c977309448a5622c4cecf2a29f8678d0fb3aeee8/COPYING",
+    "revision": "c977309448a5622c4cecf2a29f8678d0fb3aeee8",
+    "sha256": "3f6c9b4f7498497f0031ab581975015653c903e18edcb6b8fb86fd0fcb46d6df"
   }
 ]

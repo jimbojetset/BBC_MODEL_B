@@ -32,3 +32,10 @@ new physical-machine validation.
 See the VIA and BBC timing `PROVENANCE.md` files for the exact adaptations,
 hardware qualifications, omitted upstream cases and test baselines. Do not copy
 Master-only or upstream-unverified expectations into Model B conformance tests.
+
+## Disc controller evidence
+
+`jsbeeb-fdc/` retains the original Intel and WD controller tests and licence.
+`beebjit-fdc/` retains physical HFE experiment results and licence; these are not
+yet executable with our sector-only media path. See 8271_TESTS and 1770_TESTS
+for mappings, adapter limitations and explicitly Unverified baselines.
