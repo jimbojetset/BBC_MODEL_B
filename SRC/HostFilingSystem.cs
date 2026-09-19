@@ -423,7 +423,8 @@ namespace BBC
             if (trimmed.StartsWith("TV", StringComparison.OrdinalIgnoreCase))
                 return trimmed.Length == 2 || char.IsWhiteSpace(trimmed[2]) || char.IsDigit(trimmed[2]) || trimmed[2] == ',';
 
-            return trimmed.StartsWith("T.", StringComparison.OrdinalIgnoreCase);
+            // *T. selects TAPE; let MOS resolve abbreviated commands.
+            return false;
         }
 
         private bool TryHandleFxCommand(string command, CPU_6502 cpu, bool earlyDiscFallbackOnly, out bool returnFromOscli)
