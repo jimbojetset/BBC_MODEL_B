@@ -138,7 +138,7 @@ dotnet run --project BBC_MODEL_B.csproj -- --load-state Saves/Elite.sav
 The SDL window has a small menu bar for the common jobs:
 
 ```text
-File         Screenshot, save state, open state, quit
+File         Load/eject tape and discs (drives 0 and 1), screenshot, save state, open state, quit
 Machine      BREAK, reset, sound, pause
 Peripherals  Tape player, modem, printer, turtle, disc drives, speech, Tube, Teletext
 Disc interface
@@ -152,6 +152,16 @@ View         Fullscreen, scanlines, BBC logo, and the optional FPS display
 ```
 
 Click an on-screen disc drive or cassette player to open its media and transport menu.
+The `File` menu also provides `Load tape...`, `Eject tape`, `Load disc 0...`,
+`Eject disc 0`, `Load disc 1...` and `Eject disc 1`, including in fullscreen mode.
+Enable the relevant device under `Peripherals` before loading media. Load is available
+when the device is empty; eject the current tape or disc before loading a replacement.
+Eject is available when media is loaded.
+
+Fullscreen (`Ctrl+Shift+F`) hides the tape, drive 0, drive 1, co-processor, Teletext and BBC logo graphics.
+Move the pointer to the top of the screen to reveal the menu; it hides when the pointer leaves
+the menu bar or its open dropdown. Sideways Memory and Keyboard Mapper panels remain usable
+while the menu is hidden. Returning to windowed mode restores the usual graphics and menu.
 
 A few useful details:
 

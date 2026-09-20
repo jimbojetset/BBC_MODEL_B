@@ -243,6 +243,8 @@ namespace BBC
         private bool hostCapsLockEnabled;
         private bool bbcShiftLockEnabled;
         private bool fullScreenEnabled;
+        private bool fullScreenMenuVisible;
+        private bool MenuBarVisible => !fullScreenEnabled || fullScreenMenuVisible;
         private int activeMenuIndex = -1;
         private int hoveredMenuIndex = -1;
         private int hoveredMenuItemIndex = -1;
@@ -489,6 +491,15 @@ namespace BBC
                     continue;
                 }
 
+                if (fullScreenEnabled && ev.Type == SDL_WINDOWEVENT && ev.WindowId == windowId
+                    && ev.WindowEvent == SDL_WINDOWEVENT_LEAVE)
+                {
+                    fullScreenMenuVisible = false;
+                    activeMenuIndex = -1;
+                    hoveredMenuIndex = -1;
+                    hoveredMenuItemIndex = -1;
+                }
+
                 if (ev.Type == SDL_DROPFILE)
                 {
                     debugger?.DiscardUndoHistory();
@@ -538,6 +549,11 @@ namespace BBC
 
                 if (ev.Type == SDL_MOUSEMOTION)
                 {
+                    if (ev.WindowId != windowId)
+                        continue;
+
+                    UpdateFullScreenMenuVisibility(ev.MouseX, ev.MouseY);
+
                     if (HandleRomManagerMouseMotion(ev.MouseX, ev.MouseY))
                         continue;
 
@@ -943,11 +959,15 @@ namespace BBC
                 _ = SDL_RenderCopy(renderer, scanlineTexture, IntPtr.Zero, ref viewportRect);
 
             DrawTopBorderStatusMessage();
-            DrawBbcLogo();
-            DrawTubeCoProcessorImage();
-            DrawTeletextAdapterImage();
+            if (!fullScreenEnabled)
+            {
+                DrawBbcLogo();
+                DrawTubeCoProcessorImage();
+                DrawTeletextAdapterImage();
+            }
             DrawDriveGlyphs();
-            DrawMenuBar();
+            if (MenuBarVisible)
+                DrawMenuBar();
             if (IsBottomOverlayMenu(activeMenuIndex))
                 DrawOpenMenu(activeMenuIndex);
             DrawRomManager();
@@ -1665,6 +1685,34 @@ namespace BBC
             ClearInputMapperSelection();
         }
 
+        private void UpdateFullScreenMenuVisibility(int hostX, int hostY)
+        {
+            if (!fullScreenEnabled)
+                return;
+
+            RenderWindowToLogical(hostX, hostY, out float x, out float y);
+            // SDL reports logical coordinates, including negative Y in the top letterbox.
+            bool visible = y < TopMenuHeight;
+            if (fullScreenMenuVisible && activeMenuIndex >= 0 && activeMenuIndex < menus.Length)
+            {
+                MenuDefinition menu = GetMenuDefinition(activeMenuIndex);
+                int width = GetDropDownWidth(menu);
+                int height = GetDropDownHeight(menu);
+                int left = GetDropDownX(activeMenuIndex, width);
+                int top = GetDropDownY(activeMenuIndex, height);
+                visible |= x >= left && x < left + width && y >= top && y < top + height;
+            }
+
+            fullScreenMenuVisible = visible;
+            if (!visible)
+            {
+                if (!IsBottomOverlayMenu(activeMenuIndex))
+                    activeMenuIndex = -1;
+                hoveredMenuIndex = -1;
+                hoveredMenuItemIndex = -1;
+            }
+        }
+
         private bool HandleMenuMouseMotion(int hostX, int hostY)
         {
             RenderWindowToLogical(hostX, hostY, out float logicalX, out float logicalY);
@@ -1930,7 +1978,7 @@ namespace BBC
 
         private bool IsMenuArea(int x, int y)
         {
-            if (y >= 0 && y < TopMenuHeight)
+            if (MenuBarVisible && y >= 0 && y < TopMenuHeight)
                 return true;
 
             if (IsInHayesMenuLabel(x, y))
@@ -2172,7 +2220,7 @@ namespace BBC
             if (driveMenuIndex != -1)
                 return driveMenuIndex;
 
-            if (y < 0 || y >= TopMenuHeight)
+            if (!MenuBarVisible || y < 0 || y >= TopMenuHeight)
                 return -1;
 
             int menuX = MenuPaddingX;
@@ -3543,6 +3591,9 @@ namespace BBC
             DrawStatusLeds(bottomOverlayY + BottomOverlayContentOffsetY);
             DrawFps();
             DrawHayesModemPanel();
+            if (fullScreenEnabled)
+                return;
+
             DrawCassetteImage();
             if (Drive0Enabled)
             {
@@ -3888,6 +3939,9 @@ namespace BBC
 
         private bool IsInCassetteMenuLabel(int x, int y)
         {
+            if (fullScreenEnabled)
+                return false;
+
             if (!TapePlayerEnabled)
                 return false;
 
@@ -3897,6 +3951,9 @@ namespace BBC
 
         private int GetDriveMenuIndexAt(int x, int y)
         {
+            if (fullScreenEnabled)
+                return -1;
+
             for (int drive = 0; drive <= 1; drive++)
             {
                 if (!IsDriveEnabled(drive))
@@ -5185,6 +5242,10 @@ namespace BBC
         {
             ThrowIfSdlFailed(SDL_SetWindowFullscreen(window, enabled ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0), "SDL_SetWindowFullscreen");
             fullScreenEnabled = enabled;
+            fullScreenMenuVisible = false;
+            activeMenuIndex = -1;
+            hoveredMenuIndex = -1;
+            hoveredMenuItemIndex = -1;
         }
 
         private void EnqueueBbcKeyChange(byte internalKey, bool pressed)
@@ -5572,6 +5633,14 @@ namespace BBC
         {
             List<MenuItem> items =
             [
+                new MenuItem("Load tape...", "", MenuCommand.LoadTape),
+                new MenuItem("Eject tape", "", MenuCommand.EjectTape),
+                MenuSeparator(),
+                new MenuItem("Load disc 0...", "", MenuCommand.MountDrive0),
+                new MenuItem("Eject disc 0", "", MenuCommand.EjectDrive0),
+                new MenuItem("Load disc 1...", "", MenuCommand.MountDrive1),
+                new MenuItem("Eject disc 1", "", MenuCommand.EjectDrive1),
+                MenuSeparator(),
                 new MenuItem("Save screenshot", "Ctrl/Cmd+S", MenuCommand.SaveScreenshot),
                 new MenuItem("Open state...", "Ctrl+Shift+O", MenuCommand.LoadState),
                 new MenuItem("Save state...", "Ctrl+Shift+V", MenuCommand.SaveState)
@@ -6346,6 +6415,7 @@ namespace BBC
         private const int SDL_TRUE = 1;
         private const uint SDL_QUIT = 0x100;
         private const uint SDL_WINDOWEVENT = 0x200;
+        private const byte SDL_WINDOWEVENT_LEAVE = 11;
         private const byte SDL_WINDOWEVENT_CLOSE = 14;
         private const uint SDL_KEYDOWN = 0x300;
         private const uint SDL_KEYUP = 0x301;
