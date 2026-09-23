@@ -266,6 +266,7 @@ namespace BBC
         private int uiMouseY = -1;
         private string archivePath = string.Empty;
         private int archiveDrive;
+        private bool archiveIsTape;
         private int activeArchiveFolder = -1;
         private int hoveredArchiveFolder = -1;
         private int hoveredArchiveEntry = -1;
@@ -729,8 +730,19 @@ namespace BBC
 
         public void ShowDiscArchive(string path, IReadOnlyList<ArchiveDiscEntry> entries, int drive)
         {
+            ShowArchive(path, entries, drive, isTape: false);
+        }
+
+        public void ShowTapeArchive(string path, IReadOnlyList<ArchiveDiscEntry> entries)
+        {
+            ShowArchive(path, entries, 0, isTape: true);
+        }
+
+        private void ShowArchive(string path, IReadOnlyList<ArchiveDiscEntry> entries, int drive, bool isTape)
+        {
             archivePath = path;
             archiveDrive = drive;
+            archiveIsTape = isTape;
             archiveEntries.Clear();
             archiveEntries.AddRange(entries);
             archiveSearchText = string.Empty;
@@ -1309,7 +1321,7 @@ namespace BBC
 
             string title = TrimRendererText(Path.GetFileName(archivePath), 48);
             DrawRendererText(title, panel.X + 12, panel.Y + 10, 235, 235, 235);
-            DrawRendererText($"Drive {archiveDrive}", panel.X + panel.W - 72, panel.Y + 10, 170, 170, 170);
+            DrawRendererText(archiveIsTape ? "Tape" : $"Drive {archiveDrive}", panel.X + panel.W - 72, panel.Y + 10, 170, 170, 170);
 
             SdlRect search = new SdlRect(panel.X + 12, panel.Y + 32, panel.W - 24, ArchiveSearchHeight);
             _ = SDL_SetRenderDrawColor(renderer, 8, 8, 8, 255);
@@ -1837,7 +1849,7 @@ namespace BBC
                 activeArchiveEntry = entryIndex;
                 string folder = archiveFolders[activeArchiveFolder];
                 ArchiveDiscEntry entry = GetArchiveFolderEntries(folder)[entryIndex];
-                pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.MountArchiveEntry, archivePath, archiveDrive, entry.EntryPath));
+                EnqueueArchiveEntry(entry);
                 CloseArchiveBrowser();
                 return true;
             }
@@ -2156,8 +2168,16 @@ namespace BBC
                 return;
 
             ArchiveDiscEntry entry = discs[activeArchiveEntry];
-            pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.MountArchiveEntry, archivePath, archiveDrive, entry.EntryPath));
+            EnqueueArchiveEntry(entry);
             CloseArchiveBrowser();
+        }
+
+        private void EnqueueArchiveEntry(ArchiveDiscEntry entry)
+        {
+            if (archiveIsTape)
+                pendingTapeActions.Enqueue(new HostTapeAction(HostTapeActionKind.MountArchiveEntry, archivePath) { ArchiveEntryPath = entry.EntryPath });
+            else
+                pendingDiscActions.Enqueue(new HostDiscAction(HostDiscActionKind.MountArchiveEntry, archivePath, archiveDrive, entry.EntryPath));
         }
 
         private void EnsureArchiveSelectionVisible()
@@ -5917,13 +5937,13 @@ namespace BBC
                         "-NoProfile",
                         "-STA",
                         "-Command",
-                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC tape'; $dialog.Filter = 'UEF tape (*.uef)|*.uef'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
+                        "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = 'Select a BBC tape or archive'; $dialog.Filter = 'UEF tape/archive (*.uef;*.zip)|*.uef;*.zip'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }");
 
                 if (OperatingSystem.IsMacOS())
-                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC tape\" of type {\"uef\"})");
+                    return RunProcessForSingleLine("osascript", "-e", "POSIX path of (choose file with prompt \"Select a BBC tape or archive\" of type {\"uef\", \"zip\"})");
 
                 if (OperatingSystem.IsLinux())
-                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC tape", "--file-filter=UEF tape (*.uef) | *.uef");
+                    return RunProcessForSingleLine("zenity", "--file-selection", "--title=Select a BBC tape or archive", "--file-filter=UEF tape/archive (*.uef *.zip) | *.uef *.zip");
             }
             catch
             {
@@ -6711,7 +6731,10 @@ namespace BBC
 
     public readonly record struct HostDiscAction(HostDiscActionKind Kind, string Path, int Drive, string ArchiveEntryPath = "");
 
-    public readonly record struct HostTapeAction(HostTapeActionKind Kind, string Path);
+    public readonly record struct HostTapeAction(HostTapeActionKind Kind, string Path)
+    {
+        public string ArchiveEntryPath { get; init; } = string.Empty;
+    }
 
     public readonly record struct HostStateAction(HostStateActionKind Kind, string Path);
 
@@ -6739,7 +6762,8 @@ namespace BBC
         Rewind,
         FastForward,
         ResetCounter,
-        Eject
+        Eject,
+        MountArchiveEntry
     }
 
     public readonly record struct ArchiveDiscEntry(string Folder, string FileName, string EntryPath);

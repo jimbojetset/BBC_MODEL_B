@@ -93,7 +93,7 @@ Plain paths are accepted. Disc images boot by default, tape images enable the ta
 --disk PATH
 --file PATH         Mount a disc image, tape image, or host file.
 
---tape PATH         Enable the tape player and mount a UEF tape.
+--tape PATH         Enable the tape player and open a UEF tape or ZIP archive.
 
 --drive0 PATH
 --drive1 PATH       Enable that physical drive and mount SSD, DSD, or ZIP media.
@@ -281,11 +281,13 @@ Open it from the `Debugger` menu or with `Ctrl+Home`. Opening the debugger leave
 
 ## Discs, Tapes, And Drives
 
-The emulator supports DFS `.ssd` and `.dsd` images, UEF tapes, and ZIP archives containing disc images.
+The emulator supports DFS `.ssd` and `.dsd` images, UEF tapes, and ZIP archives containing disc or UEF tape images.
 
 Physical drive 0 maps to DFS drives 0 and 2. Physical drive 1 maps to DFS drives 1 and 3. That matters for double-sided DSD images: mount them with `--drive0` or `--drive1` so both sides stay together.
 
 You can create blank media from the menu or command line. DFS can also catalogue, load, save, delete, copy, verify, and format mounted images from inside the BBC.
+
+Choose `Load tape...` from the File or cassette menu to open a `.uef` or `.zip` file. Tape ZIP archives use the same folder and search browser as discs; select a UEF to load it. Archives containing just one tape load directly. Tapes loaded from ZIP archives are write-protected.
 
 Blank UEF tapes created from the cassette menu are recordable 10-minute tapes. Loaded game UEFs are treated like tapes with the record tab removed, so `REC` is disabled for them.
 

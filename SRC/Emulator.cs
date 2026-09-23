@@ -147,7 +147,7 @@ Options:
   --disc PATH             Mount a disc image, tape image, or host file.
   --disk PATH             Alias for --disc.
   --file PATH             Alias for --disc.
-  --tape PATH             Enable the tape player and mount a UEF tape.
+  --tape PATH             Enable the tape player and open a UEF tape or ZIP archive.
   --drive0 PATH           Enable physical drive 0 and mount media.
   --drive1 PATH           Enable physical drive 1 and mount media.
   --drive2 PATH           Mount an SSD in DFS logical drive 2.
@@ -321,7 +321,7 @@ Examples:
                 if (string.Equals(args[i], "--tape", StringComparison.OrdinalIgnoreCase))
                 {
                     if (i + 1 >= args.Length)
-                        throw new ArgumentException("--Tape requires a UEF path.");
+                        throw new ArgumentException("--Tape requires a UEF or ZIP path.");
 
                     tapePath = args[++i];
                     continue;
@@ -1013,10 +1013,37 @@ Examples:
             if (!tapePlayerEnabled)
                 throw new InvalidOperationException("Tape Player is disabled.");
 
+            if (IsZipArchivePath(path))
+            {
+                List<ArchiveDiscEntry> entries = GetArchiveEntries(path, tapes: true);
+                if (entries.Count == 0)
+                    throw new InvalidOperationException($"'{Path.GetFileName(path)}' does not contain any UEF tape images.");
+
+                if (entries.Count == 1 || Display is null)
+                    MountArchiveTape(path, entries[0].EntryPath);
+                else
+                    Display.ShowTapeArchive(path, entries);
+                return;
+            }
+
             if (!IsTapeImagePath(path))
-                throw new InvalidDataException("Only UEF tape images can be loaded into the cassette player.");
+                throw new InvalidDataException("Only UEF tape images or ZIP archives can be loaded into the cassette player.");
 
             tape.Mount(path);
+            TapeLoaded();
+        }
+
+        private void MountArchiveTape(string path, string entryPath)
+        {
+            if (!tapePlayerEnabled)
+                throw new InvalidOperationException("Tape Player is disabled.");
+
+            tape.MountArchive(path, entryPath);
+            TapeLoaded();
+        }
+
+        private void TapeLoaded()
+        {
             tapeMounted = true;
             hostFilingSystem.Unmount();
 
@@ -1040,7 +1067,7 @@ Examples:
 
         private bool MountZipArchive(string path, bool autoRunDisc, int? requestedDrive)
         {
-            List<ArchiveDiscEntry> entries = GetArchiveDiscEntries(path);
+            List<ArchiveDiscEntry> entries = GetArchiveEntries(path, tapes: false);
             if (entries.Count == 0)
                 throw new InvalidOperationException($"'{Path.GetFileName(path)}' does not contain any SSD, DSD, or ADF images.");
 
@@ -2485,6 +2512,9 @@ Examples:
                     {
                         case HostTapeActionKind.Mount:
                             MountTapeFile(action.Path);
+                            break;
+                        case HostTapeActionKind.MountArchiveEntry:
+                            MountArchiveTape(action.Path, action.ArchiveEntryPath);
                             break;
                         case HostTapeActionKind.Record:
                             RecordTape(display);
@@ -4465,21 +4495,27 @@ Examples:
             return string.Equals(Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static List<ArchiveDiscEntry> GetArchiveDiscEntries(string path)
+        private static List<ArchiveDiscEntry> GetArchiveEntries(string path, bool tapes)
         {
             using ZipArchive archive = ZipFile.OpenRead(path);
             List<ArchiveDiscEntry> entries = new List<ArchiveDiscEntry>();
 
             foreach (ZipArchiveEntry entry in archive.Entries)
             {
-                if (entry.Length <= 0 || !IsDiscImagePath(entry.FullName))
+                if (entry.Length <= 0 || !(tapes ? IsTapeImagePath(entry.FullName) : IsDiscImagePath(entry.FullName)))
                     continue;
 
-                string folder = Path.GetDirectoryName(entry.FullName.Replace('\\', Path.DirectorySeparatorChar)) ?? string.Empty;
+                string entryName = entry.FullName.Replace('\\', '/');
+                string fileName = Path.GetFileName(entryName);
+                if (entryName.StartsWith("__MACOSX/", StringComparison.OrdinalIgnoreCase)
+                    || fileName.StartsWith("._", StringComparison.Ordinal))
+                    continue;
+
+                string folder = Path.GetDirectoryName(entryName) ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(folder))
                     folder = "(root)";
 
-                entries.Add(new ArchiveDiscEntry(folder, Path.GetFileName(entry.FullName), entry.FullName));
+                entries.Add(new ArchiveDiscEntry(folder, fileName, entry.FullName));
             }
 
             entries.Sort((left, right) =>

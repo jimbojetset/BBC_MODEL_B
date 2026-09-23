@@ -181,14 +181,25 @@ namespace BBC
 
         public void Mount(string path)
         {
-            ParsedUefTape loadedTape = ReadTape(path);
+            Mount(path, null);
+        }
+
+        public void MountArchive(string path, string entryPath)
+        {
+            Mount(path, entryPath);
+        }
+
+        private void Mount(string path, string? entryPath)
+        {
+            ParsedUefTape loadedTape = ReadTape(path, entryPath);
 
             lock (sync)
             {
                 events.Clear();
                 events.AddRange(loadedTape.Events);
                 mountedPath = Path.GetFullPath(path);
-                mountedFileName = Path.GetFileName(path);
+                // Keep the full ZIP entry name so saved states can reopen tapes in subfolders.
+                mountedFileName = entryPath ?? Path.GetFileName(path);
                 recordable = loadedTape.Recordable;
                 recording = false;
                 recordingDataRunActive = false;
@@ -533,13 +544,14 @@ namespace BBC
                 return;
             }
 
-            ParsedUefTape loadedTape = ReadTape(path);
+            bool archived = string.Equals(Path.GetExtension(path), ".zip", StringComparison.OrdinalIgnoreCase);
+            ParsedUefTape loadedTape = ReadTape(path, archived ? fileName : null);
             lock (sync)
             {
                 events.AddRange(loadedTape.Events);
                 mountedPath = path;
                 mountedFileName = string.IsNullOrWhiteSpace(fileName) ? Path.GetFileName(path) : fileName;
-                recordable = loadedTape.Recordable || savedRecordable;
+                recordable = !archived && (loadedTape.Recordable || savedRecordable);
                 eventIndex = Math.Clamp(savedEventIndex, 0, events.Count);
                 delayCyclesRemaining = Math.Max(0, savedDelayCycles);
                 delayToneHz = Math.Max(0, savedDelayToneHz);
@@ -1090,9 +1102,9 @@ namespace BBC
             tapeSound.SetCassetteTone(0);
         }
 
-        private static ParsedUefTape ReadTape(string path)
+        private static ParsedUefTape ReadTape(string path, string? entryPath = null)
         {
-            byte[] image = ReadUefBytes(path);
+            byte[] image = ReadUefBytes(path, entryPath);
             if (image.Length < 12 || !image.AsSpan(0, 10).SequenceEqual("UEF File!\0"u8))
                 throw new InvalidDataException("Not a UEF tape image.");
 
@@ -1143,7 +1155,7 @@ namespace BBC
                 offset += length;
             }
 
-            return new ParsedUefTape(events, recordable);
+            return new ParsedUefTape(events, recordable && entryPath is null);
         }
 
         private static void WriteTape(string path, List<TapeEvent> tapeEvents)
@@ -1289,9 +1301,23 @@ namespace BBC
             }
         }
 
-        private static byte[] ReadUefBytes(string path)
+        private static byte[] ReadUefBytes(string path, string? entryPath)
         {
-            byte[] image = File.ReadAllBytes(path);
+            byte[] image;
+            if (entryPath is null)
+            {
+                image = File.ReadAllBytes(path);
+            }
+            else
+            {
+                using ZipArchive archive = ZipFile.OpenRead(path);
+                ZipArchiveEntry entry = archive.GetEntry(entryPath)
+                    ?? throw new FileNotFoundException($"Archive entry not found: {entryPath}", entryPath);
+                using Stream entryStream = entry.Open();
+                using MemoryStream tapeImage = new MemoryStream();
+                entryStream.CopyTo(tapeImage);
+                image = tapeImage.ToArray();
+            }
             if (image.Length < 2 || image[0] != 0x1F || image[1] != 0x8B)
                 return image;
 
