@@ -4,7 +4,7 @@ A BBC Micro Model B emulator written in C# and .NET. Run BBC BASIC, games and ot
 
 ![BBC display](Screenshot0.png)
 
-![6502 debugger showing memory, disassembly, CPU registers and the BBC display preview](ScreenshotDebugger.png)
+![6502 debugger](ScreenshotDebugger.png)
 
 ## Build and run
 
