@@ -2,10 +2,7 @@
 
 A BBC Micro Model B emulator written in C# and .NET. Run BBC BASIC, games and other software with emulated disc drives, tape, sound and optional peripherals, plus a built-in 6502 debugger.
 
-<p>
-    <img src="Screenshot0.png" alt="BBC Model B emulator screenshot" width="49%">
-    <img src="Screenshot1.png" alt="BBC Model B emulator screenshot" width="49%">
-</p>
+![BBC display](Screenshot0.png)
 
 ![6502 debugger showing memory, disassembly, CPU registers and the BBC display preview](ScreenshotDebugger.png)
 
