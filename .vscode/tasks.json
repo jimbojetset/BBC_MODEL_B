@@ -14,6 +14,22 @@
         "kind": "build",
         "isDefault": true
       }
+    },
+    {
+      "label": "scan unused code",
+      "command": "${env:HOME}/.dotnet/tools/dotnet-unused",
+      "type": "process",
+      "args": [
+        "${workspaceFolder}/BBC_MODEL_B.csproj",
+        "--exclude-public",
+        "true"
+      ],
+      "options": {
+        "env": {
+          "DOTNET_ROLL_FORWARD": "LatestMajor"
+        }
+      },
+      "problemMatcher": []
     }
   ]
 }

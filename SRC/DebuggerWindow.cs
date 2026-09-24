@@ -2740,8 +2740,6 @@ namespace BBC
             Line(rect.Left, rect.Top + 34, rect.Right, rect.Top + 34, Border);
         }
 
-        private void DrawPlaceholder(float x, float y, string text) => DrawText(text, x, y, DimText, small: true);
-
         private void DrawButton(SKRect rect, string label, bool active, bool enabled = true)
         {
             Fill(rect, active ? CurrentInstruction : Panel);
@@ -2945,7 +2943,6 @@ namespace BBC
         private const int KMOD_SHIFT = 0x0003;
         private const int KMOD_CTRL = 0x00C0;
         private const int KMOD_GUI = 0x0C00;
-        private const int SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
         private const uint SDL_WINDOW_HIDDEN = 0x00000008;
         private const uint SDL_WINDOW_ALLOW_HIGHDPI = 0x00002000;
         private const uint SDL_RENDERER_SOFTWARE = 0x00000001;

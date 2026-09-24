@@ -1435,15 +1435,6 @@ namespace BBC
                 | (data[offset + 3] << 24);
         }
 
-        private static uint ReadUInt32(ReadOnlySpan<byte> data, int offset)
-        {
-            return (uint)(data[offset]
-                | (data[offset + 1] << 8)
-                | (data[offset + 2] << 16)
-                | (data[offset + 3] << 24));
-        }
-
-
         private static void WriteString(BinaryWriter writer, string? value)
         {
             writer.Write(value is not null);

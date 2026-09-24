@@ -7,7 +7,6 @@ namespace BBC;
 internal sealed class NmsCeefax : IDisposable
 {
     internal string FeedUrl { get; }
-    internal static string DefaultCacheDirectory => GetCacheDirectory(TeletextRegion.London);
     internal static string GetCacheDirectory(TeletextRegion region) => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BBC_MODEL_B", "Teletext", "Nms" + GetRegionDirectory(region));
 

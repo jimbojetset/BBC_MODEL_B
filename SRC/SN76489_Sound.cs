@@ -12,7 +12,6 @@
 // ============================================================================
 
 using System.Runtime.InteropServices;
-using System.Threading;
 
 namespace BBC
 {

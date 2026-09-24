@@ -13,7 +13,6 @@
 
 using BBC.CPU;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 

@@ -45,7 +45,6 @@ namespace BBC
         internal long RightEdges { get; private set; }
         internal bool PenDown => (sensors & 0x80) != 0;
         internal bool HooterActive => (direction & 0x80) != 0 && (outputs & 0x80) == 0;
-        internal byte Sensors => sensors;
 
         internal byte ReadSensors()
         {

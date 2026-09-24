@@ -32,7 +32,6 @@ namespace BBC
         private const double WindowScale = 0.7;
         private const int WindowWidth = 743;
         private const int PaperViewLeft = (WindowWidth - PaperViewWidth) / 2 - 47;
-        private const int PaperLeft = PaperViewLeft - PaperSideMargin;
         private const int PaperAreaHeight = PaperViewHeight;
         private const int PaperCurveRadius = 180;
         private const int PaperTopGap = 20;
