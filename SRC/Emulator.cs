@@ -2106,6 +2106,8 @@ Examples:
                 if (TryEnterSidewaysRomServiceCommand(bank, commandAddress))
                     return true;
 
+                // MOS restores the saved ROM bank after OS calls and interrupts.
+                SetMosSelectedRomBank(bank);
                 selectedSidewaysRom = bank;
                 Cpu.registers.A = 1;
                 Cpu.registers.X = (byte)bank;
@@ -2202,6 +2204,7 @@ Examples:
             if (Cpu.registers.A == 0x8E)
             {
                 selectedSidewaysRom = Cpu.registers.X & 0x0F;
+                SetMosSelectedRomBank(selectedSidewaysRom);
                 Cpu.registers.A = 1;
                 Cpu.registers.X = (byte)selectedSidewaysRom;
                 Cpu.registers.PC = SidewaysRomStart;

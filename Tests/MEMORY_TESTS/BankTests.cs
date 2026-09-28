@@ -57,6 +57,43 @@ internal static class BankTests
             m.Select(3);
             Check.Byte(0xA5, m.Read(0xF4), "MOS updates its software copy; hardware must not do so");
         }));
+        foreach (bool osbyte in new[] { false, true })
+        {
+            tests.Add(($"Banks/LanguageEntry/{(osbyte ? "OSBYTE142" : "OSCLI")}", () =>
+            {
+                using var m = new MemoryMachine();
+                // Synthetic language ROM with no service entry, like BASIC II.
+                m.SeedRom(15, new byte[] { 0xA9, 0x42, 0x60, 0, 0, 0, 0x40, 0, 0,
+                    (byte)'B', (byte)'A', (byte)'S', (byte)'I', (byte)'C', 0 });
+                m.Select(14);
+                m.Write(0xF4, 14);
+                m.Write(0x028C, 14);
+                var cpu = m.Emulator.Cpu;
+                if (osbyte)
+                {
+                    cpu.registers.PC = 0xFFF4;
+                    cpu.registers.A = 142;
+                    cpu.registers.X = 15;
+                    m.Invoke("TryHandleOsbyte");
+                }
+                else
+                {
+                    "BASIC\r"u8.CopyTo(m.Ram.AsSpan(0x600));
+                    cpu.registers.PC = 0xFFF7;
+                    cpu.registers.X = 0;
+                    cpu.registers.Y = 6;
+                    m.Invoke("TryHandleSidewaysRomLanguageCommand");
+                }
+                Check.True(cpu.registers.PC == 0x8000, "enter the language ROM");
+                Check.Byte(15, m.Read(0x028C), "MOS current language bank");
+                // Reproduce MOS restoring the bank after an OS call or interrupt.
+                m.Instruction(0xA5, 0xF4);
+                m.Instruction(0x8D, 0x30, 0xFE);
+                cpu.registers.PC = 0x8000;
+                cpu.StepInstruction();
+                Check.Byte(0x42, cpu.registers.A, "language remains mapped after MOS restores ROMSEL");
+            }));
+        }
         tests.Add(("Banks/CPUFetchesSelectedROM", () =>
         {
             using var m = new MemoryMachine();

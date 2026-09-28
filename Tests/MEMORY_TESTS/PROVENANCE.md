@@ -1,7 +1,7 @@
 # Memory evidence audit
 
 **There is currently no independently verified BBC hardware test dataset or
-external BBC test program integrated into MEMORY_TESTS. All 66 cases are
+external BBC test program integrated into MEMORY_TESTS. All 68 cases are
 labelled `Unverified/` in output.** Passing them does not establish hardware
 conformance. This is a documented coverage gap, not a substitute for provenance.
 
@@ -11,6 +11,7 @@ conformance. This is a documented coverage gap, not a substitute for provenance.
 | `IO/*` in MemoryMapTests.cs | Original assertions about I/O masking. No independently recorded bus data; deliberately avoids a fixed floating-bus value. |
 | `FlatBus/*` | Emulator memory-bus API regression. Not a physical BBC address-width measurement. |
 | `Banks/*` in BankTests.cs | Original mapping/banking assertions and emulator bank-management regressions. No independently verified sideways-expansion test data. |
+| `Banks/LanguageEntry/*` | Two software regressions using a synthetic language ROM and a simulated MOS bank restore. Motivated by BlackBox's startup failure; no independent physical BBC result is claimed. |
 | `Decode/*/AddressBlock` | Original predicates against address ranges from documentation, not an external hardware test. |
 | Other `Decode/*` | Adapted local regression checks from this repository's `SheilaAddressDecodeTests.cs`, commit `38305d5`. This is code history, **not independent hardware provenance**. |
 
